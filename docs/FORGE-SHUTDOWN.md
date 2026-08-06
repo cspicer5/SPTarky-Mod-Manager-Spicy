@@ -67,21 +67,33 @@ Crucially this does **not** require scraping. The API exposes the links directly
 GET /api/v0/mods?include=source_code_links
 ```
 
-Measured against the live API on 2026-08-05, sampling 400 mods (top by downloads and most
-recently created):
+### Measured coverage
 
-| | |
+A first estimate put this at 92%, but that sampled only the top-by-downloads and
+most-recently-created mods — the actively maintained ones — and does not hold for the
+catalogue as a whole. The full harvest (all 2,389 mods, 2026-08-05) gives the real picture,
+and coverage tracks popularity closely:
+
+| Slice of the catalogue | Has a source link |
 |---|---|
-| mods publishing a source link | **368 / 400 (92.0%)** |
-| of those, hosted on GitHub | **359 (97.6%)** |
-| other hosts | 6 gitlab.com, 2 dev.sp-tarkov.com, 1 codeberg.org |
+| Mods actually installed on a real 54-mod setup | **36 / 36 (100%)** |
+| Top 200 by downloads | 165 / 200 (83%) |
+| Top 500 | 379 / 500 (76%) |
+| Top 1000 | 687 / 1000 (69%) |
+| **All 2,389** | **1,450 (61%)** |
 
-So roughly **90% of all Forge mods yield a GitHub URL straight from the API**, structured,
-no HTML parsing. Examples: `BigBrain -> github.com/DrakiaXYZ/SPT-BigBrain`,
-`SAIN -> github.com/ArchangelWTF/SAIN`.
+Of the 1,450 with a link, **1,350 (93%) are GitHub**; the rest are gitlab.com,
+dev.sp-tarkov.com and codeberg.org.
 
-The remaining ~8% with no published link need another route — manual entry, or matching by
-mod name against GitHub search.
+The headline number is therefore 61%, not 92% — but the 61% is dominated by old, abandoned
+mods nobody installs. For mods people actually run, coverage is close to total: every mod
+on the reference install had a GitHub URL. Examples:
+`BigBrain -> github.com/DrakiaXYZ/SPT-BigBrain`, `SAIN -> github.com/ArchangelWTF/SAIN`.
+
+Mods with no published link need another route — manual entry, or matching by name against
+GitHub search. Note also that only 744 of 2,389 (31%) publish a GUID, so the GUID-first
+matching that works so well on modern SPT 4.0 mods will not carry older ones; for those the
+harvested id/name/slug is the only handle.
 
 Rate limits differ from Forge and matter here: GitHub allows 60 requests/hour per IP
 unauthenticated, versus 5,000/hour with a token. Unlike Forge, GitHub auth is real and
