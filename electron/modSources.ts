@@ -62,7 +62,7 @@ let harvestCache: { byId: Map<string, HarvestMod>; byGuid: Map<string, HarvestMo
  * The harvested Forge directory, indexed. Loaded lazily and kept — it is ~1.4 MB of JSON and
  * re-parsing it per mod would dominate a scan.
  */
-function loadHarvest(): { byId: Map<string, HarvestMod>; byGuid: Map<string, HarvestMod> } {
+export function loadHarvest(): { byId: Map<string, HarvestMod>; byGuid: Map<string, HarvestMod> } {
   if (harvestCache) return harvestCache;
   const candidates = [
     path.join(__dirname, "..", "data", "forge-directory.json"),

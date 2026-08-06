@@ -37,6 +37,7 @@ import {
   PayloadProgress
 } from "./presetPayloads";
 import { recordPayloadInstall } from "./modManager";
+import { markInstalledAsAddon } from "./addons";
 
 export const STORE_SCHEMA = 1;
 
@@ -829,6 +830,26 @@ export async function applyPresetPayloads(
           });
         } catch {
           // A ledger entry is worth having but never worth failing an install over.
+        }
+
+        // Restore the addon relationship too. Copying the files alone rebuilds a setup that
+        // looks identical and has forgotten what attaches to what — and the app then cannot
+        // warn the recipient when updating a parent strands one of its addons.
+        if (mod.addonOf) {
+          try {
+            markInstalledAsAddon(
+              path.join(roots.clientRoot, ".spt-mod-manager-registry.json"),
+              [{ id: mod.name, type: mod.type }],
+              {
+                parentName: mod.addonOf,
+                parentType: mod.addonOfType ?? "server",
+                forgeAddonId: mod.forgeAddonId,
+                parentConstraint: mod.addonParentConstraint
+              }
+            );
+          } catch {
+            /* same reasoning as above */
+          }
         }
       }
     } else {

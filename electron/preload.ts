@@ -70,6 +70,26 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   importPreset: (id: string, overwrite?: boolean) => ipcRenderer.invoke("import-preset", id, overwrite),
   getStorePresetReport: (id: string) => ipcRenderer.invoke("get-store-preset-report", id),
 
+  // --- addons: compatibility and companion mods (v1.2.2) ---
+  getAddonSuggestions: () => ipcRenderer.invoke("get-addon-suggestions"),
+  // Reads the installed assemblies, so it is deliberately on demand rather than part of a scan.
+  detectAddonLinks: () => ipcRenderer.invoke("detect-addon-links"),
+  setAddonParent: (id: string, type: "server" | "client", parentName: string | null) =>
+    ipcRenderer.invoke("set-addon-parent", id, type, parentName),
+  // No version argument: which build fits is a function of the PARENT's installed version,
+  // and only the main process knows that.
+  installForgeAddon: (jobId: string, addonId: number) => ipcRenderer.invoke("install-forge-addon", jobId, addonId),
+  installAddonFromFile: (parentName: string, filePath?: string) =>
+    ipcRenderer.invoke("install-addon-from-file", parentName, filePath),
+  installAddonFromGithub: (args: {
+    jobId: string;
+    parentName: string;
+    assetUrl: string;
+    assetName: string;
+    repo: string;
+    version: string;
+  }) => ipcRenderer.invoke("install-addon-from-github", args),
+
   // --- preset payloads: the store carries the mod files, so no Forge is needed ---
   publishPresetWithPayloads: (id: string, overwrite?: boolean) =>
     ipcRenderer.invoke("publish-preset-with-payloads", id, overwrite),

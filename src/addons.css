@@ -1,0 +1,260 @@
+/* Addons — compatibility and companion mods (v1.2.2).
+
+   Class names are all prefixed `addon-`. A bare `.tabs` or `.tree` would be one more chance
+   to collide with an existing rule, which is exactly how `.bulk-bar` once squashed the
+   selection bar to a 4px sliver. */
+.addon-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.addon-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.addon-header strong {
+  display: block;
+  font-size: 13px;
+}
+
+.addon-header-note {
+  display: block;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 2px;
+  max-width: 62ch;
+  line-height: 1.45;
+}
+
+.addon-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.addon-tabs button {
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  font-size: 12px;
+  padding: 5px 10px;
+  color: var(--text-faint);
+}
+
+.addon-tabs .addon-tab-active {
+  border-color: var(--border);
+  background: var(--bg-panel-raised);
+  color: var(--text);
+}
+
+.addon-body {
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 460px;
+  overflow-y: auto;
+}
+
+.addon-note {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.addon-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.addon-list,
+.addon-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.addon-tree ul {
+  list-style: none;
+  margin: 3px 0 0;
+  padding-left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.addon-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-panel-raised);
+}
+
+/* An addon with no build for the parent you have is still worth listing — the answer is
+   "update the parent" — but it should not read as available. */
+.addon-row.addon-fit-none {
+  opacity: 0.72;
+}
+
+.addon-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.addon-name {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.addon-teaser {
+  font-size: 11px;
+  color: var(--text-faint);
+  line-height: 1.4;
+}
+
+.addon-row-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+  color: var(--text-faint);
+  flex-wrap: wrap;
+}
+
+.addon-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.addon-badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.addon-badge-declared {
+  color: var(--ok-strong);
+  border-color: var(--ok);
+}
+
+.addon-badge-none {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+.addon-badge-have {
+  color: var(--ok-strong);
+  border-color: var(--ok);
+}
+
+/* Provenance, the same ladder the rest of the app uses: a GUID a mod declares about itself
+   is stronger than anything inferred, and the user's own pin beats both. */
+.addon-method-manual {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+.addon-method-declared-guid {
+  color: var(--ok-strong);
+  border-color: var(--ok);
+}
+
+.addon-warn {
+  color: var(--accent-strong);
+}
+
+.addon-guid {
+  font-family: var(--font-mono, monospace);
+  font-size: 9px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.addon-link {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.addon-parent {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.addon-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 3px 6px;
+  border-left: 2px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.addon-unlink {
+  font-size: 10px;
+  padding: 1px 6px;
+  margin-left: auto;
+}
+
+.addon-manual {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-panel-raised);
+}
+
+.addon-manual strong {
+  font-size: 12px;
+}
+
+.addon-manual-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.addon-manual-row select {
+  flex: 1;
+  min-width: 160px;
+}
+
+.addon-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-faint);
+}

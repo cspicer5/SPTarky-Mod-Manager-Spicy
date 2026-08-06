@@ -26,7 +26,8 @@ const ISSUE_LABEL: Record<string, string> = {
   "version-mismatch": "Different version",
   "state-mismatch": "Wrong on/off state",
   "unknown-version": "Can't compare",
-  extra: "Not in preset"
+  extra: "Not in preset",
+  "orphaned-addon": "Parent missing from preset"
 };
 
 function PresetRowItem({ row }: { row: PresetRow }) {
@@ -48,6 +49,12 @@ function PresetRowItem({ row }: { row: PresetRow }) {
           </span>
         )}
         <span className={`type-badge type-${row.type}`}>{row.type}</span>
+        {/* An addon means nothing on its own, so what it attaches to travels with it. */}
+        {row.addonOf && (
+          <span className="preset-addon-of" title={`An addon of ${row.addonOf}`}>
+            addon of {row.addonOf}
+          </span>
+        )}
         {!row.required && (
           <span className="preset-optional" title="Part of this preset, but you can play without it.">
             optional
@@ -682,6 +689,7 @@ export default function PresetsPanel({
                   {report.counts.missingRequired > 0 && ` · ${report.counts.missingRequired} required missing`}
                   {report.counts.versionMismatch > 0 && ` · ${report.counts.versionMismatch} wrong version`}
                   {report.counts.stateMismatch > 0 && ` · ${report.counts.stateMismatch} wrong state`}
+                  {report.counts.orphanedAddon > 0 && ` · ${report.counts.orphanedAddon} orphaned addon`}
                   {report.counts.extra > 0 && ` · ${report.counts.extra} extra`}
                 </span>
               </div>

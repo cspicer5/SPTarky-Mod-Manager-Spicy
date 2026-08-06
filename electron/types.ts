@@ -36,6 +36,13 @@ export interface ModInfo {
   sourceUrl?: string;
   /** "owner/repo" when the source is GitHub — what the releases API takes. */
   sourceRepo?: string;
+  /* --- addon relationship, projected from the registry (v1.2.2) ---------- */
+  /** The mod this one attaches to. Its presence is what makes a row an addon. */
+  addonOf?: string;
+  addonOfType?: ModType;
+  forgeAddonId?: number;
+  /** The range of PARENT versions this build declares it fits, e.g. "~2.7.0". */
+  addonParentConstraint?: string;
   /**
    * The mod's licence, when anything knows it — which today is almost never. The Forge API
    * has no licence field at all (checked 2026-08-06), so the pre-shutdown harvest could not
@@ -91,6 +98,9 @@ export interface InstanceConfig {
   // Folder holding the shared preset store — a Windows share, a VPN-reachable path, or a
   // sync folder. Like serverUrl this is deliberately not an InstanceId: a store holds
   // manifests, not an install, and can never be scanned or toggled.
+  // Addon-to-parent links the user set by hand, keyed "<type>:<lowercased folder>". Their
+  // judgement outranks anything derived, exactly as a manual Forge pin does.
+  addonLinks: Record<string, string> | null;
   presetStorePath: string | null;
   // The name this client publishes under. Presets are shared between people, so "who wrote
   // this" has to be a name a human chose, not a machine account or a folder path.
@@ -148,6 +158,18 @@ export interface RegistryEntry {
   forgeVersion?: string;
   forgeGuid?: string; // id of another registry entry "linked" to this one (e.g. a named mod plus the loose file that shipped with it) — removing one removes the other
   packageId?: string;
+
+  /* --- addons: a mod whose reason to exist is another mod (v1.2.2) -------- */
+  /**
+   * The folder name of the mod this one attaches to. Set when installed as an addon, or
+   * pinned by hand. Its presence is what makes a row an addon rather than a mod.
+   */
+  addonOf?: string;
+  addonOfType?: ModType;
+  /** Forge's addon id, so a catalogued addon stays identifiable after the shutdown. */
+  forgeAddonId?: number;
+  /** The range of PARENT versions the installed build declares it fits, e.g. "~2.7.0". */
+  addonParentConstraint?: string;
 }
 
 export interface InstallResult {

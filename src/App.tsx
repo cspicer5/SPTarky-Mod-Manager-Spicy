@@ -22,12 +22,16 @@ import {
   PayloadProgress,
   StoreUsage,
   WritePolicy,
+  AddonSuggestion,
+  AddonLink,
+  AddonIntegration,
   BulkReinstallProgress,
   BulkReinstallOutcome
 } from "./types";
 import { Lang, translate, translateBackendMessage } from "./i18n";
 import InstancesView from "./HeadlessView";
 import PresetsPanel from "./PresetsPanel";
+import AddonsPanel from "./AddonsPanel";
 
 
 interface Toast {
@@ -550,6 +554,93 @@ export default function App() {
       await loadPresetReport(id);
     } finally {
       setPresetBusy(false);
+    }
+  }
+
+  /* --- addons: compatibility and companion mods (v1.2.2) --------------------
+   * Two halves with different lifetimes: the catalogue is frozen at the shutdown, while
+   * reading the installed assemblies keeps working forever. The panel says which is which.
+   */
+  const [addonsOpen, setAddonsOpen] = useState(false);
+  const [addonSuggestions, setAddonSuggestions] = useState<AddonSuggestion[]>([]);
+  const [addonLinks, setAddonLinks] = useState<AddonLink[]>([]);
+  const [addonIntegrations, setAddonIntegrations] = useState<AddonIntegration[]>([]);
+  const [addonCatalogueSize, setAddonCatalogueSize] = useState(0);
+  const [addonsScanned, setAddonsScanned] = useState(false);
+  const [addonBusy, setAddonBusy] = useState(false);
+
+  const refreshAddonSuggestions = useCallback(async () => {
+    const result = await window.modManagerAPI.getAddonSuggestions();
+    if (result.success) {
+      setAddonSuggestions(result.suggestions ?? []);
+      setAddonCatalogueSize(result.catalogueSize ?? 0);
+    } else if (result.message) {
+      pushToast(result.message, false);
+    }
+  }, []);
+
+  async function openAddons() {
+    setAddonsOpen(true);
+    await refreshAddonSuggestions();
+  }
+
+  // Deliberately explicit rather than automatic: this reads every plugin's assembly, which is
+  // far more expensive than the folder listing a scan does.
+  async function handleDetectAddonLinks() {
+    setAddonBusy(true);
+    try {
+      const result = await window.modManagerAPI.detectAddonLinks();
+      if (result.success) {
+        setAddonLinks(result.links ?? []);
+        setAddonIntegrations(result.integrations ?? []);
+        setAddonsScanned(true);
+        pushToast(
+          `Found ${result.links?.length ?? 0} relationship(s) and ${result.integrations?.length ?? 0} optional integration(s).`,
+          true
+        );
+      } else {
+        pushToast(result.message ?? "Couldn't read the installed mods.", false);
+      }
+    } finally {
+      setAddonBusy(false);
+    }
+  }
+
+  async function handleInstallForgeAddon(addonId: number) {
+    setAddonBusy(true);
+    try {
+      const result = await window.modManagerAPI.installForgeAddon(`addon-${addonId}`, addonId);
+      pushToast(tMsg(result.message), result.success);
+      if (result.success) {
+        await refreshMods();
+        await refreshAddonSuggestions();
+      }
+    } finally {
+      setAddonBusy(false);
+    }
+  }
+
+  async function handleInstallAddonFromFile(parentName: string) {
+    setAddonBusy(true);
+    try {
+      const result = await window.modManagerAPI.installAddonFromFile(parentName);
+      if (result.cancelled) return;
+      pushToast(tMsg(result.message ?? (result.success ? "Installed." : "Couldn't install.")), result.success);
+      if (result.success) {
+        await refreshMods();
+        await refreshAddonSuggestions();
+      }
+    } finally {
+      setAddonBusy(false);
+    }
+  }
+
+  async function handleSetAddonParent(id: string, type: ModType, parent: string | null) {
+    const result = await window.modManagerAPI.setAddonParent(id, type, parent);
+    pushToast(result.message, result.success);
+    if (result.success) {
+      await refreshMods();
+      if (addonsScanned) await handleDetectAddonLinks();
     }
   }
 
@@ -1920,6 +2011,13 @@ export default function App() {
             >
               {presetsOpen ? "Hide presets" : "Presets"}
             </button>
+            <button
+              onClick={addonsOpen ? () => setAddonsOpen(false) : openAddons}
+              className={addonsOpen ? "primary" : ""}
+              title="Compatibility and companion mods for what you have installed"
+            >
+              {addonsOpen ? "Hide addons" : "Addons"}
+            </button>
             <button onClick={openBulkReinstall} title="Re-download every installed mod at its latest version">
               Reinstall all
             </button>
@@ -2170,6 +2268,23 @@ export default function App() {
               {t("noResults.text")}
               <button onClick={clearFilters}>{t("noResults.clearFilters")}</button>
             </div>
+          )}
+
+          {addonsOpen && (
+            <AddonsPanel
+              suggestions={addonSuggestions}
+              links={addonLinks}
+              integrations={addonIntegrations}
+              mods={mods}
+              busy={addonBusy}
+              scanned={addonsScanned}
+              catalogueSize={addonCatalogueSize}
+              onInstallForgeAddon={handleInstallForgeAddon}
+              onInstallFromFile={handleInstallAddonFromFile}
+              onDetectLinks={handleDetectAddonLinks}
+              onSetParent={handleSetAddonParent}
+              onClose={() => setAddonsOpen(false)}
+            />
           )}
 
           {presetsOpen && (

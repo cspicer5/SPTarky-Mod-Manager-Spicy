@@ -51,6 +51,18 @@ export interface PresetMod {
    */
   license?: string;
   sourceUrl?: string;
+
+  /* --- addons (v1.2.2) --------------------------------------------------- */
+  /**
+   * The mod this one attaches to, captured so applying a preset rebuilds the RELATIONSHIP
+   * and not only the files. A preset that reproduces an install without knowing which mods
+   * were addons produces a setup that looks identical and has forgotten what belongs to what
+   * — and the app then cannot tell the recipient that updating a parent has stranded one.
+   */
+  addonOf?: string;
+  addonOfType?: ModType;
+  forgeAddonId?: number;
+  addonParentConstraint?: string;
 }
 
 export interface Preset {
@@ -203,7 +215,11 @@ export function createPreset(root: string, mods: ModInfo[], opts: CreatePresetOp
         enabled: m.enabled,
         loadOrder: m.loadOrder,
         required: !optional.has(m.id),
-        author: m.author
+        author: m.author,
+        addonOf: m.addonOf,
+        addonOfType: m.addonOfType,
+        forgeAddonId: m.forgeAddonId,
+        addonParentConstraint: m.addonParentConstraint
       }))
   };
 
@@ -254,7 +270,13 @@ export type PresetIssue =
   | "version-mismatch"
   | "state-mismatch"
   | "extra"
-  | "unknown-version";
+  | "unknown-version"
+  /**
+   * An addon in this preset whose parent the preset does not include. Its own row would
+   * otherwise look perfectly fine, because the addon installs and the files are all present
+   * — the setup is simply incoherent, and only the relationship shows it.
+   */
+  | "orphaned-addon";
 
 export interface PresetRow {
   /** Type-scoped, so a mod shipping a server and a client half stays two rows. */
@@ -270,6 +292,8 @@ export interface PresetRow {
   issue?: PresetIssue;
   matchedBy?: "guid" | "name";
   detail?: string;
+  /** Set when this row is an addon, so the UI can show it under what it attaches to. */
+  addonOf?: string;
 }
 
 export interface PresetReport {
@@ -287,7 +311,10 @@ export interface PresetReport {
     stateMismatch: number;
     extra: number;
     unknownVersion: number;
+    orphanedAddon: number;
   };
+  /** Addons in this preset, by the mod they attach to. */
+  addonsByParent?: Record<string, string[]>;
   /** True when everything the preset requires is present, at the right version and state. */
   satisfied: boolean;
 }
@@ -312,8 +339,17 @@ export function buildPresetReport(preset: Preset, localMods: ModInfo[], localSpt
     versionMismatch: 0,
     stateMismatch: 0,
     extra: 0,
-    unknownVersion: 0
+    unknownVersion: 0,
+    orphanedAddon: 0
   };
+
+  // Which mods the preset actually contains, so an addon pointing outside it can be spotted.
+  const presetContains = new Set(preset.mods.map((m) => rowKey(m.name, m.type)));
+  const addonsByParent: Record<string, string[]> = {};
+  for (const m of preset.mods) {
+    if (!m.addonOf) continue;
+    (addonsByParent[m.addonOf] ??= []).push(m.name);
+  }
 
   const byGuid = new Map<string, ModInfo>();
   const byKey = new Map<string, ModInfo>();
@@ -341,8 +377,22 @@ export function buildPresetReport(preset: Preset, localMods: ModInfo[], localSpt
       presetEnabled: want.enabled,
       localEnabled: local?.enabled,
       required: want.required,
-      matchedBy: viaGuid ? "guid" : local ? "name" : undefined
+      matchedBy: viaGuid ? "guid" : local ? "name" : undefined,
+      addonOf: want.addonOf
     };
+
+    // Checked before the presence tests, because an addon whose parent is absent from the
+    // preset is wrong even when the addon itself installs perfectly. Nothing about its own
+    // row would ever reveal that.
+    if (want.addonOf && !presetContains.has(rowKey(want.addonOf, want.addonOfType ?? "server"))
+        && !presetContains.has(rowKey(want.addonOf, "client"))
+        && !presetContains.has(rowKey(want.addonOf, "server"))) {
+      row.issue = "orphaned-addon";
+      row.detail = `Attaches to "${want.addonOf}", which this preset does not include.`;
+      counts.orphanedAddon++;
+      rows.push(row);
+      continue;
+    }
 
     if (!local) {
       row.issue = "missing";
@@ -393,9 +443,10 @@ export function buildPresetReport(preset: Preset, localMods: ModInfo[], localSpt
   const severity: Record<string, number> = {
     missing: 0,
     "version-mismatch": 1,
-    "state-mismatch": 2,
-    "unknown-version": 3,
-    extra: 4
+    "orphaned-addon": 2,
+    "state-mismatch": 3,
+    "unknown-version": 4,
+    extra: 5
   };
   rows.sort((a, b) => {
     // Required-but-missing is the only thing that actually stops you playing, so it leads.
@@ -415,6 +466,7 @@ export function buildPresetReport(preset: Preset, localMods: ModInfo[], localSpt
     sptMatches,
     rows,
     counts,
+    addonsByParent: Object.keys(addonsByParent).length ? addonsByParent : undefined,
     // "Extra" mods and optional gaps do not stop you playing; a missing required mod, a
     // version mismatch, or a mod that should be on and is off, do.
     satisfied:

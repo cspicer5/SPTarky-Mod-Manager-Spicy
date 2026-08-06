@@ -1191,7 +1191,15 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
       sptVersion: metadata.sptVersion,
       packageId: registryEntry?.packageId,
       installedAt: registryEntry?.installedAt,
-      linkedModName: resolveLinkedName(registryEntry?.linkedModId)
+      linkedModName: resolveLinkedName(registryEntry?.linkedModId),
+      // Whether this row is an addon of something else, carried from the registry so a
+      // preset can capture the RELATIONSHIP and not merely the files. A preset that
+      // reproduces an install without knowing which mods were addons rebuilds a setup that
+      // looks the same and has forgotten what attaches to what.
+      addonOf: registryEntry?.addonOf,
+      addonOfType: registryEntry?.addonOfType,
+      forgeAddonId: registryEntry?.forgeAddonId,
+      addonParentConstraint: registryEntry?.addonParentConstraint
     });
   }
 

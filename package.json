@@ -30,10 +30,11 @@
     "test:presets": "tsc -p electron/tsconfig.json && node scripts/test-presets.js",
     "test:store": "tsc -p electron/tsconfig.json && node scripts/test-preset-store.js",
     "test:payloads": "tsc -p electron/tsconfig.json && node scripts/test-preset-payloads.js",
+    "test:addons": "tsc -p electron/tsconfig.json && node scripts/test-addons.js",
     "test:bulk": "tsc -p electron/tsconfig.json && node scripts/test-bulk-reinstall.js",
     "test:sptpick": "tsc -p electron/tsconfig.json && node scripts/test-spt-version-pick.js",
     "test:constraints": "tsc -p electron/tsconfig.json && node scripts/test-spt-constraints.js",
-    "test": "npm run test:parity && npm run test:sync && npm run test:update && npm run test:ledger && npm run test:presets && npm run test:store && npm run test:payloads && npm run test:bulk && npm run test:sptpick && npm run test:constraints"
+    "test": "npm run test:parity && npm run test:sync && npm run test:update && npm run test:ledger && npm run test:presets && npm run test:store && npm run test:payloads && npm run test:addons && npm run test:bulk && npm run test:sptpick && npm run test:constraints"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

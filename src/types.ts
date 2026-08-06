@@ -324,6 +324,11 @@ export interface PresetMod {
   sizeBytes?: number;
   license?: string;
   sourceUrl?: string;
+  /* --- addons (v1.2.2): the relationship travels with the preset --------- */
+  addonOf?: string;
+  addonOfType?: ModType;
+  forgeAddonId?: number;
+  addonParentConstraint?: string;
 }
 
 export interface Preset {
@@ -375,6 +380,64 @@ export interface PresetStoreStatus {
   message?: string;
 }
 
+/* --- addons: compatibility and companion mods (v1.2.2) -------------------- */
+
+export interface AddonVersion {
+  version: string;
+  link?: string;
+  bytes?: number;
+  /** Semver range against the PARENT mod's version, e.g. "~2.7.0". */
+  modConstraint?: string;
+  publishedAt?: string;
+}
+
+export interface ForgeAddon {
+  id: number;
+  name: string;
+  slug?: string;
+  teaser?: string;
+  description?: string;
+  owner?: string;
+  downloads?: number;
+  detailUrl?: string;
+  modId?: number;
+  isDetached?: boolean;
+  versions: AddonVersion[];
+}
+
+export interface AddonSuggestion {
+  addon: ForgeAddon;
+  parentName: string;
+  parentType: ModType;
+  parentVersion?: string;
+  pick?: AddonVersion;
+  /**
+   * "declared" — a build states it fits this parent version.
+   * "unconstrained" — a build exists but says nothing about which parents it suits.
+   * "none" — the addon exists but no build supports the parent version installed.
+   */
+  fit: "declared" | "unconstrained" | "none";
+  installed: boolean;
+}
+
+export interface AddonLink {
+  name: string;
+  type: ModType;
+  guid: string;
+  parentName?: string;
+  parentType?: ModType;
+  method: "manual" | "declared-guid" | "same-archive";
+}
+
+/** A mod something installed knows how to work with, that isn't installed here. */
+export interface AddonIntegration {
+  name: string;
+  type: ModType;
+  guid: string;
+  forgeId: number;
+  forgeName: string;
+}
+
 /* --- payloads (phase 3) --------------------------------------------------- */
 
 export interface StoreUsage {
@@ -407,7 +470,14 @@ export interface PayloadProgress {
   bytesReused?: number;
 }
 
-export type PresetIssue = "missing" | "version-mismatch" | "state-mismatch" | "extra" | "unknown-version";
+export type PresetIssue =
+  | "missing"
+  | "version-mismatch"
+  | "state-mismatch"
+  | "extra"
+  | "unknown-version"
+  /** An addon whose parent the preset does not include — incoherent, though it installs fine. */
+  | "orphaned-addon";
 
 export interface PresetRow {
   key: string;
@@ -422,6 +492,8 @@ export interface PresetRow {
   issue?: PresetIssue;
   matchedBy?: "guid" | "name";
   detail?: string;
+  /** Set when this row is an addon, so it can be shown under what it attaches to. */
+  addonOf?: string;
 }
 
 export interface PresetReport {
@@ -439,7 +511,10 @@ export interface PresetReport {
     stateMismatch: number;
     extra: number;
     unknownVersion: number;
+    orphanedAddon: number;
   };
+  /** Addons in this preset, by the mod they attach to. */
+  addonsByParent?: Record<string, string[]>;
   satisfied: boolean;
 }
 
@@ -536,6 +611,43 @@ export interface ModManagerAPI {
   ) => Promise<{ success: boolean; message: string; needsConfirmation?: boolean; preset?: Preset }>;
   /** Compares a store preset against this install without importing a copy of it. */
   getStorePresetReport: (id: string) => Promise<{ success: boolean; report?: PresetReport; message?: string }>;
+
+  // --- addons: compatibility and companion mods (v1.2.2) ---
+  getAddonSuggestions: () => Promise<{
+    success: boolean;
+    suggestions?: AddonSuggestion[];
+    catalogueSize?: number;
+    message?: string;
+  }>;
+  /** Reads the installed assemblies — on demand, not part of a scan. */
+  detectAddonLinks: () => Promise<{
+    success: boolean;
+    links?: AddonLink[];
+    integrations?: AddonIntegration[];
+    message?: string;
+  }>;
+  setAddonParent: (
+    id: string,
+    type: ModType,
+    parentName: string | null
+  ) => Promise<{ success: boolean; message: string }>;
+  /** No version argument: which build fits depends on the parent's installed version. */
+  installForgeAddon: (
+    jobId: string,
+    addonId: number
+  ) => Promise<{ success: boolean; message: string; installedAs?: string[] }>;
+  installAddonFromFile: (
+    parentName: string,
+    filePath?: string
+  ) => Promise<{ success: boolean; cancelled?: boolean; message?: string; installedAs?: string[] }>;
+  installAddonFromGithub: (args: {
+    jobId: string;
+    parentName: string;
+    assetUrl: string;
+    assetName: string;
+    repo: string;
+    version: string;
+  }) => Promise<{ success: boolean; message: string; installedAs?: string[] }>;
 
   // --- preset payloads (phase 3): the store carries the mod files ---
   publishPresetWithPayloads: (

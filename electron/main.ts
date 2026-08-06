@@ -81,8 +81,17 @@ import {
   BulkReinstallProgress,
   BulkReinstallOutcome
 } from "./bulkReinstall";
-import { listGithubReleases, loadInstanceSources, fetchLatestGithubRelease } from "./modSources";
-import { InstanceConfig, InstanceId, ModInfo } from "./types";
+import { listGithubReleases, loadInstanceSources, fetchLatestGithubRelease, loadHarvest } from "./modSources";
+import {
+  loadAddonCatalogue,
+  suggestAddons,
+  pickAddonVersionForParent,
+  detectAddonLinks,
+  findKnownIntegrations,
+  markInstalledAsAddon,
+  clearAddonMark
+} from "./addons";
+import { InstanceConfig, InstanceId, ModInfo, ModType } from "./types";
 
 const MOD_HUB_URL = "https://hub.sp-tarkov.com/";
 
@@ -97,7 +106,8 @@ const store = new Store<InstanceConfig>({
     forgeStatusCache: null,
     forgeCheckedAt: null,
     presetStorePath: null,
-    presetIdentity: null
+    presetIdentity: null,
+    addonLinks: null
   }
 });
 
@@ -728,6 +738,256 @@ ipcMain.handle("get-store-preset-report", async (_event, id: string) => {
   if (!preset) return { success: false, message: "That preset is not in this store." };
   return { success: true, report: buildPresetReport(preset, scanInstance("main"), localSptVersion()) };
 });
+
+/* --- IPC: addons (v1.2.2) ----------------------------------------------------
+ * An addon is a mod whose reason to exist is another mod — a compatibility patch, a preset
+ * pack, a Fika sync shim. Two halves, because they answer different questions and only one
+ * of them survives the shutdown:
+ *
+ *   the catalogue  — what exists and what it attaches to (harvested, frozen on 2026-08-10)
+ *   the install    — what is already here and what it is wired to (read from the files,
+ *                    works forever)
+ */
+function addonCataloguePaths(): string[] {
+  return [
+    path.join(process.resourcesPath ?? "", "data", "forge-addons.json"),
+    path.join(app.getAppPath(), "data", "forge-addons.json"),
+    path.join(__dirname, "..", "data", "forge-addons.json")
+  ];
+}
+
+function forgeIdsByFolder(clientRoot: string): Record<string, string> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(clientRoot, ".spt-mod-manager-forge-match.json"), "utf-8"));
+    const out: Record<string, string> = {};
+    for (const [folder, entry] of Object.entries<any>(raw?.entries ?? {})) {
+      if (entry?.modId) out[folder] = String(entry.modId);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Addon ids already installed here, so the catalogue can say "you have this". */
+function installedAddonIds(clientRoot: string): Set<number> {
+  try {
+    const reg = JSON.parse(fs.readFileSync(path.join(clientRoot, ".spt-mod-manager-registry.json"), "utf-8"));
+    return new Set(reg.filter((e: any) => typeof e.forgeAddonId === "number").map((e: any) => e.forgeAddonId));
+  } catch {
+    return new Set();
+  }
+}
+
+ipcMain.handle("get-addon-suggestions", () => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+  const catalogue = loadAddonCatalogue(addonCataloguePaths());
+  if (catalogue.length === 0) {
+    return { success: false, message: "The addon catalogue is missing from this build." };
+  }
+  const suggestions = suggestAddons(
+    scanInstance("main"),
+    forgeIdsByFolder(roots.clientRoot),
+    catalogue,
+    installedAddonIds(roots.clientRoot)
+  );
+  return { success: true, suggestions, catalogueSize: catalogue.length };
+});
+
+/**
+ * Reads the installed mods' own assemblies to work out what is attached to what.
+ *
+ * On demand rather than part of every scan: reading assemblies is far more expensive than
+ * listing folders, and the scan runs constantly. This is also the half that keeps working
+ * after Forge is gone.
+ */
+ipcMain.handle("detect-addon-links", () => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+  const mods = scanInstance("main");
+  const manual = store.get("addonLinks") ?? {};
+  const links = detectAddonLinks(roots.clientRoot, mods, manual);
+
+  // Reuses the indexed harvest the source resolver already keeps in memory — it is 1.4 MB of
+  // JSON, and a second reader would parse it all over again.
+  const { byGuid } = loadHarvest();
+  const integrations = findKnownIntegrations(roots.clientRoot, mods, (g) => {
+    const hit = byGuid.get(g.trim().toLowerCase());
+    // A harvested mod without a name is not worth reporting: "something you don't have"
+    // tells the user nothing they can act on.
+    return hit?.name ? { id: hit.id, name: hit.name } : undefined;
+  });
+
+  return { success: true, links, integrations };
+});
+
+/** The user's judgement outranks anything derived, as everywhere else in the app. */
+ipcMain.handle("set-addon-parent", (_event, id: string, type: ModType, parentName: string | null) => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+  const registryPath = path.join(roots.clientRoot, ".spt-mod-manager-registry.json");
+  const links = { ...(store.get("addonLinks") ?? {}) };
+  const key = `${type}:${id.toLowerCase()}`;
+
+  if (!parentName) {
+    delete links[key];
+    store.set("addonLinks", links);
+    clearAddonMark(registryPath, id, type);
+    return { success: true, message: `"${id}" is no longer marked as an addon.` };
+  }
+
+  const parent = scanInstance("main").find((m) => m.id.toLowerCase() === parentName.toLowerCase());
+  if (!parent) return { success: false, message: `"${parentName}" is not installed.` };
+  links[key] = parent.id;
+  store.set("addonLinks", links);
+  markInstalledAsAddon(registryPath, [{ id, type }], { parentName: parent.id, parentType: parent.type });
+  return { success: true, message: `"${id}" is now an addon of "${parent.id}".` };
+});
+
+/**
+ * Installs a catalogued addon from Forge, pinned to the build that fits the parent installed.
+ *
+ * Deliberately does NOT take a version from the renderer: which build fits is a function of
+ * the parent's installed version, and that is known here.
+ */
+ipcMain.handle("install-forge-addon", async (_event, jobId: string, addonId: number) => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+
+  const catalogue = loadAddonCatalogue(addonCataloguePaths());
+  const addon = catalogue.find((a) => a.id === addonId);
+  if (!addon) return { success: false, message: "That addon is not in the catalogue." };
+
+  const mods = scanInstance("main");
+  const forgeIds = forgeIdsByFolder(roots.clientRoot);
+  const parent = mods.find((m) => String(forgeIds[m.id] ?? forgeIds[m.originalName] ?? "") === String(addon.modId));
+  if (!parent) {
+    return { success: false, message: `"${addon.name}" attaches to a mod you don't have installed.` };
+  }
+
+  const picked = pickAddonVersionForParent(addon, parent.version);
+  if (!picked?.version.link) {
+    return {
+      success: false,
+      // Naming the parent's version is the actionable part: the fix is to update the parent,
+      // not to go looking for the addon somewhere else.
+      message: `No build of "${addon.name}" fits ${parent.id} ${parent.version ?? "(unknown version)"}.`
+    };
+  }
+
+  const before = new Set(scanInstance("main").map((m) => `${m.type}:${m.id}`));
+  const result = await installForgeModVersion(
+    roots.clientRoot,
+    roots.serverRoot,
+    picked.version.link,
+    addon.name,
+    (receivedBytes, totalBytes) => mainWindow?.webContents.send("download-progress", { jobId, receivedBytes, totalBytes }),
+    { name: addon.name, version: picked.version.version }
+  );
+  if (!result.success) return result;
+
+  // Whatever the archive actually produced gets marked, not whatever was expected: an addon
+  // can drop a server part and a client part exactly like a mod.
+  const added = scanInstance("main")
+    .filter((m) => !before.has(`${m.type}:${m.id}`))
+    .map((m) => ({ id: m.id, type: m.type }));
+  markInstalledAsAddon(path.join(roots.clientRoot, ".spt-mod-manager-registry.json"), added, {
+    parentName: parent.id,
+    parentType: parent.type,
+    forgeAddonId: addon.id,
+    parentConstraint: picked.version.modConstraint
+  });
+
+  return {
+    ...result,
+    message: `${result.message} Marked as an addon of "${parent.id}".`,
+    installedAs: added.map((a) => a.id)
+  };
+});
+
+/**
+ * Installs an addon from a local archive and attaches it to a parent.
+ *
+ * The path that still works when Forge is gone and the addon was never on Forge to begin
+ * with — a patch a friend sent, or one built by hand.
+ */
+ipcMain.handle("install-addon-from-file", async (_event, parentName: string, filePath?: string) => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+
+  const parent = scanInstance("main").find((m) => m.id.toLowerCase() === parentName?.toLowerCase());
+  if (!parent) return { success: false, message: `"${parentName}" is not installed.` };
+
+  let archive = filePath;
+  if (!archive) {
+    const chosen = await dialog.showOpenDialog({
+      title: `Install an addon for ${parent.id}`,
+      properties: ["openFile"],
+      filters: [{ name: "Mod archive", extensions: ["zip", "7z", "rar"] }]
+    });
+    if (chosen.canceled || !chosen.filePaths[0]) return { success: false, cancelled: true };
+    archive = chosen.filePaths[0];
+  }
+
+  const before = new Set(scanInstance("main").map((m) => `${m.type}:${m.id}`));
+  const result = await installModFromArchive(roots.clientRoot, roots.serverRoot, archive);
+  if (!result.success) return result;
+
+  const added = scanInstance("main")
+    .filter((m) => !before.has(`${m.type}:${m.id}`))
+    .map((m) => ({ id: m.id, type: m.type }));
+  const marked = markInstalledAsAddon(path.join(roots.clientRoot, ".spt-mod-manager-registry.json"), added, {
+    parentName: parent.id,
+    parentType: parent.type
+  });
+
+  return {
+    ...result,
+    message: `${result.message}${marked ? ` Marked as an addon of "${parent.id}".` : ""}`,
+    installedAs: added.map((a) => a.id)
+  };
+});
+
+/**
+ * Installs an addon from a GitHub release, attached to a parent.
+ *
+ * Reuses the existing GitHub release picker wholesale — after Forge shuts down, GitHub is
+ * where addons will keep being published, and that path is already built and tested.
+ */
+ipcMain.handle(
+  "install-addon-from-github",
+  async (
+    _event,
+    args: { jobId: string; parentName: string; assetUrl: string; assetName: string; repo: string; version: string }
+  ) => {
+    const roots = rootsFor("main");
+    if (!roots) return { success: false, message: "No SPT instance configured." };
+    const parent = scanInstance("main").find((m) => m.id.toLowerCase() === args.parentName?.toLowerCase());
+    if (!parent) return { success: false, message: `"${args.parentName}" is not installed.` };
+
+    const before = new Set(scanInstance("main").map((m) => `${m.type}:${m.id}`));
+    const result = await installForgeModVersion(
+      roots.clientRoot,
+      roots.serverRoot,
+      args.assetUrl,
+      args.repo.split("/")[1] ?? args.assetName,
+      (receivedBytes, totalBytes) =>
+        mainWindow?.webContents.send("download-progress", { jobId: args.jobId, receivedBytes, totalBytes }),
+      { version: args.version, origin: "github", sourceUrl: `https://github.com/${args.repo}` }
+    );
+    if (!result.success) return result;
+
+    const added = scanInstance("main")
+      .filter((m) => !before.has(`${m.type}:${m.id}`))
+      .map((m) => ({ id: m.id, type: m.type }));
+    markInstalledAsAddon(path.join(roots.clientRoot, ".spt-mod-manager-registry.json"), added, {
+      parentName: parent.id,
+      parentType: parent.type
+    });
+    return { ...result, message: `${result.message} Marked as an addon of "${parent.id}".`, installedAs: added.map((a) => a.id) };
+  }
+);
 
 /* --- IPC: preset payloads (phase 3) ------------------------------------------
  * The part that removes Forge from the equation: a preset that carries the mod files needs

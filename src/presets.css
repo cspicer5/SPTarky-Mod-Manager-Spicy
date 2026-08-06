@@ -615,3 +615,20 @@
   color: var(--text-faint);
   font-style: italic;
 }
+
+/* An addon means nothing on its own, so a preset row carries what it attaches to. */
+.preset-addon-of {
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* An addon whose parent the preset does not include. Its own row looks perfectly fine —
+   the addon installs, the files are all there — and the setup is still incoherent. */
+.preset-issue-tag-orphaned-addon {
+  color: var(--accent-strong);
+}
