@@ -2797,7 +2797,7 @@ export async function checkForgeUpdates(
 ): Promise<ForgeUpdateCheckResult> {
   const trimmedVersion = sptVersion.trim();
   if (!trimmedVersion) {
-    throw new Error("Informe a versão do SPT antes de verificar atualizações.");
+    throw new Error("Enter the SPT version before checking for updates.");
   }
 
   const pairs: string[] = [];
@@ -2806,12 +2806,12 @@ export async function checkForgeUpdates(
   const skippedByBudget: string[] = [];
   const infoOnly: ForgeUpdateItem[] = [];
 
-  // Resolve TODOS os mods de uma vez (poucas requisições em lote), em vez de uma
-  // requisição por mod com pausa entre elas — muito mais rápido e com muito mais
-  // chance de achar, já que agora tenta slug/nome/derivado/full-text.
-  // Busca pelo nome ORIGINAL (da pasta), não pelo apelido que o usuário deu —
-  // assim renomear um mod pra exibição nunca quebra o casamento com a Forge.
-  // Versão que lemos do próprio mod, pra descartar "atualização" pra versão já instalada.
+  // Resolves ALL mods at once (a few batched requests) instead of one request per mod with
+  // a pause between each — far faster and far more likely to find a match.
+  // Searches by the ORIGINAL (folder) name, not the alias the user gave it — so renaming a
+  // mod for display never breaks the match against Forge.
+  // The version read from the mod itself, used to discard an "update" to a version already
+  // installed.
   const localVersionByName = new Map<string, string>();
   for (const m of mods) if (m.version) localVersionByName.set(m.name, m.version);
 
@@ -2825,20 +2825,20 @@ export async function checkForgeUpdates(
   for (const mod of mods) {
     const info = matches.get(mod.originalName);
     if (!info) {
-      // Distingue quem não foi consultado (orçamento de requisições esgotado) de quem
-      // foi procurado e realmente não está na Forge com esse nome.
+      // Distinguishes those never queried (request budget exhausted) from those that were
+      // searched for and genuinely are not on Forge under that name.
       if (notChecked?.has(mod.originalName)) skippedByBudget.push(mod.name);
       else unmatched.push(mod.name);
       continue;
     }
     if (mod.version) {
-      // Tem versão local — entra na comparação de verdade contra o Forge.
+      // Has a local version — goes into the real comparison against Forge.
       pairs.push(`${info.identifier}:${mod.version}`);
       nameByIdentifier.set(info.identifier, mod.name);
     } else if (info.latestVersion) {
-      // Sem versão local pra comparar (ex: mod só de .dll, sem package.json) —
-      // mostra a versão mais recente conhecida como informação, sem alegar
-      // que é "atualização disponível" já que não sabemos a versão instalada.
+      // No local version to compare against (e.g. a .dll-only mod with no package.json) —
+      // show the latest known version as information, without claiming an "update is
+      // available", since we do not know what is installed.
       infoOnly.push({ name: mod.name, recommendedVersion: info.latestVersion, reason: "no_local_version" });
     } else {
       unmatched.push(mod.name);
@@ -2866,7 +2866,7 @@ export async function checkForgeUpdates(
       throw new Error(json?.message || `Forge respondeu ${res.status}`);
     }
   } catch (err: any) {
-    throw new Error(`Não foi possível consultar o Forge: ${err.message || err}`);
+    throw new Error(`Couldn't reach Forge: ${err.message || err}`);
   }
 
   const data = json.data || {};
@@ -2881,21 +2881,21 @@ export async function checkForgeUpdates(
         recommendedVersion: u.recommended_version?.version,
         downloadLink: u.recommended_version?.link,
         // Identificador da Forge, pra que atualizar pelo app grave o mesmo GUID e as
-        // próximas checagens desse mod não voltem a depender de casamento por nome.
+        // future checks of this mod no longer depend on name matching.
         guid: u.current_version?.guid,
         reason: u.update_reason
       }))
-      // A Forge às vezes devolve como "atualização" uma versão igual à instalada (por
-      // exemplo, o mesmo número publicado para outra versão do SPT). Anunciar
-      // "v1.2.6 disponível" pra quem já está na v1.2.6 é ruído: se o número é o mesmo,
-      // não há o que atualizar.
+      // Forge sometimes returns as an "update" a version identical to the installed one
+      // (for example, the same number published for a different SPT version). Announcing
+      // "v1.2.6 available" to someone already on v1.2.6 is noise: if the number is the
+      // same, there is nothing to update.
       .filter((u: { name: string; currentVersion?: string; recommendedVersion?: string }) => {
         const norm = (v?: string) => (v ?? "").trim().replace(/^v/i, "");
         if (!norm(u.recommendedVersion)) return true;
-        // Compara com a versão da Forge E com a que lemos localmente. A Forge às vezes
-        // está desatualizada sobre o que você tem instalado (MakeMedsGreatAgain: ela diz
-        // que você está na 1.2.5 e recomenda a 1.2.6, mas a DLL local já é 1.2.6), e
-        // anunciar atualização pra versão que a pessoa já tem é ruído.
+        // Compares against Forge's version AND the one read locally. Forge is sometimes
+        // out of date about what you have installed (MakeMedsGreatAgain: it claims you are
+        // on 1.2.5 and recommends 1.2.6, while the local DLL is already 1.2.6), and
+        // announcing an update to a version the person already has is noise.
         const local = localVersionByName.get(u.name);
         if (local && norm(u.recommendedVersion) === norm(local)) return false;
         return norm(u.recommendedVersion) !== norm(u.currentVersion);
@@ -2923,9 +2923,9 @@ export async function checkForgeUpdates(
 }
 
 /* ==========================================================================
- * Busca/navegação de mods no catálogo da Forge + instalação em um clique.
- * Diferente do checkForgeUpdates acima (que compara mods JÁ instalados),
- * essa parte deixa o usuário descobrir mods novos direto no app, sem abrir
+ * Searching/browsing Forge's mod catalogue plus one-click installation.
+ * Unlike checkForgeUpdates above (which compares mods ALREADY installed), this part lets
+ * the user discover new mods inside the app, without opening
  * o navegador.
  * ========================================================================== */
 
@@ -2992,11 +2992,11 @@ function mapCatalogMod(m: any): ForgeCatalogMod {
   };
 }
 
-// Busca paginada no catálogo da Forge. `query` usa a busca full-text deles
-// (Meilisearch, nome/slug/descrição); `sptVersionConstraint` é opcional e
-// filtra por compatibilidade (a própria Forge avisa que isso filtra o MOD,
-// não necessariamente cada versão individual — por isso ainda mostramos a
-// lista de versões recentes de cada mod pro usuário escolher).
+// Paginated search of Forge's catalogue. `query` uses their full-text search
+// (Meilisearch, over name/slug/description); `sptVersionConstraint` is optional and filters
+// by compatibility (Forge itself warns that this filters the MOD, not necessarily each
+// individual version — which is why we still show each mod's recent versions for the user
+// to choose from).
 export async function searchForgeMods(params: {
   query?: string;
   categorySlug?: string;
@@ -3040,10 +3040,10 @@ export async function getForgeCategories(): Promise<ForgeCategory[]> {
   }
 }
 
-// Baixa o arquivo de uma versão de mod da Forge pra uma pasta temporária e
-// reaproveita installModFromArchive (mesmo caminho de instalação usado pra
-// arquivos escolhidos manualmente). O nome/extensão do arquivo é resolvido
-// pelo Content-Disposition quando presente; senão, pela URL; senão, assume
+// Downloads a mod version's archive from Forge into a temp folder and reuses
+// installModFromArchive (the same install path used for manually chosen files). The
+// filename/extension is resolved from Content-Disposition when present; failing that, from
+// the URL; failing that, it assumes
 // .zip (formato mais comum na Forge).
 export async function installForgeModVersion(
   clientRoot: string,
@@ -3057,7 +3057,7 @@ export async function installForgeModVersion(
   try {
     const res = await fetch(downloadLink);
     if (!res.ok) {
-      return { success: false, message: `Não foi possível baixar o mod da Forge (HTTP ${res.status}).` };
+      return { success: false, message: `Couldn't download the mod from Forge (HTTP ${res.status}).` };
     }
 
     let ext = ".zip";
@@ -3073,14 +3073,14 @@ export async function installForgeModVersion(
     const safeName = suggestedName.replace(/[^a-z0-9._-]/gi, "_").slice(0, 60) || "forge-mod";
     tmpFilePath = path.join(clientRoot, `.tmp-forge-download-${Date.now()}-${safeName}${ext}`);
 
-    // Grava em streaming DIRETO NO DISCO, pedaço a pedaço. Nunca segura o arquivo
-    // inteiro na memória: mods de conteúdo passam facilmente de 1 GB, e tanto
-    // juntar os pedaços no fim quanto usar arrayBuffer() precisariam do arquivo
-    // todo (ou o dobro dele) na RAM — que é o que fazia mod grande falhar.
+    // Streams STRAIGHT TO DISK, chunk by chunk. Never holds the whole file in memory:
+    // content mods easily exceed 1 GB, and both concatenating chunks at the end and using
+    // arrayBuffer() would need the entire file (or double it) in RAM — which is exactly
+    // what made large mods fail.
     const totalBytes = Number(res.headers.get("content-length") || 0);
     const reader = res.body?.getReader();
     if (!reader) {
-      return { success: false, message: "Falha ao baixar/instalar da Forge: resposta sem conteúdo." };
+      return { success: false, message: "Failed to download/install from Forge: response had no content." };
     }
     const fileHandle = fs.createWriteStream(tmpFilePath);
     let receivedBytes = 0;
@@ -3090,7 +3090,7 @@ export async function installForgeModVersion(
         const { done, value } = await reader.read();
         if (done) break;
         if (!value) continue;
-        // Respeita a contrapressão do disco: se o buffer encheu, espera drenar
+        // Respects disk backpressure: if the buffer filled up, wait for it to drain
         // antes de pedir mais dados da rede.
         if (!fileHandle.write(Buffer.from(value))) {
           await new Promise<void>((resolve) => fileHandle.once("drain", () => resolve()));
@@ -3112,38 +3112,46 @@ export async function installForgeModVersion(
       try {
         fs.unlinkSync(tmpFilePath);
       } catch {
-        // best-effort — não trava a instalação por causa da limpeza do tmp
+        // best-effort — do not fail the installation over temp cleanup
       }
     }
   }
 }
 /* ==========================================================================
- * Checagem de atualização do próprio Mod Manager (via releases do GitHub).
+ * Update check for the Mod Manager itself (via GitHub releases).
  *
- * Deliberadamente só NOTIFICA — nunca baixa nem instala nada sozinho. Um app
- * que se auto-atualiza é uma classe de risco bem diferente (e a comunidade do
- * SPT, com razão, desconfia de manager que mexe em coisa sozinho). Aqui a
- * gente só avisa que existe versão nova e abre a página do release no
+ * Deliberately NOTIFIES ONLY — never downloads or installs anything by itself. A
+ * self-updating app is a very different risk class (and the SPT community is, with good
+ * reason, wary of managers that act on their own). Here we only mention that a new version
+ * exists and open the release page in
  * navegador se a pessoa quiser.
  * ========================================================================== */
 
 const GITHUB_RELEASES_API = "https://api.github.com/repos/Nevek20/SPT_Mod_Manager/releases/latest";
 
-// A versão vem da API de releases do GitHub (é lá que o número é publicado), mas o
-// link que a gente mostra é o da Forge — é de lá que o pessoal do SPT baixa de verdade.
+// The version comes from GitHub's releases API (that is where the number is published),
+// but the link shown is Forge's — that is where SPT users actually download from.
+//
+// FORK NOTE: both of these still point at UPSTREAM (Nevek20's repo and its Forge page).
+// In this private fork that means the app will announce "a new version is available"
+// whenever upstream publishes, and send you to download the ORIGINAL over your own build.
+// Left as-is for now because changing it is a behavioural decision, not a translation —
+// the options are to disable this check, or repoint it and treat it as "upstream has moved
+// on" information only. A private repo's releases API needs auth, so it cannot simply be
+// swapped for the fork's URL.
 const FORGE_MOD_PAGE = "https://forge.sp-tarkov.com/mod/2851/spt-mod-manager";
 
 export interface AppUpdateInfo {
   updateAvailable: boolean;
   currentVersion: string;
   latestVersion?: string;
-  downloadPageUrl?: string; // página da Forge — onde a pessoa efetivamente baixa
-  releaseUrl?: string; // página do release no GitHub (changelog/código), como link secundário
+  downloadPageUrl?: string; // the Forge page — where the person actually downloads
+  releaseUrl?: string; // the GitHub release page (changelog/code), as a secondary link
   releaseName?: string;
 }
 
-// Compara duas versões semver numericamente ("0.10.0" > "0.9.0", que a comparação
-// de string erraria). Ignora um "v" na frente, que é comum em tag do git.
+// Compares two semver versions numerically ("0.10.0" > "0.9.0", which a string comparison
+// would get wrong). Ignores a leading "v", common in git tags.
 function compareVersions(a: string, b: string): number {
   const parse = (v: string) =>
     v
@@ -3165,9 +3173,9 @@ export async function checkAppUpdate(currentVersion: string): Promise<AppUpdateI
     const res = await fetch(GITHUB_RELEASES_API, {
       headers: { Accept: "application/vnd.github+json", "User-Agent": "SPT-Mod-Manager" }
     });
-    // Falha de rede, rate limit (a API pública do GitHub limita por IP) ou repo sem
-    // release ainda: não é erro pro usuário, só não dá pra saber agora. Melhor ficar
-    // quieto do que mostrar alarme falso.
+    // Network failure, rate limit (GitHub's public API limits per IP), or a repo with no
+    // releases yet: none of these are the user's error, we simply cannot know right now.
+    // Better to stay quiet than to raise a false alarm.
     if (!res.ok) return { updateAvailable: false, currentVersion };
     const json: any = await res.json();
     const latestVersion: string | undefined = json?.tag_name;
