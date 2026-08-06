@@ -905,31 +905,6 @@ h2 {
    Toggle de idioma (PT/EN)
    ========================================================================== */
 
-.lang-toggle {
-  display: flex;
-  gap: 2px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 2px;
-}
-
-.lang-toggle button {
-  padding: 3px 9px;
-  font-size: 11px;
-  border: none;
-  background: transparent;
-}
-
-.lang-toggle button.lang-active {
-  background: var(--accent);
-  color: var(--bg);
-}
-
-.empty-state .lang-toggle {
-  position: absolute;
-  top: 20px;
-  right: 24px;
-}
 
 /* ==========================================================================
    Fila de downloads/instalação (canto inferior direito)

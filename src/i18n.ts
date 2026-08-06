@@ -1,220 +1,17 @@
-export type Lang = "pt-BR" | "en";
+/**
+ * This fork is English-only. The type is kept as a one-member union rather than deleted
+ * so the translate()/t() call sites and the backend-message layer keep their shape —
+ * removing the parameter would touch hundreds of call sites for no behavioural gain.
+ */
+export type Lang = "en";
 
 type Dict = Record<string, string>;
 
 /**
- * Textos estáticos da UI (botões, rótulos, cabeçalhos, tooltips, placeholders).
- * Chave em dot-notation por seção, pra facilitar achar/organizar.
- * Use {var} dentro do texto pra interpolar valores via t(key, { var: valor }).
+ * Static UI strings (buttons, labels, headers, tooltips, placeholders).
+ * Dot-notation keys grouped by section, to keep them findable.
+ * Use {var} inside a string to interpolate via t(key, { var: value }).
  */
-const pt: Dict = {
-  "toast.instanceConfigured": "Instância configurada.",
-  "toast.folderSelectFailed": "Não foi possível selecionar a pasta.",
-  "toast.dropInvalidFile": "Solte um arquivo .zip, .7z ou .rar pra instalar.",
-  "toast.confirmRemove": 'Remover "{name}" permanentemente?',
-  "toast.selectUpdatedFile": "Selecione o arquivo atualizado do mod (.zip / .7z / .rar)...",
-  "toast.noConflictsFound": "Nenhum conflito óbvio encontrado.",
-  "toast.conflictsFound": "{count} possível(is) conflito(s) encontrado(s).",
-  "toast.enterSptVersion": "Informe a versão do SPT antes de verificar.",
-  "toast.forgeUpdateCheckFailed": "Falha ao verificar atualizações.",
-  "toast.forgeAllUpToDate": "Tudo atualizado (ou não encontrado no Forge).",
-  "toast.forgeUpdatesAvailable": "{count} atualização(ões) disponível(is).",
-  "toast.forgeSearchFailed": "Falha ao buscar mods na Forge.",
-  "toast.confirmRemoveBulk": "Remover {count} mod(s) permanentemente?",
-  "toast.bulkProcessed": "{done}/{total} mod(s) processado(s).",
-
-  "empty.selectFolder": "Selecione a pasta da sua instância SPT pra começar.",
-  "empty.selectFolderButton": "Selecionar pasta da instância",
-  "empty.downloadModsButton": "Baixar mods (hub.sp-tarkov.com)",
-  "dropOverlay.text": "Solte o(s) arquivo(s) .zip / .7z / .rar aqui pra instalar",
-
-  "header.browseForge": "Buscar mods (Forge)",
-  "header.browseForgeTitle": "Buscar e instalar mods direto do catálogo da Forge",
-  "header.openHub": "Baixar mods",
-  "header.openHubTitle": "Abrir hub.sp-tarkov.com no navegador",
-  "header.changeInstance": "Trocar instância",
-  "header.changeInstanceTitle": "Selecionar outra instância SPT",
-  "header.installButton": "Instalar mod (.zip / .7z / .rar)",
-  "header.installButtonTitle": "Escolher um .zip, .7z ou .rar pra instalar",
-  "header.installing": "Instalando...",
-  "header.splitInstance": "Client: {client}  •  Server: {server}",
-
-  "summary.total": "mod(s) instalado(s)",
-  "summary.active": "Ativos:",
-  "summary.disabled": "Desativados:",
-  "summary.versionTooltip":
-    "Lido de SPT_Data/Server/configs/core.json — a partir do SPT 4.0 esse arquivo só guarda a versão do Tarkov compatível, não a versão do SPT em si",
-  "summary.validInstance": "Instância válida",
-  "summary.validInstanceTitle": "A pasta selecionada passou na validação de instância SPT",
-
-  "filters.searchPlaceholder": "Pesquisar mod pelo nome...",
-  "filters.typeFilterTitle": "Filtrar por tipo",
-  "filters.typeAll": "Todos os tipos",
-  "filters.statusFilterTitle": "Filtrar por status",
-  "filters.statusAll": "Ativos e desativados",
-  "filters.statusEnabled": "Só ativos",
-  "filters.statusDisabled": "Só desativados",
-  "filters.originFilterTitle": "Filtrar por origem",
-  "filters.originAll": "Qualquer origem",
-  "filters.originManual": "Instalados manualmente",
-  "filters.originManager": "Instalados pelo Manager",
-  "filters.sortFieldTitle": "Ordenar por",
-  "filters.sortByName": "Ordenar por Nome",
-  "filters.sortByStatus": "Ordenar por Status",
-  "filters.sortByOrigin": "Ordenar por Origem",
-  "filters.sortByInstalledAt": "Ordenar por Data de instalação",
-  "filters.sortByForge": "Ordenar por Status na Forge",
-  "filters.sortDirectionTitle": "Inverter direção da ordenação",
-  "filters.sortAsc": "↑ Crescente",
-  "filters.sortDesc": "↓ Decrescente",
-  "filters.sortAZ": "↑ A-Z",
-  "filters.sortZA": "↓ Z-A",
-  "filters.sortOldestFirst": "↑ Mais antigos primeiro",
-  "filters.sortNewestFirst": "↓ Mais recentes primeiro",
-  "filters.selectAllVisible": "Selecionar todos (visíveis)",
-  "filters.selectAllVisibleTitle": "Selecionar todos os mods visíveis com os filtros atuais",
-  "filters.clearSelection": "Limpar seleção",
-  "filters.exportList": "Exportar lista",
-  "filters.exportListTitle": "Salvar a lista atual de mods num arquivo JSON",
-  "filters.importCompare": "Importar / Comparar",
-  "filters.importCompareTitle": "Comparar a instância atual com uma lista exportada antes",
-  "filters.checkConflicts": "Verificar conflitos",
-  "filters.checkingConflicts": "Verificando...",
-  "filters.checkConflictsTitle": "Procura DLLs duplicadas entre client mods e nomes duplicados entre server mods",
-  "filters.sptVersionTitle": "Versão do SPT usada na checagem de atualizações da Forge — a lista vem direto da Forge",
-  "filters.sptVersionPlaceholder": "selecione a versão do SPT...",
-  "filters.sptVersionNotListed": "(não listada na Forge)",
-  "filters.forgeCheckTitle": "Consulta a API pública da Forge (forge.sp-tarkov.com) por atualizações dos mods instalados",
-  "filters.forgeChecking": "Consultando Forge...",
-  "filters.forgeCheckingProgress": "Consultando Forge... ({done}/{total})",
-  "filters.forgeCheckButton": "Verificar atualizações (Forge)",
-
-  "hint.forgeLastChecked": "Última verificação da Forge: {date}",
-
-  "compare.title": "Comparação com a lista importada",
-  "compare.identical": "As duas listas são idênticas.",
-  "compare.missing": "Faltando aqui ({count}):",
-  "compare.extra": "A mais aqui, fora da lista importada ({count}):",
-  "compare.note":
-    "Faltando aqui vira uma oferta de baixar automaticamente da Forge (por nome) — o que não for encontrado assim ainda precisa de instalação manual, já que o app não guarda os arquivos originais dos mods.",
-
-  "conflicts.title": "Verificação de conflitos",
-  "conflicts.appearsIn": "aparece em:",
-  "conflicts.nameLabel": "Nome",
-  "conflicts.sameModTwice": "O mesmo mod está instalado em duas pastas:",
-  "conflicts.declaredInMultiple": "declarado em mais de uma pasta:",
-  "conflicts.note": "Checagem no nível de arquivo — sinaliza sobreposição, não garante incompatibilidade de verdade.",
-
-  "forge.checkTitle": "Verificação de atualizações (Forge)",
-  "forge.updatesAvailable": "Atualizações disponíveis:",
-  "forge.updateNow": "Atualizar",
-  "forge.updating": "Atualizando...",
-  "forge.blockedTitle": "Atualizações bloqueadas (quebrariam dependência):",
-  "forge.incompatibleTitle": "Incompatíveis com essa versão do SPT:",
-  "forge.infoOnlyTitle": "Sem versão local pra comparar (mostrando o que a Forge tem):",
-  "forge.infoHasVersion": "Forge tem v{version}",
-  "forge.allUpToDateDetailed": "Todos os mods identificados no Forge estão atualizados.",
-  "forge.unmatchedPrefix": "Não encontrados no Forge (busca por nome):",
-  "forge.skippedByBudget": "{count} mod(s) não foram consultados: o limite de requisições da Forge foi atingido. Rode a verificação de novo pra completar — o que já foi resolvido fica em cache e não é consultado outra vez.",
-  "forge.matchNote":
-    "Casamento com o catálogo da Forge é por nome — pode não achar mods com nome muito genérico ou que não estão listados lá.",
-
-  "bulk.selectedCount": "{count} selecionado(s)",
-  "bulk.enable": "Habilitar",
-  "bulk.disable": "Desabilitar",
-  "bulk.remove": "Remover",
-  "bulk.cancelSelection": "Cancelar seleção",
-
-  "noResults.text": "Nenhum mod bate com os filtros/busca atuais.",
-  "noResults.clearFilters": "Limpar filtros",
-
-  "common.close": "Fechar",
-
-  "browse.title": "Buscar mods no Forge",
-  "browse.searchPlaceholder": "Pesquisar por nome, slug ou descrição...",
-  "browse.categoryFilterTitle": "Filtrar por categoria",
-  "browse.allCategories": "Todas as categorias",
-  "browse.compatibleOnlyTitle": "Usa a versão do SPT selecionada nos filtros principais",
-  "browse.compatibleOnlyLabel": "Só compatíveis com {version}",
-  "browse.selectVersionPlaceholder": "(selecione a versão do SPT)",
-  "browse.searching": "Buscando...",
-  "browse.searchButton": "Buscar",
-  "browse.noResults": "Nenhum mod encontrado com esses filtros.",
-  "browse.viewOnForgeTitle": "Ver no Forge (abre no navegador)",
-  "browse.fikaCompatibleTitle": "Tem versão compatível com Fika",
-  "browse.byAuthor": "por {author}",
-  "browse.downloadsLabel": "downloads",
-  "browse.chooseVersionTitle": "Escolher a versão a instalar",
-  "browse.installing": "Instalando...",
-  "browse.installButton": "Instalar",
-  "browse.noVersionPublished": '"{name}" não tem nenhuma versão publicada pra instalar.',
-  "browse.noVersionPublishedShort": "Sem versão publicada",
-  "browse.prevPage": "← Anterior",
-  "browse.pageOf": "Página {page} de {lastPage}",
-  "browse.nextPage": "Próxima →",
-  "browse.installNote":
-    'A instalação baixa o arquivo direto da Forge e usa o mesmo instalador do botão "Instalar mod" — inclusive a detecção de client/server mod e o registro no Manager.',
-
-  "confirm.title": "Estrutura de arquivo incomum",
-  "confirm.descriptionPrefix": "Não encontrei nenhuma DLL,",
-  "confirm.descriptionMid": "ou pasta",
-  "confirm.descriptionSuffix":
-    "reconhecível nesse arquivo. Isso pode ser um mod empacotado de um jeito diferente do normal, ou o arquivo errado. Isto é o que tem na raiz do arquivo:",
-  "confirm.emptyArchive": "(arquivo vazio)",
-  "confirm.explanation":
-    'Se você reconhece isso como um mod válido, "Continuar" copia tudo que está listado acima direto pra raiz da sua instância SPT (do mesmo jeito que os mods reconhecidos automaticamente), e registra como um item que dá pra remover depois. Se você não reconhece, é mais seguro abortar.',
-  "confirm.abort": "Abortar",
-  "confirm.proceed": "Continuar mesmo assim",
-
-  "modlist.emptyCategory": "Nenhum mod nessa categoria.",
-  "modlist.checkboxTitle": "Clique para selecionar, Shift+Clique para selecionar um intervalo",
-  "modlist.renameTitle": "{name} (duplo-clique pra renomear)",
-  "modlist.statusActive": "Ativo",
-  "modlist.statusDisabled": "Desativado",
-  "modlist.forgeUpdateAvailableTitle": "Nova versão disponível na Forge",
-  "modlist.forgeUpdateAvailable": "Forge: v{version} disponível",
-  "modlist.forgeBlockedTitle": "Tem atualização na Forge, mas instalar quebraria a dependência de outro mod",
-  "modlist.forgeBlocked": "Forge: atualização bloqueada",
-  "modlist.forgeIncompatibleTitle":
-    "A versão instalada não é compatível com a versão do SPT informada na última checagem",
-  "modlist.forgeIncompatible": "Forge: incompatível",
-  "modlist.forgeInfoTitle":
-    "Sem versão local legível pra comparar (mod sem package.json, ex: mods .dll) — essa é a versão mais recente conhecida na Forge",
-  "modlist.forgeInfo": "Forge: v{version}",
-  "modlist.orphanTitle": "Arquivos soltos rastreados por manifesto (sem pasta própria) — só dá pra remover",
-  "modlist.orphan": "Órfão",
-  "modlist.sptIncompatible": "SPT incompatível",
-  "modlist.sptIncompatibleTitle": "O próprio mod declara suportar SPT {declared}, que não bate com a versão selecionada. Lido da DLL do mod, sem consultar a internet.",
-  "modlist.packagePart": "Pacote de {count} partes",
-  "modlist.packageTooltip": "Este mod vem em partes que funcionam juntas. Habilitar ou desabilitar uma alterna todas. Outras partes: {others}",
-  "modlist.packageTooltipInferred": "Detectado automaticamente como partes do mesmo mod (mesmo nome de pasta dos dois lados). Habilitar ou desabilitar uma alterna todas. Outras partes: {others}",
-  "modlist.actionsTitle": "Ações",
-  "modlist.openFolder": "Abrir pasta",
-  "modlist.rename": "Renomear",
-  "modlist.reinstall": "Reinstalar",
-
-  "queue.waiting": "Na fila...",
-  "queue.installing": "Instalando...",
-  "queue.done": "Concluído",
-  "queue.failed": "Falhou",
-  "queue.noFilePath": "Caminho do arquivo não disponível.",
-
-  "restore.confirmDownload": "Encontrei {count} mod(s) faltando na lista importada. Baixar automaticamente da Forge?",
-  "restore.allInstalled": "{count} mod(s) instalado(s) com sucesso.",
-  "restore.partialInstalled": "{installed} instalado(s); não encontrado(s) ou falhou(aram) na Forge: {notFound}",
-  "restore.confirmDisable": "{count} mod(s) instalado(s) não estão na lista importada. Desativar esses mods?",
-  "restore.disabledCount": "{count} mod(s) desativado(s).",
-  "restore.lookingUp": "Procurando os mods na Forge...",
-  "restore.lookingUpCount": "Procurando na Forge... ({done}/{total})",
-  "restore.installingProgress": "Instalando mods... ({done}/{total})",
-  "restore.andMore": " e mais {count}",
-
-  "update.available": "Nova versão do Mod Manager disponível: v{latest} (você está na v{current}).",
-  "update.download": "Baixar na Forge",
-  "update.viewChangelog": "Changelog",
-  "update.dismiss": "Agora não"
-};
-
 const en: Dict = {
   "toast.instanceConfigured": "Instance configured.",
   "toast.folderSelectFailed": "Couldn't select the folder.",
@@ -424,10 +221,12 @@ const en: Dict = {
   "update.dismiss": "Not now"
 };
 
-export const DICTIONARIES: Record<Lang, Dict> = { "pt-BR": pt, en };
+export const DICTIONARIES: Record<Lang, Dict> = { en };
 
 export function translate(lang: Lang, key: string, vars?: Record<string, string | number>): string {
-  let str = DICTIONARIES[lang][key] ?? DICTIONARIES["pt-BR"][key] ?? key;
+  // Falls back to the raw key when a string is missing. That is deliberate: a missing
+  // key shows up as visible gibberish rather than a silently blank label.
+  let str = DICTIONARIES[lang][key] ?? key;
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {
       str = str.split(`{${k}}`).join(String(v));
@@ -553,10 +352,12 @@ const BACKEND_MESSAGE_RULES: BackendMessageRule[] = [
 
 export function translateBackendMessage(msg: string | undefined | null, lang: Lang): string {
   if (!msg) return msg ?? "";
-  if (lang === "pt-BR") return msg;
   for (const rule of BACKEND_MESSAGE_RULES) {
     const match = msg.match(rule.pattern);
     if (match) return rule.en(match, lang);
   }
-  return msg; // sem regra — melhor mostrar em PT do que quebrar a mensagem
+  // No rule matched. The backend still speaks Portuguese, so this falls through as the
+  // original string — ugly, but showing the raw message beats swallowing it. Any such
+  // string appearing in the UI is a missing rule, not a broken build.
+  return msg;
 }

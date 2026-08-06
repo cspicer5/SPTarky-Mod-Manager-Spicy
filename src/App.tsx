@@ -13,7 +13,6 @@ import {
 } from "./types";
 import { Lang, translate, translateBackendMessage } from "./i18n";
 
-const LANG_STORAGE_KEY = "spt-mod-manager.lang";
 
 interface Toast {
   id: number;
@@ -46,11 +45,9 @@ function ToastStack({ toasts }: { toasts: Toast[] }) {
 }
 
 export default function App() {
-  const [lang, setLang] = useState<Lang>(() => (localStorage.getItem(LANG_STORAGE_KEY) as Lang) || "pt-BR");
-  function changeLang(next: Lang) {
-    setLang(next);
-    localStorage.setItem(LANG_STORAGE_KEY, next);
-  }
+  // English-only fork: no picker, nothing to persist. Kept as a named constant rather
+  // than inlined so every translate()/t()/tMsg() call site stays untouched.
+  const lang: Lang = "en";
   function t(key: string, vars?: Record<string, string | number>): string {
     return translate(lang, key, vars);
   }
@@ -851,13 +848,6 @@ export default function App() {
     t
   };
 
-  const langToggle = (
-    <div className="lang-toggle" role="group" aria-label="Language">
-      <button className={lang === "pt-BR" ? "lang-active" : ""} onClick={() => changeLang("pt-BR")}>PT</button>
-      <button className={lang === "en" ? "lang-active" : ""} onClick={() => changeLang("en")}>EN</button>
-    </div>
-  );
-
   return (
     <>
       <ToastStack toasts={toasts} />
@@ -961,7 +951,6 @@ export default function App() {
 
       {!sptPath ? (
         <div className="empty-state">
-          {langToggle}
           <h1>SPT Mod Manager</h1>
           <p>{t("empty.selectFolder")}</p>
           <button onClick={handleSelectFolder}>{t("empty.selectFolderButton")}</button>
@@ -992,7 +981,6 @@ export default function App() {
               )}
             </div>
             <div className="header-actions">
-              {langToggle}
               <button onClick={handleOpenBrowse} className="primary" title={t("header.browseForgeTitle")}>
                 {t("header.browseForge")}
               </button>

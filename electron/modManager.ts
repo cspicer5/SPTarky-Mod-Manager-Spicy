@@ -2160,16 +2160,48 @@ function startsWithAtWordBoundary(fullValue: string, prefix: string): boolean {
   return matchedChars === normalizedPrefix.length;
 }
 
+/**
+ * COMO o casamento foi feito. Isso não é telemetria: um casamento ERRADO é pior que
+ * nenhum, porque o restaurador de modlist baixa e instala usando esse mesmo mapeamento
+ * — casar errado instala o mod errado por cima.
+ *
+ * Conferido numa instalação real de 53 mods, no cache gerado pela versão anterior:
+ *   "Fika"                -> "Fika Headless Launcher"      (é outro mod, de outro autor)
+ *   "fika-server"         -> "Server Value Modifier [SVM]" (o guid do SVM é
+ *                            "fika.ghostfenixx.svm" — começa com "fika", e a busca
+ *                            por nome mordeu a isca)
+ *   "WTT-ContentBackport" -> "Content Backport - Prestiges" (mod parecido, outro autor)
+ * Nenhum desses aparecia como suspeito na tela: um chute ruim era indistinguível de um
+ * acerto. Guardar o método é o que permite a UI dizer "confirme isso" em vez de mentir.
+ */
+type ForgeMatchMethod =
+  | "manual" // o usuário ligou esse mod a um id da Forge na mão — nunca sobrescrever
+  | "guid" // GUID declarado pelo mod == guid publicado. Sem ambiguidade possível.
+  | "cached-id" // id numérico de uma checagem anterior, revalidado agora
+  | "name" // nome publicado idêntico ao que procuramos
+  | "fuzzy"; // busca textual + plausibilidade — É CHUTE, pode estar errado
+
+/** Só "fuzzy" precisa de confirmação humana; o resto é verificável. */
+function methodNeedsConfirmation(method: ForgeMatchMethod): boolean {
+  return method === "fuzzy";
+}
+
 interface ForgeMatch {
   identifier: string;
   modId: number; // id numérico da Forge — sempre existe, mesmo quando guid é null
   latestVersion?: string;
   latestVersionLink?: string;
   forgeName?: string;
+  /** Mantido por compatibilidade com o resto do código/UI que já lê esse campo. */
   confidence: "exact" | "derived";
+  method: ForgeMatchMethod;
+  /** true = mostrar como "precisa confirmar" em vez de afirmar que casou. */
+  needsConfirmation: boolean;
+  /** guid publicado na Forge, quando existe — usado pra confirmar o casamento. */
+  forgeGuid?: string;
 }
 
-function toForgeMatch(entry: any, confidence: "exact" | "derived"): ForgeMatch {
+function toForgeMatch(entry: any, method: ForgeMatchMethod): ForgeMatch {
   const versions = Array.isArray(entry.versions) ? entry.versions : [];
   const latest = versions[0];
   return {
@@ -2178,7 +2210,10 @@ function toForgeMatch(entry: any, confidence: "exact" | "derived"): ForgeMatch {
     latestVersion: latest?.version,
     latestVersionLink: latest?.link,
     forgeName: typeof entry.name === "string" ? entry.name : undefined,
-    confidence
+    confidence: method === "fuzzy" ? "derived" : "exact",
+    method,
+    needsConfirmation: methodNeedsConfirmation(method),
+    forgeGuid: typeof entry.guid === "string" ? entry.guid : undefined
   };
 }
 
@@ -2248,14 +2283,36 @@ async function forgeFetchJson(url: string, budget: ForgeBudget, retriedAfter429 
   }
 }
 
-/**
- * ATENÇÃO: na API da Forge, filter[name] e filter[slug] são filtros FUZZY de valor
- * único — não aceitam lista separada por vírgula (só filter[guid], filter[id] e
- * filter[hub_id] aceitam). Por isso aqui é uma requisição por valor, e o resultado
- * ainda passa por verificação, já que "fuzzy" pode trazer coisa parecida mas errada.
+/* ==========================================================================
+ * ATENÇÃO — BUG DA API, e a causa raiz de "não acha quase nada":
  *
- * include_legacy=true porque, por padrão, a Forge ESCONDE mods legados (sem
- * constraint de versão do SPT) — e vários mods instalados são justamente esses.
+ * Passar filter[include_legacy] junto com QUALQUER outro filter[...] faz a API
+ * ignorar o outro filtro em silêncio e devolver o catálogo inteiro sem filtrar,
+ * com HTTP 200. Conferido contra a API real:
+ *
+ *   filter[id]=791                                -> [791] SAIN                  (certo)
+ *   filter[id]=791 + filter[include_legacy]=true  -> [2] More Variety, [3] ...    (catálogo cru)
+ *   filter[id]=791,902                            -> [791] SAIN, [902] BigBrain  (lote funciona!)
+ *   filter[name]=BigBrain                         -> [902] BigBrain              (certo)
+ *   filter[name]=BigBrain + include_legacy        -> mesma lista de lixo
+ *   filter[name]=qualquer_bobagem + include_legacy-> MESMA lista de lixo
+ *
+ * A versão anterior mandava include_legacy em TODAS as consultas de identidade, então
+ * o lote por guid, o lote por id do cache e a busca por nome estavam todos mortos —
+ * sobrava só a busca textual, que é o último recurso e roda depois de gastar ~4
+ * requisições por mod à toa.
+ *
+ * O flag NÃO pode simplesmente sumir: sem ele a Forge esconde mods legados (sem
+ * constraint de versão do SPT) — filter[id]=2 sem o flag devolve vazio. Por isso a
+ * estratégia é em duas passadas: filtros de verdade primeiro (sem o flag), e o que
+ * sobrar vai pra busca textual COM o flag, que é a única coisa que ele não quebra
+ * (query= é Meilisearch, pipeline separado do filtro).
+ * ========================================================================== */
+
+/**
+ * filter[name] é um filtro de verdade quando não está sabotado pelo include_legacy.
+ * Ainda assim o resultado passa por verificação: "filtro" aqui não garante igualdade,
+ * e casar errado é pior que não casar.
  */
 async function fetchForgeByFuzzyFilter(filterKey: "slug" | "name", value: string, budget: ForgeBudget): Promise<any[]> {
   const url = new URL(`${FORGE_API_BASE}/mods`);
@@ -2265,6 +2322,22 @@ async function fetchForgeByFuzzyFilter(filterKey: "slug" | "name", value: string
   // Sem restringir "fields": a restauração de modlist precisa do LINK de download de
   // cada versão, e a resposta reduzida não garante trazer esse campo. Pedir o objeto
   // completo custa alguns KB a mais e evita "não baixa nada" silencioso.
+  //
+  // NÃO adicionar filter[include_legacy] aqui — ver o bloco acima: mata este filtro.
+  const json = await forgeFetchJson(url.toString(), budget);
+  return Array.isArray(json?.data) ? json.data : [];
+}
+
+/**
+ * Segunda passada, só pro que não casou: busca textual COM include_legacy, que é o
+ * único jeito de alcançar mod legado (o filtro por id/guid não chega nele).
+ */
+async function fetchForgeByQuery(term: string, budget: ForgeBudget, perPage = 10): Promise<any[]> {
+  const url = new URL(`${FORGE_API_BASE}/mods`);
+  url.searchParams.set("query", term);
+  url.searchParams.set("per_page", String(perPage));
+  url.searchParams.set("include", "versions");
+  // Aqui o flag é seguro E necessário: query= não passa pelo pipeline de filtro.
   url.searchParams.set("filter[include_legacy]", "true");
   const json = await forgeFetchJson(url.toString(), budget);
   return Array.isArray(json?.data) ? json.data : [];
@@ -2281,7 +2354,7 @@ async function fetchForgeByIds(ids: string[], budget: ForgeBudget): Promise<any[
     url.searchParams.set("filter[id]", ids.slice(i, i + CHUNK).join(","));
     url.searchParams.set("per_page", "50");
     url.searchParams.set("include", "versions");
-    url.searchParams.set("filter[include_legacy]", "true");
+    // sem include_legacy: ele anularia o filter[id] inteiro (ver bloco acima)
     const json = await forgeFetchJson(url.toString(), budget);
     if (Array.isArray(json?.data)) results.push(...json.data);
   }
@@ -2297,7 +2370,7 @@ async function fetchForgeByGuids(guids: string[], budget: ForgeBudget): Promise<
     url.searchParams.set("filter[guid]", guids.slice(i, i + CHUNK).join(","));
     url.searchParams.set("per_page", "50");
     url.searchParams.set("include", "versions");
-    url.searchParams.set("filter[include_legacy]", "true");
+    // sem include_legacy: ele anularia o filter[guid] inteiro (ver bloco acima)
     const json = await forgeFetchJson(url.toString(), budget);
     if (Array.isArray(json?.data)) results.push(...json.data);
   }
@@ -2328,22 +2401,72 @@ const FORGE_MATCH_CACHE_FILE = ".spt-mod-manager-forge-match.json";
  * numérico existe sempre. Guardar guid aqui deixava o cache inútil justamente pros mods
  * que mais precisam dele (os que não têm guid e caem nas estratégias lentas por nome).
  */
-function loadForgeMatchCache(root: string): Record<string, string> {
+/**
+ * Formato v2. O v1 era um mapa cru pasta -> id, sem registrar COMO aquilo foi
+ * descoberto — então um chute ruim virava verdade permanente: uma vez gravado, todas as
+ * checagens seguintes reusavam o id errado e nunca reconsideravam. Foi assim que
+ * "fika-server" ficou preso em "Server Value Modifier [SVM]".
+ *
+ * No v2 cada entrada guarda o método. Entradas "fuzzy" (chute) são revalidadas; entradas
+ * "manual" (o usuário confirmou na mão) são soberanas e nunca sobrescritas por
+ * automação. Um cache v1 é DESCARTADO na leitura: não dá pra saber quais entradas dele
+ * eram chute, e manter as boas não compensa manter as ruins.
+ */
+const FORGE_MATCH_CACHE_VERSION = 2;
+
+interface ForgeMatchCacheEntry {
+  modId: string;
+  method: ForgeMatchMethod;
+  guid?: string;
+  verifiedAt?: string;
+}
+
+type ForgeMatchCache = Record<string, ForgeMatchCacheEntry>;
+
+function loadForgeMatchCache(root: string): ForgeMatchCache {
   try {
     const file = path.join(root, FORGE_MATCH_CACHE_FILE);
     if (!fs.existsSync(file)) return {};
     const parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
-    return typeof parsed === "object" && parsed ? parsed : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    // v1: mapa cru pasta -> "1234". Sem procedência, não dá pra confiar em nada dele.
+    if (parsed.version !== FORGE_MATCH_CACHE_VERSION) return {};
+    const entries = parsed.entries;
+    if (!entries || typeof entries !== "object") return {};
+    const out: ForgeMatchCache = {};
+    for (const [folder, value] of Object.entries(entries as Record<string, any>)) {
+      if (value && typeof value.modId === "string" && typeof value.method === "string") {
+        out[folder] = value as ForgeMatchCacheEntry;
+      }
+    }
+    return out;
   } catch {
     return {};
   }
 }
 
-function saveForgeMatchCache(root: string, cache: Record<string, string>): void {
+function saveForgeMatchCache(root: string, cache: ForgeMatchCache): void {
   try {
-    fs.writeFileSync(path.join(root, FORGE_MATCH_CACHE_FILE), JSON.stringify(cache, null, 2), "utf-8");
+    const payload = { version: FORGE_MATCH_CACHE_VERSION, entries: cache };
+    fs.writeFileSync(path.join(root, FORGE_MATCH_CACHE_FILE), JSON.stringify(payload, null, 2), "utf-8");
   } catch {
     // cache é otimização, não pode derrubar a checagem se falhar ao gravar
+  }
+}
+
+/** Ligação feita à mão pelo usuário — tem precedência sobre qualquer automação. */
+export function setManualForgeMatch(root: string, folderName: string, modId: number | string): void {
+  const cache = loadForgeMatchCache(root);
+  cache[folderName] = { modId: String(modId), method: "manual", verifiedAt: new Date().toISOString() };
+  saveForgeMatchCache(root, cache);
+}
+
+/** Desfaz a ligação manual, devolvendo o mod pro caminho automático. */
+export function clearManualForgeMatch(root: string, folderName: string): void {
+  const cache = loadForgeMatchCache(root);
+  if (cache[folderName]?.method === "manual") {
+    delete cache[folderName];
+    saveForgeMatchCache(root, cache);
   }
 }
 
@@ -2355,8 +2478,17 @@ export async function matchForgeMods(
   const cache = cacheRoot ? loadForgeMatchCache(cacheRoot) : {};
   const entries = input
     .map((v) => (typeof v === "string" ? { folderName: v, guid: undefined as string | undefined } : { ...v }))
-    // Mod já resolvido numa checagem anterior: o cache guarda o id numérico da Forge.
-    .map((e) => ({ ...e, cachedId: cache[e.folderName] }));
+    // Already resolved by an earlier check. Only entries we can still stand behind are
+    // reused: a "fuzzy" entry was a guess, so it gets re-resolved from scratch instead of
+    // being promoted to fact. A "manual" entry is the user's own decision and is final.
+    .map((e) => {
+      const cached = cache[e.folderName];
+      return {
+        ...e,
+        cachedId: cached && cached.method !== "fuzzy" ? cached.modId : undefined,
+        pinned: cached?.method === "manual"
+      };
+    });
   const folderNames = entries.map((e) => e.folderName);
   const budget = newForgeBudget(folderNames.length);
   const matched = new Map<string, ForgeMatch>();
@@ -2389,7 +2521,7 @@ export async function matchForgeMods(
     }
     for (const entry of cachedEntries) {
       const hit = byId.get(String(entry.cachedId));
-      if (hit) matched.set(entry.folderName, toForgeMatch(hit, "exact"));
+      if (hit) matched.set(entry.folderName, toForgeMatch(hit, entry.pinned ? "manual" : "cached-id"));
     }
     reportProgress();
   }
@@ -2402,7 +2534,7 @@ export async function matchForgeMods(
     }
     for (const entry of guidEntries) {
       const hit = byGuid.get(String(entry.guid).toLowerCase());
-      if (hit) matched.set(entry.folderName, toForgeMatch(hit, "exact"));
+      if (hit) matched.set(entry.folderName, toForgeMatch(hit, "guid"));
     }
     reportProgress(); // com GUID, a maioria já fica pronta aqui
   }
@@ -2430,7 +2562,7 @@ export async function matchForgeMods(
       const exact = hits.find((entry) => normalizeForCompare(entry?.name ?? "") === normalizeForCompare(name));
       const hit = exact ?? hits.find((entry) => isPlausibleMatch(entry, name, cand.authorHint));
       if (hit) {
-        matched.set(folderName, toForgeMatch(hit, exact ? "exact" : "derived"));
+        matched.set(folderName, toForgeMatch(hit, exact ? "name" : "fuzzy"));
         break;
       }
       if (budget.aborted) break;
@@ -2453,25 +2585,36 @@ export async function matchForgeMods(
           return !!cand.authorHint && !!owner && owner === normalizeForCompare(cand.authorHint);
         });
         if (hit) {
-          matched.set(folderName, toForgeMatch(hit, "derived"));
+          // Confirmed by exact published name OR by matching author — good enough to
+          // stand behind, but it is still a name match, not an identity match.
+          matched.set(folderName, toForgeMatch(hit, "name"));
           break;
         }
         if (budget.aborted) break;
       }
     }
 
-    // 3) busca textual, último recurso
+    // 3) Full-text search, last resort. This is the ONLY path that reaches legacy mods,
+    //    because filter[id]/filter[guid] cannot see them and adding include_legacy to a
+    //    filtered query destroys the filter. Anything landing here is a guess and is
+    //    flagged for confirmation rather than reported as a match.
     if (!matched.has(folderName) && !budget.aborted) {
       const term = cand.looseNames[0] ?? cand.strictNames[0];
       if (term) {
-        const url = new URL(`${FORGE_API_BASE}/mods`);
-        url.searchParams.set("query", term);
-        url.searchParams.set("per_page", "5");
-        url.searchParams.set("include", "versions");
-        url.searchParams.set("filter[include_legacy]", "true");
-        const json = await forgeFetchJson(url.toString(), budget);
-        const hit = (json?.data || []).find((entry: any) => isPlausibleMatch(entry, term, cand.authorHint));
-        if (hit) matched.set(folderName, toForgeMatch(hit, "derived"));
+        const hits = await fetchForgeByQuery(term, budget, 5);
+        // If the mod declares a GUID, prefer the candidate whose published guid equals
+        // it — that turns a guess into a certainty, and is exactly how a legacy mod with
+        // a GUID gets resolved correctly.
+        const declaredGuid = entries.find((e) => e.folderName === folderName)?.guid?.toLowerCase();
+        const byGuid = declaredGuid
+          ? hits.find((entry: any) => String(entry?.guid ?? "").toLowerCase() === declaredGuid)
+          : undefined;
+        if (byGuid) {
+          matched.set(folderName, toForgeMatch(byGuid, "guid"));
+        } else {
+          const hit = hits.find((entry: any) => isPlausibleMatch(entry, term, cand.authorHint));
+          if (hit) matched.set(folderName, toForgeMatch(hit, "fuzzy"));
+        }
       }
     }
 
@@ -2498,11 +2641,21 @@ export async function matchForgeMods(
   reportProgress();
 
   if (cacheRoot) {
-    // Guarda o identificador de quem foi resolvido pelas estratégias lentas, pra que a
-    // próxima checagem já encontre esses mods na consulta em lote.
-    const updated = { ...cache };
+    // Persist what was resolved so the next check finds it in the cheap batch query.
+    // Guesses are deliberately NOT persisted: caching a guess is how a bad match becomes
+    // permanent truth. A manual pin always wins and is never overwritten here.
+    const updated: ForgeMatchCache = { ...cache };
+    const now = new Date().toISOString();
     for (const [folderName, match] of matched) {
-      if (match.modId) updated[folderName] = String(match.modId);
+      if (!match.modId) continue;
+      if (cache[folderName]?.method === "manual") continue;
+      if (match.method === "fuzzy") continue;
+      updated[folderName] = {
+        modId: String(match.modId),
+        method: match.method,
+        guid: match.forgeGuid,
+        verifiedAt: now
+      };
     }
     saveForgeMatchCache(cacheRoot, updated);
   }
