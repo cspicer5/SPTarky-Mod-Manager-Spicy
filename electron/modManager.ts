@@ -1952,34 +1952,39 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// A gente só guarda o NOME do mod localmente, não um ID/GUID da Forge — então
-// achar o mod certo lá é por busca de nome (heurística). Funciona bem pra
-// nomes específicos, pode errar em casos raros de nome genérico/duplicado.
-// Já traz a versão mais recente conhecida junto (via include=versions), numa
-// chamada só — útil pra mods sem versão local legível (ex: mods puramente
-// .dll sem package.json, tipo o SVM), onde não dá pra comparar mas ainda dá
-// pra mostrar "essa é a versão mais recente que a Forge conhece".
 /* --------------------------------------------------------------------------
- * Casamento de mod instalado -> mod da Forge.
+ * Matching an installed mod -> a mod on Forge.
  *
- * O nome da pasta quase nunca é igual ao nome publicado na Forge:
+ * Strategies, most reliable first. Each match records HOW it was made (see
+ * ForgeMatchMethod), because a wrong match is worse than no match at all: besides
+ * showing a bogus "update available", the modlist restorer uses this same mapping to
+ * download automatically — so matching wrong would install the wrong mod.
+ *
+ *   1. manual      — the user pinned this folder to a Forge id. Final; never overridden.
+ *   2. guid        — the mod's declared GUID equals the published guid. Unambiguous, and
+ *                    batchable: filter[guid] takes a comma-separated list, so dozens of
+ *                    mods resolve in one request.
+ *   3. cached-id   — a numeric id resolved by an earlier run, re-validated now.
+ *   4. name        — the published name matches exactly, or the author confirms it.
+ *   5. fuzzy       — full-text search plus a plausibility check. THIS IS A GUESS: it is
+ *                    flagged for confirmation and deliberately never cached.
+ *
+ * Folder names almost never equal the published Forge name, which is why name matching
+ * alone fails for most mods:
  *   "DrakiaXYZ-BigBrain"                -> "BigBrain"
  *   "unbreakableKeys"                   -> "Unbreakable keys"
  *   "acidphantasm-bosseshavelegamedals" -> "Bosses Have Lega Medals"
- * Por isso a busca só por nome exato (como era antes) falhava na maioria dos
- * mods, e quase tudo caía em "não encontrado".
  *
- * Agora tentamos várias estratégias, da mais confiável pra menos:
- *   1. slug exato          (derivado do nome da pasta, inclusive quebrando camelCase)
- *   2. nome exato
- *   3. slug/nome sem o prefixo de autor ("DrakiaXYZ-" etc.)
- *   4. busca full-text     (último recurso)
+ * include=versions rides along on these queries so the latest known version arrives in
+ * the same call — useful for mods with no readable local version (e.g. pure .dll mods
+ * with no package.json, like SVM), where no comparison is possible but we can still show
+ * "this is the newest version Forge knows about".
  *
- * As estratégias 3 e 4 podem gerar candidato genérico demais ("Amands-Graphics"
- * vira "graphics"), então elas SÓ são aceitas se passarem numa verificação de
- * plausibilidade. Casar errado é pior que não casar: além de mostrar
- * "atualização disponível" mentirosa, o restaurador de modlist usa esse mesmo
- * casamento pra baixar mod automaticamente — casar errado instalaria o mod errado.
+ * NOTE: an earlier version of this comment claimed we "only store the NAME locally, not
+ * an ID/GUID". That has not been true for a while — mods declare GUIDs (SPT 4.0), Forge
+ * gives us one at install time, and the match cache stores the numeric id. It also listed
+ * slug-based strategies that were since removed: Forge's slug is derived from the
+ * PUBLISHED name, which is precisely what we do not know.
  * ------------------------------------------------------------------------ */
 
 function slugifyName(value: string): string {
@@ -1992,19 +1997,19 @@ function slugifyName(value: string): string {
     .toLowerCase();
 }
 
-// Reduz a uma forma comparável: só letras e números, minúsculo. Usado pra
-// verificar se um resultado da Forge realmente corresponde ao que pedimos.
+// Reduces to a comparable form: letters and digits only, lowercase. Used to verify that a
+// Forge result genuinely corresponds to what we asked for.
 function normalizeForCompare(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function splitAuthorPrefix(name: string): { author?: string; rest: string } {
-  // O ponto é tão comum quanto o hífen como separador de autor: numa instalação real,
-  // 16 mods não casavam só por isso (Tyfon.UIFixes, IcyClawz.ItemAttributeFix,
+  // The dot is as common as the hyphen as an author separator: in a real installation, 16
+  // mods failed to match for this reason alone (Tyfon.UIFixes, IcyClawz.ItemAttributeFix,
   // Kat.BetterAmmoLoadingList, Tosox.DynamicItemWeights, ...).
   const match = /^([A-Za-z0-9]+)[-_.](.+)$/.exec(name);
-  // O resto precisa ter letra: senão "SAIN.4.4.3" viraria autor "SAIN" + nome "4.4.3",
-  // e o sufixo de versão seria tratado como se fosse o nome do mod.
+  // The remainder must contain a letter: otherwise "SAIN.4.4.3" would become author "SAIN"
+  // plus name "4.4.3", and the version suffix would be treated as the mod's name.
   if (match && match[2].length >= 3 && /[a-zA-Z]/.test(match[2])) {
     return { author: match[1], rest: match[2] };
   }
@@ -2012,8 +2017,8 @@ function splitAuthorPrefix(name: string): { author?: string; rest: string } {
 }
 
 /**
- * Pasta nomeada com o GUID do mod ("com.swiftxp.spt.showmethemoney"). O último segmento
- * costuma ser o nome, e o segundo, o autor — que serve de verificação.
+ * A folder named after the mod's GUID ("com.swiftxp.spt.showmethemoney"). The last segment
+ * is usually the name, and the second is the author — which serves as a cross-check.
  */
 function splitGuidLikeFolder(name: string): { author?: string; rest?: string } {
   const parts = name.split(".");
@@ -2023,28 +2028,28 @@ function splitGuidLikeFolder(name: string): { author?: string; rest?: string } {
 }
 
 interface MatchCandidates {
-  strictSlugs: string[]; // derivados do nome COMPLETO da pasta — alta confiança
+  strictSlugs: string[]; // derived from the FULL folder name — high confidence
   strictNames: string[];
-  looseSlugs: string[]; // sem o prefixo de autor — precisam de verificação
+  looseSlugs: string[]; // author prefix stripped — these need verification
   looseNames: string[];
   authorHint?: string;
 }
 
 /**
- * Tira do nome da pasta o que não faz parte do nome do mod na Forge. Padrões vistos numa
- * instalação real de 136 mods, todos falhando o casamento antes disso:
+ * Strips from the folder name whatever is not part of the mod's name on Forge. Patterns
+ * observed in a real 136-mod installation, all of which failed to match before this:
  *
- *   "WTT-PackNStrap-2.0.4"  -> "WTT-PackNStrap"    (versão anexada na pasta)
- *   "SAIN.4.4.3"            -> "SAIN"
- *   "MedicalAttention-Client" -> "MedicalAttention" (metade cliente de um pacote)
- *   "MergeConsumablesServer"  -> "MergeConsumables"
+ *   "WTT-PackNStrap-2.0.4"        -> "WTT-PackNStrap"    (version appended to the folder)
+ *   "SAIN.4.4.3"                  -> "SAIN"
+ *   "MedicalAttention-Client"     -> "MedicalAttention"  (client half of a package)
+ *   "MergeConsumablesServer"      -> "MergeConsumables"
  *   "[SVM] Server Value Modifier" -> "Server Value Modifier"
  */
 function stripFolderNameNoise(name: string): string[] {
   const variants = new Set<string>([name]);
   let current = name;
 
-  // "[SVM] Nome" -> "Nome"
+  // "[SVM] Name" -> "Name"
   const withoutTag = current.replace(/^\[[^\]]+\]\s*/, "").trim();
   if (withoutTag && withoutTag !== current) {
     variants.add(withoutTag);
@@ -2058,7 +2063,7 @@ function stripFolderNameNoise(name: string): string[] {
     current = withoutVersion;
   }
 
-  // sufixo de parte do pacote: "-Client", "Server", ".Net"
+  // package-part suffix: "-Client", "Server", ".Net"
   const withoutPart = current.replace(/[-._]?(client|server|\.net)$/i, "").trim();
   if (withoutPart && withoutPart.length >= 3 && withoutPart !== current) {
     variants.add(withoutPart);
@@ -2068,7 +2073,7 @@ function stripFolderNameNoise(name: string): string[] {
 }
 
 function buildMatchCandidates(folderName: string): MatchCandidates {
-  const { cleanName } = stripLoadOrderPrefix(folderName); // ignora "01_" de pastas legadas
+  const { cleanName } = stripLoadOrderPrefix(folderName); // ignores the "01_" on legacy folders
   const { author, rest } = splitAuthorPrefix(cleanName);
   const spaced = (v: string) =>
     v
@@ -2080,41 +2085,41 @@ function buildMatchCandidates(folderName: string): MatchCandidates {
   const guidLike = splitGuidLikeFolder(cleanName);
   const cleanVariants = [...new Set([...stripFolderNameNoise(cleanName), ...(guidLike.rest ? [guidLike.rest] : [])])];
   const strictSlugs = [...new Set(cleanVariants.map(slugifyName))].filter(Boolean);
-  // No máximo 2 tentativas de nome por mod: a mais limpa primeiro (mais chance de bater
-  // com o nome publicado) e a crua como reserva. Mais que isso multiplica requisições
-  // sem ganho proporcional, e o orçamento é curto.
+  // At most a couple of name attempts per mod: the cleanest first (most likely to match
+  // the published name) and the raw form as a fallback. More than that multiplies requests
+  // without proportional gain, and the budget is tight.
   const orderedVariants = [...cleanVariants].sort((a, b) => a.length - b.length);
   const strictNames = [...new Set(orderedVariants.flatMap((v) => [v, spaced(v)]))]
-    // Variante sem letra nenhuma ("4 4 3") nunca vai casar com nome de mod — só gastaria
-    // uma requisição do orçamento.
+    // A variant with no letters at all ("4 4 3") will never match a mod name — it would
+    // only burn a request from the budget.
     .filter((v) => v && /[a-zA-Z]/.test(v))
     .slice(0, 3);
   const looseSlugs =
     rest !== cleanName ? [...new Set([slugifyName(rest)])].filter(Boolean) : [];
-  // Ordena pela forma com espaços primeiro: o nome publicado quase sempre tem espaços
-  // ("UI Fixes", "Dynamic Item Weights"), não camelCase.
-  // O nome sem o autor também precisa passar pela limpeza: "Tyfon.UIFixes.Server"
-  // deixa "UIFixes.Server", e o que interessa é "UI Fixes".
+  // Spaced form first: the published name almost always has spaces ("UI Fixes", "Dynamic
+  // Item Weights") rather than camelCase.
+  // The author-stripped name also needs the cleanup pass: "Tyfon.UIFixes.Server" leaves
+  // "UIFixes.Server", and what we actually want is "UI Fixes".
   const looseRaw = guidLike.rest ?? (rest !== cleanName ? rest : undefined);
   const looseBase = looseRaw ? (stripFolderNameNoise(looseRaw).sort((a, b) => a.length - b.length)[0] ?? looseRaw) : undefined;
   const looseNames = looseBase
     ? [...new Set([spaced(looseBase), looseBase])].filter((v) => v && /[a-zA-Z]/.test(v))
     : [];
 
-  // Na pasta-GUID ("com.swiftxp.spt.showmethemoney"), o split simples pegaria "com"
-  // como autor — o autor de verdade é o segundo segmento.
+  // On a GUID-style folder ("com.swiftxp.spt.showmethemoney") the naive split would take
+  // "com" as the author — the real author is the second segment.
   return { strictSlugs, strictNames, looseSlugs, looseNames, authorHint: guidLike.author ?? author };
 }
 
 /**
- * Um casamento "solto" (sem prefixo de autor, ou via busca full-text) só vale se
- * der pra confirmar de outro jeito: ou o autor na Forge bate com o prefixo que a
- * gente tirou do nome da pasta, ou o nome publicado contém o que procuramos.
+ * A "loose" match (author prefix stripped, or found via full-text search) only counts if
+ * it can be confirmed some other way: either the Forge author matches the prefix we took
+ * from the folder name, or the published name contains what we searched for.
  */
 function isPlausibleMatch(candidate: any, searched: string, authorHint?: string): boolean {
   const rawName = String(candidate?.name ?? "");
-  // O nome PUBLICADO também pode ter prefixo em colchetes ("[SAIN] Twitch Players"),
-  // então a comparação precisa considerar as duas formas dos dois lados.
+  // The PUBLISHED name can carry a bracketed prefix too ("[SAIN] Twitch Players"), so the
+  // comparison has to consider both forms on both sides.
   const rawNameNoTag = rawName.replace(/^\[[^\]]+\]\s*/, "").trim();
   const rawSlug = String(candidate?.slug ?? "");
   const forgeName = normalizeForCompare(rawName);
@@ -2123,17 +2128,17 @@ function isPlausibleMatch(candidate: any, searched: string, authorHint?: string)
   const target = normalizeForCompare(searched);
   if (!target) return false;
 
-  // 1) Igualdade — o caso ideal.
+  // 1) Equality — the ideal case.
   if (forgeSlug === target || forgeName === target) return true;
 
-  // 2) Autor confere — forte o bastante mesmo com nome diferente.
+  // 2) Author agrees — strong enough even when the name differs.
   if (authorHint && forgeOwner && forgeOwner === normalizeForCompare(authorHint)) return true;
 
-  // 3) Nome publicado começa com o que procuramos, terminando em limite de palavra.
-  //    Cobre o caso MUITO comum de a Forge usar título longo enquanto a pasta usa o
-  //    nome curto: "SAIN" -> "SAIN - Solarint's AI Modifications - ...".
-  //    O limite de palavra evita casar "keys" com "KeysReworked": exigimos que o que
-  //    vem logo depois no nome ORIGINAL não seja letra/número.
+  // 3) Published name starts with what we searched for, ending at a word boundary.
+  //    Covers the VERY common case of Forge using a long title while the folder uses the
+  //    short name: "SAIN" -> "SAIN - Solarint's AI Modifications - ...".
+  //    The word boundary stops "keys" matching "KeysReworked": we require that whatever
+  //    follows in the ORIGINAL name is not alphanumeric.
   if (normalizeForCompare(rawNameNoTag) === target) return true;
   if (target.length >= 3 && startsWithAtWordBoundary(rawName, searched)) return true;
   if (target.length >= 3 && rawNameNoTag !== rawName && startsWithAtWordBoundary(rawNameNoTag, searched)) return true;
@@ -2143,10 +2148,10 @@ function isPlausibleMatch(candidate: any, searched: string, authorHint?: string)
 }
 
 /**
- * "SAIN - Solarint's..." começa com "SAIN" seguido de espaço -> true.
- * "KeysReworked" começa com "Keys" seguido de "R" (letra) -> false.
- * A comparação ignora maiúsculas e pontuação no trecho comparado, mas exige que o
- * caractere logo após o trecho seja um separador de verdade.
+ * "SAIN - Solarint's..." starts with "SAIN" followed by a space -> true.
+ * "KeysReworked" starts with "Keys" followed by "R" (a letter) -> false.
+ * The comparison ignores case and punctuation within the compared span, but requires the
+ * character immediately after it to be a genuine separator.
  */
 function startsWithAtWordBoundary(fullValue: string, prefix: string): boolean {
   const normalizedPrefix = normalizeForCompare(prefix);
