@@ -15,10 +15,15 @@ import {
   HeadlessView as HeadlessViewData,
   InstanceId,
   ServerSyncReport,
-  ServerSyncRow
+  ServerSyncRow,
+  Preset,
+  PresetReport,
+  BulkReinstallProgress,
+  BulkReinstallOutcome
 } from "./types";
 import { Lang, translate, translateBackendMessage } from "./i18n";
 import InstancesView from "./HeadlessView";
+import PresetsPanel from "./PresetsPanel";
 
 
 interface Toast {
@@ -394,6 +399,141 @@ export default function App() {
 
   const [syncing, setSyncing] = useState(false);
   const [installingFromServer, setInstallingFromServer] = useState<string | null>(null);
+
+  /* --- bulk reinstall ------------------------------------------------------- */
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkPreview, setBulkPreview] = useState<{
+    modCount?: number;
+    withoutRecord?: number;
+    configDirs?: number;
+    sptVersion?: string;
+  } | null>(null);
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<BulkReinstallProgress | null>(null);
+  const [bulkResult, setBulkResult] = useState<{
+    message: string;
+    outcomes?: BulkReinstallOutcome[];
+    counts?: { reinstalled: number; notFound: number; failed: number; skipped: number } | null;
+  } | null>(null);
+  const [bulkConfirmText, setBulkConfirmText] = useState("");
+
+  useEffect(() => {
+    const unsubscribe = window.modManagerAPI.onBulkReinstallProgress(setBulkProgress);
+    return unsubscribe;
+  }, []);
+
+  async function openBulkReinstall() {
+    setBulkOpen(true);
+    setBulkResult(null);
+    setBulkConfirmText("");
+    setBulkPreview(null);
+    const preview = await window.modManagerAPI.previewBulkReinstall();
+    if (!preview.success) {
+      pushToast(preview.message ?? "Couldn't check the install.", false);
+      setBulkOpen(false);
+      return;
+    }
+    setBulkPreview(preview);
+  }
+
+  // Typing the word is deliberate friction. This re-downloads every mod over a working
+  // install, and the source it downloads from disappears on 2026-08-10.
+  async function runBulkReinstall() {
+    setBulkRunning(true);
+    setBulkResult(null);
+    setBulkProgress(null);
+    try {
+      const result = await window.modManagerAPI.runBulkReinstall({ sptVersion: bulkPreview?.sptVersion });
+      setBulkResult({ message: result.message, outcomes: result.outcomes, counts: result.counts });
+      pushToast(result.message, result.success);
+      await refreshMods();
+    } finally {
+      setBulkRunning(false);
+      setBulkProgress(null);
+    }
+  }
+
+  /* --- mod presets (phase 1: local) ---------------------------------------- */
+  const [presetsOpen, setPresetsOpen] = useState(false);
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
+  const [presetReport, setPresetReport] = useState<PresetReport | null>(null);
+  const [presetBusy, setPresetBusy] = useState(false);
+
+  const refreshPresets = useCallback(async () => {
+    setPresets(await window.modManagerAPI.listPresets());
+  }, []);
+
+  const loadPresetReport = useCallback(async (id: string) => {
+    setPresetReport(null);
+    const result = await window.modManagerAPI.getPresetReport(id);
+    setPresetReport(result.success ? result.report ?? null : null);
+    if (!result.success && result.message) pushToast(result.message, false);
+  }, []);
+
+  async function openPresets() {
+    setPresetsOpen(true);
+    await refreshPresets();
+  }
+
+  async function handleSelectPreset(id: string) {
+    setSelectedPresetId(id);
+    await loadPresetReport(id);
+  }
+
+  async function handleSavePreset(name: string, description: string) {
+    setPresetBusy(true);
+    try {
+      const result = await window.modManagerAPI.createPreset({ name, description });
+      pushToast(result.message ?? (result.success ? "Preset saved." : "Couldn't save."), result.success);
+      if (result.success && result.preset) {
+        await refreshPresets();
+        await handleSelectPreset(result.preset.id);
+      }
+    } finally {
+      setPresetBusy(false);
+    }
+  }
+
+  async function handleRecapturePreset(id: string) {
+    const preset = presets.find((p) => p.id === id);
+    if (!window.confirm(`Overwrite "${preset?.name ?? id}" with the current install?\n\nThe preset's description and optional flags are kept.`)) return;
+    setPresetBusy(true);
+    try {
+      const result = await window.modManagerAPI.updatePreset(id);
+      pushToast(result.message ?? "Updated.", result.success);
+      await refreshPresets();
+      await loadPresetReport(id);
+    } finally {
+      setPresetBusy(false);
+    }
+  }
+
+  async function handleDeletePreset(id: string) {
+    const preset = presets.find((p) => p.id === id);
+    if (!window.confirm(`Delete the preset "${preset?.name ?? id}"?\n\nYour mods are not touched.`)) return;
+    const result = await window.modManagerAPI.deletePreset(id);
+    pushToast(result.message, result.success);
+    if (result.success) {
+      setSelectedPresetId(null);
+      setPresetReport(null);
+      await refreshPresets();
+    }
+  }
+
+  // Only switches mods on and off. It cannot install anything — the panel says so, rather
+  // than leaving the user to discover that "apply" did less than the word implies.
+  async function handleApplyPresetState(id: string) {
+    setPresetBusy(true);
+    try {
+      const result = await window.modManagerAPI.applyPresetState(id);
+      pushToast(tMsg(result.message), result.success);
+      await refreshMods();
+      await loadPresetReport(id);
+    } finally {
+      setPresetBusy(false);
+    }
+  }
 
   /**
    * Installs a mod the server runs but this install lacks (or has an older copy of).
@@ -1530,6 +1670,16 @@ export default function App() {
 
             <span className="filter-separator" />
 
+            <button
+              onClick={presetsOpen ? () => setPresetsOpen(false) : openPresets}
+              className={presetsOpen ? "primary" : ""}
+              title="Save this setup as a preset, or compare against one you have saved"
+            >
+              {presetsOpen ? "Hide presets" : "Presets"}
+            </button>
+            <button onClick={openBulkReinstall} title="Re-download every installed mod at its latest version">
+              Reinstall all
+            </button>
             <button onClick={handleExportList} title={t("filters.exportListTitle")}>{t("filters.exportList")}</button>
             <button onClick={handleImportList} title={t("filters.importCompareTitle")}>{t("filters.importCompare")}</button>
             <button onClick={handleDetectConflicts} disabled={checkingConflicts} title={t("filters.checkConflictsTitle")}>
@@ -1779,6 +1929,21 @@ export default function App() {
             </div>
           )}
 
+          {presetsOpen && (
+            <PresetsPanel
+              presets={presets}
+              selectedId={selectedPresetId}
+              report={presetReport}
+              busy={presetBusy}
+              onSelect={handleSelectPreset}
+              onSaveCurrent={handleSavePreset}
+              onRecapture={handleRecapturePreset}
+              onDelete={handleDeletePreset}
+              onApplyState={handleApplyPresetState}
+              onClose={() => setPresetsOpen(false)}
+            />
+          )}
+
           {/* Only the mod LIST swaps between modes — everything above stays put. */}
           {multiMode ? (
             <InstancesView
@@ -1961,6 +2126,124 @@ export default function App() {
               <button onClick={handleConfirmAbort}>{t("confirm.abort")}</button>
               <button onClick={handleConfirmProceed} className="primary">{t("confirm.proceed")}</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {bulkOpen && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !bulkRunning) setBulkOpen(false);
+          }}
+        >
+          <div className="modal-box bulk-modal">
+            <div className="modal-header">
+              <strong>Reinstall every mod</strong>
+              <button onClick={() => setBulkOpen(false)} disabled={bulkRunning} title={t("common.close")}>✕</button>
+            </div>
+
+            {bulkResult ? (
+              <>
+                <p className="compare-note">{bulkResult.message}</p>
+                {bulkResult.counts && (
+                  <ul className="bulk-counts">
+                    <li className="ok">{bulkResult.counts.reinstalled} reinstalled</li>
+                    {bulkResult.counts.notFound > 0 && <li className="warn">{bulkResult.counts.notFound} not found</li>}
+                    {bulkResult.counts.failed > 0 && <li className="bad">{bulkResult.counts.failed} failed</li>}
+                  </ul>
+                )}
+                {(bulkResult.outcomes ?? []).filter((o) => o.status !== "reinstalled").length > 0 && (
+                  <ul className="bulk-outcomes">
+                    {(bulkResult.outcomes ?? [])
+                      .filter((o) => o.status !== "reinstalled")
+                      .map((o) => (
+                        <li key={o.name}>
+                          <span className={`bulk-status bulk-${o.status}`}>{o.status === "not-found" ? "not found" : o.status}</span>
+                          <span className="bulk-name">{o.name}</span>
+                          {o.detail && <span className="bulk-detail">{o.detail}</span>}
+                        </li>
+                      ))}
+                  </ul>
+                )}
+                <div className="confirm-structure-actions">
+                  <button onClick={() => setBulkOpen(false)} className="primary">Done</button>
+                </div>
+              </>
+            ) : !bulkPreview ? (
+              <p className="empty-list">Checking the install…</p>
+            ) : (
+              <>
+                <p className="bulk-warning">
+                  This re-downloads and replaces <strong>all {bulkPreview.modCount} installed mods</strong> with the
+                  latest version for SPT {bulkPreview.sptVersion ?? "?"}. It is the most destructive thing this app does.
+                </p>
+
+                <ul className="bulk-facts">
+                  <li>
+                    <strong>Your configuration is protected.</strong> {bulkPreview.configDirs} config location(s) are
+                    backed up first and restored afterwards — including presets kept inside a mod's own folder, like
+                    SAIN's. The backup is left on disk either way.
+                  </li>
+                  <li>
+                    <strong>Mods that can't be found are left alone</strong>, never removed.
+                  </li>
+                  <li>
+                    <strong>{bulkPreview.withoutRecord} mod(s) currently have no recorded version</strong> — the app only
+                    knows what they claim about themselves. Reinstalling records what was actually downloaded.
+                  </li>
+                  <li className="bulk-deadline">
+                    <strong>Forge shuts down on 10 August 2026.</strong> After that this cannot re-download anything. If
+                    a bulk run goes wrong afterwards, there is nowhere to fetch from — so do this while there is still
+                    time to recover, or not at all.
+                  </li>
+                </ul>
+
+                {bulkRunning ? (
+                  <div className="bulk-progress">
+                    <p className="compare-note">
+                      {bulkProgress?.phase === "backup"
+                        ? "Backing up configuration…"
+                        : bulkProgress?.phase === "resolve"
+                          ? `Looking mods up… ${bulkProgress.done}/${bulkProgress.total}`
+                          : bulkProgress?.phase === "restore"
+                            ? "Restoring configuration…"
+                            : bulkProgress
+                              ? `Installing ${bulkProgress.done}/${bulkProgress.total}${bulkProgress.current ? ` — ${bulkProgress.current}` : ""}`
+                              : "Starting…"}
+                    </p>
+                    {bulkProgress && bulkProgress.total > 0 && (
+                      <div className="bulk-bar">
+                        <div style={{ width: `${Math.round((100 * bulkProgress.done) / bulkProgress.total)}%` }} />
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <p className="compare-note">
+                      Type <code>REINSTALL</code> to confirm.
+                    </p>
+                    <input
+                      type="text"
+                      value={bulkConfirmText}
+                      placeholder="REINSTALL"
+                      onChange={(e) => setBulkConfirmText(e.target.value)}
+                    />
+                  </>
+                )}
+
+                <div className="confirm-structure-actions">
+                  <button onClick={() => setBulkOpen(false)} disabled={bulkRunning}>{t("common.cancel")}</button>
+                  <button
+                    onClick={runBulkReinstall}
+                    className="primary"
+                    disabled={bulkRunning || bulkConfirmText.trim().toUpperCase() !== "REINSTALL"}
+                  >
+                    {bulkRunning ? "Reinstalling…" : `Reinstall ${bulkPreview.modCount} mods`}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

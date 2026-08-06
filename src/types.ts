@@ -265,6 +265,87 @@ export interface AppRelease {
   isCurrent: boolean;
 }
 
+/* --- bulk reinstall --------------------------------------------------------- */
+
+export interface BulkReinstallProgress {
+  phase: "backup" | "resolve" | "install" | "restore" | "done";
+  done: number;
+  total: number;
+  current?: string;
+  message?: string;
+}
+
+export interface BulkReinstallOutcome {
+  name: string;
+  status: "reinstalled" | "not-found" | "failed" | "skipped";
+  fromVersion?: string;
+  toVersion?: string;
+  detail?: string;
+}
+
+/* --- mod presets ----------------------------------------------------------- */
+
+export interface PresetMod {
+  name: string;
+  guid?: string;
+  version?: string;
+  versionSource?: ModInfo["versionSource"];
+  type: ModType;
+  enabled: boolean;
+  loadOrder: number;
+  required: boolean;
+  author?: string;
+}
+
+export interface Preset {
+  schema: number;
+  id: string;
+  name: string;
+  description?: string;
+  author?: string;
+  createdAt: string;
+  updatedAt: string;
+  sptVersion?: string;
+  hasPayloads: boolean;
+  mods: PresetMod[];
+}
+
+export type PresetIssue = "missing" | "version-mismatch" | "state-mismatch" | "extra" | "unknown-version";
+
+export interface PresetRow {
+  key: string;
+  name: string;
+  type: ModType;
+  guid?: string;
+  presetVersion?: string;
+  localVersion?: string;
+  presetEnabled?: boolean;
+  localEnabled?: boolean;
+  required: boolean;
+  issue?: PresetIssue;
+  matchedBy?: "guid" | "name";
+  detail?: string;
+}
+
+export interface PresetReport {
+  presetId: string;
+  presetName: string;
+  sptVersion?: string;
+  localSptVersion?: string;
+  sptMatches?: boolean;
+  rows: PresetRow[];
+  counts: {
+    matching: number;
+    missing: number;
+    missingRequired: number;
+    versionMismatch: number;
+    stateMismatch: number;
+    extra: number;
+    unknownVersion: number;
+  };
+  satisfied: boolean;
+}
+
 export interface ModManagerAPI {
   getSptPath: () => Promise<{ path: string; serverRoot: string; split: boolean } | null>;
   selectSptFolder: () => Promise<{ success: boolean; path?: string; serverRoot?: string; split?: boolean; message?: string }>;
@@ -284,6 +365,38 @@ export interface ModManagerAPI {
   getHeadlessView: () => Promise<HeadlessView>;
   getHeadlessAdvice: () => Promise<{ id: string; verdict: HeadlessVerdict }[]>;
   setHeadlessOverride: (modKey: string, klass: HeadlessClass | null) => Promise<{ success: boolean; message?: string }>;
+
+  // --- bulk reinstall (see electron/bulkReinstall.ts for the safeguards) ---
+  previewBulkReinstall: () => Promise<{
+    success: boolean;
+    modCount?: number;
+    withoutRecord?: number;
+    configDirs?: number;
+    sptVersion?: string;
+    message?: string;
+  }>;
+  runBulkReinstall: (opts: { sptVersion?: string }) => Promise<{
+    success: boolean;
+    message: string;
+    backupDir?: string;
+    outcomes?: BulkReinstallOutcome[];
+    counts?: { reinstalled: number; notFound: number; failed: number; skipped: number } | null;
+  }>;
+  onBulkReinstallProgress: (callback: (p: BulkReinstallProgress) => void) => () => void;
+
+  // --- mod presets (local; see docs/PRESETS.md) ---
+  listPresets: () => Promise<Preset[]>;
+  createPreset: (opts: { name: string; description?: string; optional?: string[] }) => Promise<{
+    success: boolean;
+    preset?: Preset;
+    message?: string;
+  }>;
+  updatePreset: (id: string) => Promise<{ success: boolean; preset?: Preset; message?: string }>;
+  renamePreset: (id: string, name: string, description?: string) => Promise<{ success: boolean; preset?: Preset; message?: string }>;
+  deletePreset: (id: string) => Promise<{ success: boolean; message: string }>;
+  getPresetReport: (id: string) => Promise<{ success: boolean; report?: PresetReport; message?: string }>;
+  /** Applies only what needs no download: enabling/disabling to match. Never removes mods. */
+  applyPresetState: (id: string) => Promise<{ success: boolean; changed?: number; message: string }>;
 
   // --- headless sync (main -> headless only; the main install is the source of truth) ---
   syncModToHeadless: (mod: ModInfo) => Promise<{ success: boolean; message: string }>;

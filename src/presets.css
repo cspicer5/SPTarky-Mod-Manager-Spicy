@@ -1,0 +1,295 @@
+/* ==========================================================================
+   Mod presets. Variables come from App.css.
+   ========================================================================== */
+
+.preset-panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-top: 14px;
+}
+
+.preset-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.preset-header strong {
+  font-family: var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+}
+
+.preset-header-note {
+  display: block;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* The saved list stays narrow; the reconciliation is the part you read. */
+.preset-body {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 0;
+  align-items: start;
+}
+
+.preset-list-col {
+  border-right: 1px solid var(--border);
+  padding: 10px;
+  min-width: 0;
+}
+
+.preset-report-col {
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.preset-save {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-bottom: 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.preset-save input {
+  padding: 5px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.preset-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.preset-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  background: var(--bg-panel-raised);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.preset-item:hover {
+  border-color: var(--border);
+}
+
+.preset-item-active {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.preset-item-name {
+  display: block;
+  font-size: 13px;
+}
+
+.preset-item-meta {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.preset-item-desc {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-verdict {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+}
+
+.preset-verdict.ok {
+  background: rgba(122, 148, 86, 0.14);
+  color: var(--ok-strong);
+}
+
+.preset-verdict.warn {
+  background: rgba(200, 117, 46, 0.14);
+  color: var(--accent-strong);
+}
+
+.preset-verdict span {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.preset-spt-warning {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--danger-strong);
+  background: rgba(168, 73, 47, 0.14);
+  padding: 6px 9px;
+  border-radius: var(--radius);
+  margin: 0 0 8px;
+}
+
+.preset-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.preset-actions button {
+  font-size: 11px;
+  padding: 3px 9px;
+}
+
+.preset-danger:hover:not(:disabled) {
+  border-color: var(--danger-strong);
+  color: var(--danger-strong);
+}
+
+.preset-toggle {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.preset-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  background: var(--bg-panel-raised);
+  padding: 6px 9px;
+  border-radius: var(--radius);
+  margin: 0 0 8px;
+}
+
+.preset-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.preset-row {
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 2px solid transparent;
+}
+
+.preset-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preset-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.preset-optional {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 4px;
+}
+
+.preset-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+
+.preset-issue {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: var(--radius);
+  cursor: help;
+}
+
+/* A missing required mod is the only thing that actually stops you playing. */
+.preset-issue-tag-missing,
+.preset-issue-tag-version-mismatch {
+  background: rgba(168, 73, 47, 0.18);
+  color: var(--danger-strong);
+}
+
+.preset-issue-tag-state-mismatch,
+.preset-issue-tag-unknown-version {
+  background: rgba(200, 117, 46, 0.14);
+  color: var(--accent-strong);
+}
+
+.preset-issue-tag-extra {
+  background: var(--bg-panel-raised);
+  color: var(--text-dim);
+}
+
+.preset-row.preset-issue-missing,
+.preset-row.preset-issue-version-mismatch {
+  border-left-color: var(--danger);
+}
+
+.preset-row.preset-issue-state-mismatch {
+  border-left-color: var(--accent);
+}
+
+.preset-versions {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.preset-weak {
+  font-size: 10px;
+  color: #c2a659;
+}
+
+@media (max-width: 900px) {
+  .preset-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .preset-list-col {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}

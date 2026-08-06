@@ -46,6 +46,23 @@ import {
 } from "./headless";
 import { fetchServerSnapshot, buildServerSyncReport, normaliseServerUrl } from "./sptServer";
 import { listAppReleases, prepareUpdate } from "./selfUpdate";
+import {
+  listPresets,
+  readPreset,
+  createPreset,
+  updatePreset,
+  renamePreset,
+  deletePreset,
+  buildPresetReport
+} from "./presets";
+import {
+  backupConfigs,
+  restoreConfigs,
+  collectConfigPaths,
+  reinstallableMods,
+  BulkReinstallProgress,
+  BulkReinstallOutcome
+} from "./bulkReinstall";
 import { InstanceConfig, InstanceId, ModInfo } from "./types";
 
 const MOD_HUB_URL = "https://hub.sp-tarkov.com/";
@@ -254,6 +271,215 @@ ipcMain.handle("get-headless-advice", () => {
       serverCounterparts
     })
   }));
+});
+
+/* --- IPC: bulk reinstall ----------------------------------------------------
+ * The most destructive thing the app can do, and the only way to give mods that were never
+ * installed through it a real recorded version. See electron/bulkReinstall.ts for why each
+ * safeguard is there.
+ */
+ipcMain.handle("preview-bulk-reinstall", () => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+  const mods = reinstallableMods(scanInstance("main"));
+  const configDirs = collectConfigPaths(roots.clientRoot, roots.serverRoot);
+  const withoutRecord = mods.filter((m) => m.versionSource !== "recorded").length;
+  return {
+    success: true,
+    modCount: mods.length,
+    withoutRecord,
+    configDirs: configDirs.length,
+    sptVersion: localSptVersion()
+  };
+});
+
+ipcMain.handle("run-bulk-reinstall", async (_event, opts: { sptVersion?: string }) => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured.", outcomes: [], counts: null };
+
+  const mods = reinstallableMods(scanInstance("main"));
+  const outcomes: BulkReinstallOutcome[] = [];
+  const report = (p: BulkReinstallProgress) => mainWindow?.webContents.send("bulk-reinstall-progress", p);
+
+  // Config first, before a single byte is downloaded. If this fails, nothing else happens.
+  let backup: { dir: string; files: number };
+  report({ phase: "backup", done: 0, total: mods.length, message: "Backing up configuration…" });
+  try {
+    backup = backupConfigs(roots.clientRoot, roots.serverRoot);
+  } catch (err: any) {
+    return {
+      success: false,
+      message: `Stopped before changing anything: the configuration backup failed (${err?.message ?? err}).`,
+      outcomes: [],
+      counts: null
+    };
+  }
+
+  // One batched pass through the matcher rather than a lookup per mod — it resolves by GUID
+  // in batches and shares the rate-limit budget.
+  report({ phase: "resolve", done: 0, total: mods.length, message: "Looking mods up…" });
+  const found = await findForgeDownloadsForNames(
+    mods.map((m) => ({ name: m.originalName, guid: m.guid })),
+    (done, total) => report({ phase: "resolve", done, total }),
+    roots.clientRoot
+  );
+
+  let index = 0;
+  for (const mod of mods) {
+    index++;
+    report({ phase: "install", done: index, total: mods.length, current: mod.name });
+    const hit = found[mod.originalName];
+    if (!hit?.downloadLink) {
+      // Not resolvable is NOT a reason to remove anything — the existing copy stays.
+      outcomes.push({ name: mod.name, status: "not-found", fromVersion: mod.version, detail: "Couldn't find it to download." });
+      continue;
+    }
+    try {
+      const result = await installForgeModVersion(
+        roots.clientRoot,
+        roots.serverRoot,
+        hit.downloadLink,
+        hit.forgeName ?? mod.originalName,
+        (receivedBytes, totalBytes) =>
+          report({ phase: "install", done: index, total: mods.length, current: mod.name, message: `${receivedBytes}/${totalBytes}` }),
+        { name: hit.forgeName, version: hit.version, guid: hit.guid }
+      );
+      outcomes.push({
+        name: mod.name,
+        status: result.success ? "reinstalled" : "failed",
+        fromVersion: mod.version,
+        toVersion: result.success ? hit.version : undefined,
+        detail: result.success ? undefined : result.message
+      });
+    } catch (err: any) {
+      outcomes.push({ name: mod.name, status: "failed", fromVersion: mod.version, detail: err?.message ?? String(err) });
+    }
+  }
+
+  report({ phase: "restore", done: mods.length, total: mods.length, message: "Restoring configuration…" });
+  let restored = 0;
+  try {
+    restored = restoreConfigs(roots.clientRoot, roots.serverRoot, backup.dir);
+  } catch {
+    /* the backup is still on disk; say so below rather than throwing it away */
+  }
+
+  const counts = {
+    reinstalled: outcomes.filter((o) => o.status === "reinstalled").length,
+    notFound: outcomes.filter((o) => o.status === "not-found").length,
+    failed: outcomes.filter((o) => o.status === "failed").length,
+    skipped: outcomes.filter((o) => o.status === "skipped").length
+  };
+
+  report({ phase: "done", done: mods.length, total: mods.length });
+
+  return {
+    success: counts.failed === 0,
+    backupDir: backup.dir,
+    outcomes,
+    counts,
+    message:
+      `Reinstalled ${counts.reinstalled} of ${mods.length} mod(s); restored ${restored} config file(s).` +
+      (counts.notFound ? ` ${counts.notFound} could not be found and were left alone.` : "") +
+      (counts.failed ? ` ${counts.failed} failed.` : "") +
+      ` Configuration backup kept at ${backup.dir}`
+  };
+});
+
+/* --- IPC: mod presets (phase 1: local) --------------------------------------
+ * Presets live in the app's data directory rather than inside an instance: the whole point
+ * of a preset is that it can be applied to a DIFFERENT install from the one it came from.
+ */
+function presetRoot(): string {
+  return app.getPath("userData");
+}
+
+function localSptVersion(): string | undefined {
+  const sptPath = store.get("sptPath");
+  return (store.get("sptVersionOverride") ?? (sptPath ? detectSptSemver(sptPath) : undefined)) ?? undefined;
+}
+
+ipcMain.handle("list-presets", () => listPresets(presetRoot()));
+
+ipcMain.handle("create-preset", (_event, opts: { name: string; description?: string; optional?: string[] }) => {
+  if (!store.get("sptPath")) return { success: false, message: "No SPT instance configured." };
+  if (!opts?.name?.trim()) return { success: false, message: "A preset needs a name." };
+  try {
+    const preset = createPreset(presetRoot(), scanInstance("main"), {
+      name: opts.name,
+      description: opts.description,
+      optional: opts.optional,
+      sptVersion: localSptVersion()
+    });
+    return { success: true, preset, message: `Saved "${preset.name}" with ${preset.mods.length} mod(s).` };
+  } catch (err: any) {
+    return { success: false, message: err?.message ?? "Couldn't save that preset." };
+  }
+});
+
+ipcMain.handle("update-preset", (_event, id: string) => {
+  if (!store.get("sptPath")) return { success: false, message: "No SPT instance configured." };
+  const preset = updatePreset(presetRoot(), id, scanInstance("main"), localSptVersion());
+  return preset
+    ? { success: true, preset, message: `Updated "${preset.name}" from the current install.` }
+    : { success: false, message: "That preset no longer exists." };
+});
+
+ipcMain.handle("rename-preset", (_event, id: string, name: string, description?: string) => {
+  const preset = renamePreset(presetRoot(), id, name, description);
+  return preset ? { success: true, preset } : { success: false, message: "That preset no longer exists." };
+});
+
+ipcMain.handle("delete-preset", (_event, id: string) => deletePreset(presetRoot(), id));
+
+ipcMain.handle("get-preset-report", (_event, id: string) => {
+  const preset = readPreset(presetRoot(), id);
+  if (!preset) return { success: false, message: "That preset no longer exists." };
+  if (!store.get("sptPath")) return { success: false, message: "No SPT instance configured." };
+  return { success: true, report: buildPresetReport(preset, scanInstance("main"), localSptVersion()) };
+});
+
+/**
+ * Applies what can be applied without downloading anything: enabling and disabling mods so
+ * the install matches the preset.
+ *
+ * Deliberately does NOT remove "extra" mods. A preset says what a setup needs, not what it
+ * forbids, and deleting somebody's mods because they are absent from a list is a far more
+ * destructive reading than the user asked for. Missing mods need a payload or Forge, which
+ * is phase 3 — until then they are reported.
+ */
+ipcMain.handle("apply-preset-state", (_event, id: string) => {
+  const preset = readPreset(presetRoot(), id);
+  if (!preset) return { success: false, message: "That preset no longer exists." };
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+
+  const report = buildPresetReport(preset, scanInstance("main"), localSptVersion());
+  const toToggle = report.rows.filter((r) => r.issue === "state-mismatch");
+  if (toToggle.length === 0) {
+    return { success: true, changed: 0, message: "Nothing to change — enabled states already match." };
+  }
+
+  const current = scanInstance("main");
+  const changed: string[] = [];
+  const failed: string[] = [];
+  for (const row of toToggle) {
+    const mod = current.find((m) => m.id.toLowerCase() === row.name.toLowerCase() && m.type === row.type);
+    if (!mod) {
+      failed.push(row.name);
+      continue;
+    }
+    const result = toggleMod(roots.clientRoot, roots.serverRoot, mod);
+    (result.success ? changed : failed).push(row.name);
+  }
+
+  return {
+    success: failed.length === 0,
+    changed: changed.length,
+    message:
+      `Switched ${changed.length} mod(s) to match the preset.` +
+      (failed.length ? ` ${failed.length} could not be changed.` : "")
+  };
 });
 
 /* --- IPC: syncing the headless client from the main install -----------------

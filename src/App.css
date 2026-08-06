@@ -1199,3 +1199,117 @@ button:hover > .btn-scope {
   opacity: 0.75;
   margin-left: 3px;
 }
+
+/* --- bulk reinstall --- */
+.bulk-modal {
+  max-width: 620px;
+}
+
+.bulk-warning {
+  font-size: 13px;
+  line-height: 1.5;
+  background: rgba(168, 73, 47, 0.14);
+  color: var(--danger-strong);
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  margin: 0 0 10px;
+}
+
+.bulk-facts {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+}
+
+.bulk-facts li {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.bulk-facts strong {
+  color: var(--text);
+}
+
+/* The one fact that cannot be undone by trying again later. */
+.bulk-deadline strong {
+  color: var(--accent-strong);
+}
+
+.bulk-progress {
+  margin: 8px 0;
+}
+
+.bulk-bar {
+  height: 4px;
+  background: var(--bg);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.bulk-bar > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.bulk-counts {
+  list-style: none;
+  display: flex;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+}
+
+.bulk-counts li {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: var(--radius);
+  background: var(--bg-panel-raised);
+  color: var(--text-dim);
+}
+
+.bulk-counts li.ok { color: var(--ok-strong); }
+.bulk-counts li.warn { color: var(--accent-strong); }
+.bulk-counts li.bad { background: rgba(168, 73, 47, 0.18); color: var(--danger-strong); }
+
+.bulk-outcomes {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.bulk-outcomes li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.bulk-status {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: var(--radius);
+  flex-shrink: 0;
+}
+
+.bulk-not-found { background: rgba(200, 117, 46, 0.14); color: var(--accent-strong); }
+.bulk-failed { background: rgba(168, 73, 47, 0.18); color: var(--danger-strong); }
+
+.bulk-name { flex-shrink: 0; }
+
+.bulk-detail {
+  color: var(--text-faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

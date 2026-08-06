@@ -23,6 +23,26 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   setHeadlessOverride: (modKey: string, klass: string | null) =>
     ipcRenderer.invoke("set-headless-override", modKey, klass),
 
+  // --- bulk reinstall ---
+  previewBulkReinstall: () => ipcRenderer.invoke("preview-bulk-reinstall"),
+  runBulkReinstall: (opts: { sptVersion?: string }) => ipcRenderer.invoke("run-bulk-reinstall", opts),
+  onBulkReinstallProgress: (callback: (p: unknown) => void) => {
+    const handler = (_e: unknown, p: unknown) => callback(p);
+    ipcRenderer.on("bulk-reinstall-progress", handler);
+    return () => ipcRenderer.removeListener("bulk-reinstall-progress", handler);
+  },
+
+  // --- mod presets (local) ---
+  listPresets: () => ipcRenderer.invoke("list-presets"),
+  createPreset: (opts: { name: string; description?: string; optional?: string[] }) =>
+    ipcRenderer.invoke("create-preset", opts),
+  updatePreset: (id: string) => ipcRenderer.invoke("update-preset", id),
+  renamePreset: (id: string, name: string, description?: string) =>
+    ipcRenderer.invoke("rename-preset", id, name, description),
+  deletePreset: (id: string) => ipcRenderer.invoke("delete-preset", id),
+  getPresetReport: (id: string) => ipcRenderer.invoke("get-preset-report", id),
+  applyPresetState: (id: string) => ipcRenderer.invoke("apply-preset-state", id),
+
   // --- headless sync (main -> headless only) ---
   syncModToHeadless: (mod: ModInfo) => ipcRenderer.invoke("sync-mod-to-headless", mod),
   removeModFromHeadless: (mod: ModInfo) => ipcRenderer.invoke("remove-mod-from-headless", mod),
