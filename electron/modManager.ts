@@ -1047,7 +1047,7 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
     }
   }
 
-  // Client mods (desabilitados)
+  // Client mods (disabled)
   const clientDisabledDir = p(clientRoot, CLIENT_PLUGINS_DISABLED_DIR);
   if (fs.existsSync(clientDisabledDir)) {
     const companions = listCompanionFolderNames(clientDisabledDir);
@@ -1061,34 +1061,34 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
     }
   }
 
-  // Mods "órfãos" rastreados por manifesto (arquivos sem pasta nomeada própria) — não suportam
-  // habilitar/desabilitar, mas aparecem na lista e podem ser removidos de forma limpa.
+  // "Orphan" mods tracked by manifest (files with no named folder of their own) — they do
+  // not support enable/disable, but they appear in the list and can be removed cleanly.
   const manifest = loadManifest(clientRoot);
-  // Ids dos mods "de verdade" (com pasta própria) já listados acima.
+  // Ids of the "real" mods (with their own folder) already listed above.
   const namedModIds = new Set(mods.map((m) => m.id));
   for (const [manifestId, files] of Object.entries(manifest)) {
     const stillExists = files.some((relPath) => fs.existsSync(resolveManifestFilePath(clientRoot, serverRoot, relPath)));
-    if (!stillExists) continue; // arquivos já não existem mais (removidos por fora) — não mostra fantasma
+    if (!stillExists) continue; // files are gone (removed outside the app) — do not show a ghost
     const registryEntry = registry.find((r) => r.id === manifestId);
 
-    // Quando esses arquivos soltos vieram do mesmo arquivo de um único mod nomeado,
-    // não são um item separado do ponto de vista de quem usa — são parte daquele mod.
-    // Some da lista (evita a linha duplicada tipo "DynamicMaps" + "DynamicMaps-1.1.3")
-    // e a remoção do mod leva esses arquivos junto (ver uninstallMod).
-    // Se o mod ligado não existir mais, o órfão VOLTA a aparecer — senão viraria
-    // arquivo invisível e impossível de remover pelo app.
+    // When these loose files came from the same archive as a single named mod, they are
+    // not a separate item from the user's point of view — they are part of that mod.
+    // Hiding them avoids the duplicated row ("DynamicMaps" + "DynamicMaps-1.1.3"), and
+    // removing the mod takes these files with it (see uninstallMod).
+    // If the linked mod no longer exists, the orphan REAPPEARS — otherwise it would become
+    // an invisible file that the app could never remove.
     const linkedTo = registryEntry?.linkedModIds ?? (registryEntry?.linkedModId ? [registryEntry.linkedModId] : []);
     if (linkedTo.length > 0 && linkedTo.some((id) => namedModIds.has(id))) continue;
 
-    // Vínculo implícito: órfão com o mesmo nome de exibição de um mod que existe é,
-    // na prática, sobra daquele mod. Cobre instalações feitas antes do vínculo
-    // explícito existir — sem isso, elas ficam duplicando a linha do mod pra sempre.
+    // Implicit link: an orphan sharing a display name with an existing mod is, in
+    // practice, leftovers from that mod. This covers installs made before the explicit
+    // link existed — without it, they duplicate the mod's row forever.
     const displayName = registryEntry?.displayName;
     if (displayName && namedModIds.has(displayName)) continue;
 
-    // O nome do órfão costuma vir do arquivo baixado, com versão colada
-    // ("MergeConsumables.1.5.4"), enquanto o mod se chama "MergeConsumables". Comparar
-    // as formas limpas liga os dois e tira a linha duplicada da lista.
+    // An orphan's name usually comes from the downloaded file, with the version stuck on
+    // ("MergeConsumables.1.5.4"), while the mod itself is called "MergeConsumables".
+    // Comparing the cleaned forms links the two and drops the duplicate row.
     if (displayName) {
       const cleanedVariants = stripFolderNameNoise(displayName).map((v) => v.toLowerCase());
       const namedLower = new Map([...namedModIds].map((id) => [id.toLowerCase(), id]));
@@ -1109,21 +1109,22 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
     });
   }
 
-  // Pacote INFERIDO, pra mods que já estavam instalados antes do vínculo existir.
+  // INFERRED package, for mods already installed before the explicit link existed.
   //
-  // Sinal: a mesma pasta aparecendo dos dois lados (user/mods/Wedge + BepInEx/plugins/Wedge).
-  // Autor de mod nomeia a pasta com o nome do mod, então dois mods DIFERENTES com nome de
-  // pasta idêntico é bem improvável — conferido numa instalação real de 136 mods, onde os
-  // 8 pares nessa situação eram todos o mesmo mod.
+  // The signal: the same folder appearing on both sides (user/mods/Wedge +
+  // BepInEx/plugins/Wedge). Mod authors name the folder after the mod, so two DIFFERENT
+  // mods sharing an identical folder name is quite unlikely — verified against a real
+  // 136-mod installation, where all 8 pairs in this situation were the same mod.
   //
-  // O id começa com "inferred:" de propósito: é palpite, não registro, então não é gravado
-  // em disco e some se a pasta for renomeada. Se errar, desfazer é só alternar de novo.
-  // A chave ignora separadores e o sufixo que indica O PAPEL da parte, não o mod:
-  // "MoreBotsServer" + "MoreBotsAPI" -> "morebots"; "MergeConsumablesServer" +
-  // "MergeConsumables" -> "mergeconsumables". Conferido contra 9 pares reais de uma
-  // instalação de verdade — todos agruparam, e pares que NÃO são o mesmo mod
-  // ("WTT-ServerCommonLib" e "WTT-ClientCommonLib") continuaram separados, porque o
-  // sufixo removido é só o do fim.
+  // The id starts with "inferred:" deliberately: it is a guess, not a record, so it is
+  // never written to disk and vanishes if the folder is renamed. If it guesses wrong,
+  // undoing it is just a matter of toggling again.
+  // The key ignores separators and the suffix denoting the part's ROLE rather than the
+  // mod: "MoreBotsServer" + "MoreBotsAPI" -> "morebots"; "MergeConsumablesServer" +
+  // "MergeConsumables" -> "mergeconsumables". Verified against 9 real pairs from an actual
+  // installation — all grouped correctly, and pairs that are NOT the same mod
+  // ("WTT-ServerCommonLib" and "WTT-ClientCommonLib") stayed separate, because only a
+  // trailing suffix is stripped.
   const packageBaseKey = (folderName: string): string => {
     let key = folderName.toLowerCase().replace(/[-._\s]/g, "");
     for (const suffix of ["serverside", "clientside", "backend", "server", "client", "api"]) {
@@ -1144,12 +1145,12 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
     byFolderName.get(key)!.push(mod);
   }
   for (const [key, group] of byFolderName) {
-    const tiposDistintos = new Set(group.map((m) => m.type));
-    if (group.length >= 2 && tiposDistintos.size >= 2) {
+    const distinctTypes = new Set(group.map((m) => m.type));
+    if (group.length >= 2 && distinctTypes.size >= 2) {
       for (const mod of group) {
         mod.packageId = `inferred:${key}`;
-        // Guarda quem são as outras partes: os nomes podem diferir, então o toggle não
-        // tem como redescobrir isso sozinho.
+        // Record the other parts: their names can differ, so the toggle has no way to
+        // rediscover them on its own.
         mod.packageSiblings = group
           .filter((other) => !(other.id === mod.id && other.type === mod.type))
           .map((other) => ({ id: other.id, type: other.type }));
@@ -1160,7 +1161,7 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
   return mods.sort((a, b) => a.loadOrder - b.loadOrder || a.name.localeCompare(b.name));
 }
 
-// --- Instalar mod a partir de um .zip ou .7z ---
+// --- Installing a mod from a .zip or .7z ---
 export interface InstallResult {
   success: boolean;
   message: string;
@@ -1188,7 +1189,7 @@ export async function installModFromArchive(
       return performMerge(clientRoot, serverRoot, mergeRoot, archivePath, tmpExtractDir, preferredDisplayName, forgeInfo);
     }
 
-    // Caso 2: zip contém DLLs soltas ou uma única pasta -> tentar identificar client vs server
+    // Case 2: the archive holds loose DLLs or a single folder -> try to tell client from server
     const dllFiles = findFilesRecursive(tmpExtractDir, ".dll");
     const hasPackageJson = findFilesRecursive(tmpExtractDir, "package.json").length > 0;
 
@@ -1197,7 +1198,7 @@ export async function installModFromArchive(
     let type: ModType;
 
     if (hasPackageJson && dllFiles.length === 0) {
-      // Server mod: assume que a raiz extraída (ou sua única subpasta) é a pasta do mod
+      // Server mod: assume the extracted root (or its single subfolder) is the mod's folder
       const rootEntries = fs.readdirSync(tmpExtractDir, { withFileTypes: true });
       const singleDir = rootEntries.length === 1 && rootEntries[0].isDirectory() ? rootEntries[0].name : null;
       const sourceDir = singleDir ? path.join(tmpExtractDir, singleDir) : tmpExtractDir;
@@ -1209,11 +1210,11 @@ export async function installModFromArchive(
       const verification = verifyCopyRecursive(sourceDir, serverDest);
       if (!verification.ok) {
         cleanup(tmpExtractDir);
-        return { success: false, message: `Instalação incompleta: arquivo não confirmado no destino (${verification.missing}).` };
+        return { success: false, message: `Incomplete installation: file not confirmed at the destination (${verification.missing}).` };
       }
       type = "server";
     } else if (dllFiles.length > 0) {
-      // Client mod: copia pasta (ou soltas) pra BepInEx/plugins
+      // Client mod: copy the folder (or loose files) into BepInEx/plugins
       destBase = p(clientRoot, CLIENT_PLUGINS_DIR);
       ensureDir(destBase);
       const rootEntries = fs.readdirSync(tmpExtractDir, { withFileTypes: true });
@@ -1225,7 +1226,7 @@ export async function installModFromArchive(
         const verification = verifyCopyRecursive(path.join(tmpExtractDir, singleDir), clientDest);
         if (!verification.ok) {
           cleanup(tmpExtractDir);
-          return { success: false, message: `Instalação incompleta: arquivo não confirmado no destino (${verification.missing}).` };
+          return { success: false, message: `Incomplete installation: file not confirmed at the destination (${verification.missing}).` };
         }
       } else {
         modId = path.parse(archivePath).name;
@@ -1234,15 +1235,16 @@ export async function installModFromArchive(
         const verification = verifyCopyRecursive(tmpExtractDir, clientDest);
         if (!verification.ok) {
           cleanup(tmpExtractDir);
-          return { success: false, message: `Instalação incompleta: arquivo não confirmado no destino (${verification.missing}).` };
+          return { success: false, message: `Incomplete installation: file not confirmed at the destination (${verification.missing}).` };
         }
       }
       type = "client";
     } else {
-      // Estrutura não reconhecida (sem DLL, sem package.json, sem pasta user/BepInEx em
-      // nenhum nível). Em vez de rejeitar de cara, devolve o conteúdo da raiz pro usuário
-      // decidir — NÃO limpa a pasta temporária aqui, pra reaproveitar a mesma extração se
-      // ele escolher continuar, em vez de precisar selecionar o arquivo de novo.
+      // Unrecognised structure (no DLL, no package.json, no user/BepInEx folder at any
+      // level). Rather than rejecting outright, hand the root contents back for the user
+      // to decide — deliberately does NOT clean up the temp folder here, so the same
+      // extraction can be reused if they choose to continue, instead of making them
+      // select the file again.
       const rootEntries = fs
         .readdirSync(tmpExtractDir, { withFileTypes: true })
         .map((e) => e.name + (e.isDirectory() ? "/" : ""));
@@ -1252,7 +1254,7 @@ export async function installModFromArchive(
         tmpDir: tmpExtractDir,
         rootEntries,
         archivePath,
-        message: "Estrutura de arquivo incomum: não encontrei DLL, package.json nem pasta user/BepInEx."
+        message: "Unusual file structure: found no DLL, package.json, or user/BepInEx folder."
       };
     }
 
@@ -1268,10 +1270,10 @@ export async function installModFromArchive(
       forgeVersion: forgeInfo?.version,
       forgeGuid: forgeInfo?.guid
     });
-    return { success: true, message: `Mod "${modId}" instalado e verificado como ${type === "server" ? "server mod" : "client mod"}.` };
+    return { success: true, message: `Mod "${modId}" installed and verified as a ${type === "server" ? "server mod" : "client mod"}.` };
   } catch (err) {
     cleanup(tmpExtractDir);
-    return { success: false, message: "Erro ao instalar: " + (err as Error).message };
+    return { success: false, message: "Error while installing: " + (err as Error).message };
   }
 }
 
@@ -1411,7 +1413,7 @@ function performMerge(
       const verification = verifyCopyRecursive(srcPath, destPath, skippedCoreFiles, entry.name);
       if (!verification.ok) {
         cleanup(tmpExtractDir);
-        return { success: false, message: `Instalação incompleta: arquivo não confirmado no destino (${verification.missing}).` };
+        return { success: false, message: `Incomplete installation: file not confirmed at the destination (${verification.missing}).` };
       }
     } else if (!isProtectedInstancePath(entry.name)) {
       ensureDir(clientRoot);
