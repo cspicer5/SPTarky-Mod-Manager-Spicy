@@ -46,8 +46,8 @@
     "vite": "^5.3.1"
   },
   "build": {
-    "appId": "com.emir.sptmodmanager",
-    "productName": "SPT Mod Manager",
+    "appId": "com.cspicer5.sptarkymodmanagerspicy",
+    "productName": "SPTarky Mod Manager Spicy",
     "copyright": "Copyright © 2026 cspicer5. Based on SPT Mod Manager © 2026 Matheus Guida (TioEmir), MIT.",
     "files": [
       "dist/**/*",
@@ -76,7 +76,7 @@
         }
       ],
       "icon": "build/icon.ico",
-      "artifactName": "SPT-Mod-Manager-${version}-${os}-${arch}.${ext}"
+      "artifactName": "SPTarky-Mod-Manager-Spicy-${version}-${os}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -84,7 +84,7 @@
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "SPT Mod Manager",
+      "shortcutName": "SPTarky Mod Manager Spicy",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "installerHeaderIcon": "build/icon.ico",
