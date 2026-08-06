@@ -3165,7 +3165,16 @@ export interface ForgeMatchInput {
 export async function matchForgeMods(
   input: (string | ForgeMatchInput)[],
   onProgress?: (done: number, total: number) => void,
-  cacheRoot?: string
+  cacheRoot?: string,
+  /**
+   * `writeCache: false` reads the cache but does not update it — for a read-only audit.
+   *
+   * These were once the same switch: cacheRoot meant both "read from here" and "write to
+   * here", so an audit that only wanted to avoid writing also silently stopped reading. It
+   * reported five manually pinned mods as unconfirmed guesses, one of them pointing at
+   * entirely the wrong mod, while the app itself resolved all five correctly.
+   */
+  options?: { writeCache?: boolean }
 ): Promise<Map<string, ForgeMatch> & { notChecked?: Set<string> }> {
   const cache = cacheRoot ? loadForgeMatchCache(cacheRoot) : {};
   const entries = input
@@ -3386,7 +3395,7 @@ export async function matchForgeMods(
   exhausted = folderNames.length - matched.size;
   reportProgress();
 
-  if (cacheRoot) {
+  if (cacheRoot && options?.writeCache !== false) {
     // Persist what was resolved so the next check finds it in the cheap batch query.
     // Guesses are deliberately NOT persisted: caching a guess is how a bad match becomes
     // permanent truth. A manual pin always wins and is never overwritten here.

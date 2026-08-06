@@ -11,9 +11,15 @@
  *   node scripts/audit-forge-match.js "D:\\SPT - Test"
  *   node scripts/audit-forge-match.js "D:\\SPT - Test" --write
  *
- * By default NOTHING is written to the install: matchForgeMods is called without a
- * cacheRoot, which is the argument that triggers the cache file write. Pass --write to
- * exercise the cache path too (only ever do that against a test copy).
+ * By default nothing is WRITTEN to the install, but the existing cache is still READ — so
+ * the audit reports what the app would actually resolve. Pass --write to persist newly
+ * confirmed matches as well.
+ *
+ * Those used to be one switch, and read-only mode dropped the cache entirely. The audit
+ * then re-guessed every mod from scratch and reported five manual pins on D:\SPT41 as
+ * unconfirmed, including fika-server as "Fika Headless Launcher" — a mod the user had
+ * already pinned to Project Fika - Server. The app was right; the audit was measuring a
+ * path the app does not take.
  */
 const path = require("path");
 const fs = require("fs");
@@ -43,6 +49,7 @@ function main() {
   console.log(`install     : ${root}`);
   console.log(`clientRoot  : ${clientRoot}`);
   console.log(`serverRoot  : ${serverRoot}${split ? "  (SPLIT INSTALL)" : ""}`);
+  console.log(`cache read  : enabled (manual pins are honoured)`);
   console.log(`cache write : ${write ? "ENABLED (--write)" : "disabled (read-only)"}`);
 
   // What the previous version left behind, so we can show what changed.
@@ -78,7 +85,7 @@ function main() {
 
   const started = Date.now();
   backend
-    .matchForgeMods(backend.buildForgeMatchInput(mods), onProgress, write ? clientRoot : undefined)
+    .matchForgeMods(backend.buildForgeMatchInput(mods), onProgress, clientRoot, { writeCache: write })
     .then((matches) => {
       const elapsed = ((Date.now() - started) / 1000).toFixed(1);
       process.stdout.write(" ".repeat(40) + "\r");
