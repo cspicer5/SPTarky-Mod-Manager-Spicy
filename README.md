@@ -43,13 +43,13 @@ Beyond that:
 
 ---
 
-## ⚠️ Forge is shutting down on 12 August 2026
+## ⚠️ Forge is shutting down on 10 August 2026
 
 Every Forge-backed feature — update checking, catalogue browsing, one-click install, modlist restore — stops working on that date.
 
-The mapping from an installed mod to its source repository exists **only** in the Forge API and cannot be rebuilt afterwards, so it has been captured: [`data/forge-directory.json`](data/forge-directory.json) holds all **2,389 mods** with their Forge id, GUID, owner and source URL.
+The mapping from an installed mod to its source repository exists **only** in the Forge API and cannot be rebuilt afterwards, so it has been captured: [`data/forge-directory.json`](data/forge-directory.json) holds all **2,389 mods** with their Forge id, GUID, owner, category, Fika flag and source URL.
 
-Measured coverage (full harvest, 2026-08-05):
+Measured coverage (full harvest, re-run 2026-08-06):
 
 | Slice | Has a source link |
 |---|---|
@@ -59,11 +59,50 @@ Measured coverage (full harvest, 2026-08-05):
 
 93% of those links are GitHub. The catalogue-wide figure is dominated by old abandoned mods; for mods people actually run, coverage is close to total.
 
+The harvest was re-run on 6 August after two gaps were found in the first pass: `category` was read from the wrong JSON field and came back empty for all 2,389 mods, and `fika_compatibility` — the only machine-readable statement anywhere about how a mod behaves in multiplayer — was never requested. Both now captured; both would have been unrecoverable four days later.
+
+One caveat is recorded with the data and matters if you use it: `fikaCompatible: true` is meaningful, `false` is not. It is author-declared and widely left unset — BigBrain and Waypoints both report `false`, and both are SAIN dependencies that plainly work under Fika. Nothing in this app draws a negative conclusion from it.
+
 Full analysis, and what survives the shutdown, in **[docs/FORGE-SHUTDOWN.md](docs/FORGE-SHUTDOWN.md)**.
 
 ---
 
+## Dual instance — SPT + Fika headless
+
+A Fika headless client is a second SPT client that hosts raids so the AI is computed somewhere other than the machine you play on. Managing it means keeping two installs in step, and the rules are not symmetric.
+
+Press **Headless** in the header and the app splits: main install on the left, the parity report down the middle, the headless client on the right.
+
+**The fact that shapes everything**, from [Fika's wiki](https://wiki.project-fika.com/faqandguides/headless-client-faq-and-common-issues/guidance-on-which-mods-should-be-used-on-the-headless-client):
+
+> The headless client is a *client* — clients only load things in `BepInEx/`. Any mod that is in `SPT/user/mods/` is loaded only by the backend server, SPT.Server.exe.
+
+So a server mod is never *missing* from the headless client; it cannot exist there. On the reference 54-mod setup that decides 26 mods structurally, with no judgement involved. What remains is the 28 client plugins, and those are classified from Fika's own decision procedure — stash-or-hideout-only and display-only plugins are not needed; anything altering in-raid behaviour is, because the headless client is the raid host and is authoritative on AI and inventory.
+
+| Where a verdict comes from | Strength |
+|---|---|
+| `manual` | your override — outranks everything |
+| `structural` | how SPT loads mods; not a judgement |
+| `rule` | named in Fika's guidance |
+| `pairing` | its server half is installed, so the shared server will load it |
+| `category` | guessed from the Forge category — marked with `?` |
+
+Measured on the reference setup: **26 of 28 client plugins classified (93%)**, 2 left for the user. Guesses are labelled as guesses, exactly as with Forge match provenance.
+
+The middle column reports what the two sides disagree on: version drift on a behaviour mod, plugins missing from the host, leftovers on the headless side, menu-patching plugins (a specific hazard — the headless client drives its own menus to enter and leave raids), and server mods copied into the headless folder where nothing will ever load them.
+
+`npm run audit:headless -- "D:\SPT" "D:\SPT_Headless"` runs the same code from the terminal. `npm run test:parity` covers the engine.
+
+Setting the headless side requires a real headless install — the app identifies one by `FikaHeadlessManager.exe` and will not accept an ordinary SPT client, since pointing both halves at the same folder would report perfect parity while nothing was hosting.
+
+---
+
 ## Features
+
+**Dual instance**
+- Manage a Fika headless client alongside the main install, side by side
+- Headless suitability ruleset derived from Fika's official guidance, with per-mod overrides
+- Parity reporting: version drift, missing plugins, stray server mods, menu-patching hazards
 
 **Installation**
 - Install from `.zip`, `.7z`, or `.rar`, via file picker or drag-and-drop
@@ -240,6 +279,7 @@ With GUID batching working, a 54-mod install resolves in roughly 3 requests and 
 ## Roadmap
 
 **Done in this fork**
+- [x] Dual-instance management — main install and Fika headless client side by side, with a headless suitability ruleset and parity reporting (v1.1.0)
 - [x] Fixed the `include_legacy` bug that disabled every identity filter
 - [x] PE/CLI metadata parser — mod identity read from assemblies rather than guessed
 - [x] Match provenance and a "needs confirmation" state
@@ -254,6 +294,11 @@ With GUID batching working, a 54-mod install resolves in roughly 3 requests and 
 - [ ] GitHub token support (60 req/hr unauthenticated vs 5,000 with a token — the difference between unusable and trivial), stored via Electron `safeStorage` rather than plaintext config
 - [ ] Add-your-own entries for mods with no harvested source link (~8% of what people actually install)
 - [ ] Decide what happens to catalogue browsing and one-click install once Forge is gone
+
+**Next — headless (v1.2)**
+- [ ] Copy a plugin from the main install to the headless client in one click, and fix version drift the same way — the parity report currently identifies the problem but you resolve it by hand
+- [ ] Carry mod configuration across (`BepInEx/config/*.cfg`, plus SAIN presets and Donuts config, which live in the plugin folder rather than in config/)
+- [ ] Let the ruleset be edited in the app, not just overridden per mod
 
 **Still open**
 - [ ] Read server-mod `Version` directly from the constructor IL, removing the fallback

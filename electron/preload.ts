@@ -5,13 +5,23 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   getSptPath: () => ipcRenderer.invoke("get-spt-path"),
   selectSptFolder: () => ipcRenderer.invoke("select-spt-folder"),
   openModHub: () => ipcRenderer.invoke("open-mod-hub"),
-  scanMods: () => ipcRenderer.invoke("scan-mods"),
+  scanMods: (target?: "main" | "headless") => ipcRenderer.invoke("scan-mods", target ?? "main"),
   installMod: () => ipcRenderer.invoke("install-mod"),
   installModFromPath: (filePath: string) => ipcRenderer.invoke("install-mod-from-path", filePath),
-  toggleMod: (mod: ModInfo) => ipcRenderer.invoke("toggle-mod", mod),
-  uninstallMod: (mod: ModInfo) => ipcRenderer.invoke("uninstall-mod", mod),
+  toggleMod: (mod: ModInfo, target?: "main" | "headless") => ipcRenderer.invoke("toggle-mod", mod, target ?? "main"),
+  uninstallMod: (mod: ModInfo, target?: "main" | "headless") => ipcRenderer.invoke("uninstall-mod", mod, target ?? "main"),
   renameMod: (modId: string, alias: string) => ipcRenderer.invoke("rename-mod", modId, alias),
-  openModFolder: (mod: ModInfo) => ipcRenderer.invoke("open-mod-folder", mod),
+  openModFolder: (mod: ModInfo, target?: "main" | "headless") =>
+    ipcRenderer.invoke("open-mod-folder", mod, target ?? "main"),
+
+  // --- Fika headless client ---
+  getHeadlessPath: () => ipcRenderer.invoke("get-headless-path"),
+  selectHeadlessFolder: () => ipcRenderer.invoke("select-headless-folder"),
+  clearHeadlessPath: () => ipcRenderer.invoke("clear-headless-path"),
+  getHeadlessView: () => ipcRenderer.invoke("get-headless-view"),
+  getHeadlessAdvice: () => ipcRenderer.invoke("get-headless-advice"),
+  setHeadlessOverride: (modKey: string, klass: string | null) =>
+    ipcRenderer.invoke("set-headless-override", modKey, klass),
   exportModList: () => ipcRenderer.invoke("export-mod-list"),
   importModList: () => ipcRenderer.invoke("import-mod-list"),
   getSptVersion: () => ipcRenderer.invoke("get-spt-version"),

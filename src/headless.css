@@ -1,0 +1,419 @@
+/* ==========================================================================
+   Dual instance — main install | parity | Fika headless client
+
+   The middle column is not decoration: it is the only place the relationship between the
+   two installs is stated. The panes are deliberately allowed to compress so that column
+   keeps its width at 1100px, the app's default window size.
+
+   Variables come from App.css; this file only adds the split view.
+   ========================================================================== */
+
+.hl-wrapper {
+  margin-top: 14px;
+}
+
+.hl-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+}
+
+.hl-toolbar strong {
+  font-family: var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+}
+
+.hl-toolbar-note {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.hl-toolbar-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+
+/* minmax(0, 1fr) on the panes stops a long mod name forcing the grid wider than the
+   window, which would push the gutter off screen — the one element that must stay. */
+.hl-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px minmax(0, 1fr);
+  align-items: start;
+}
+
+.hl-pane {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px 14px;
+  min-width: 0;
+}
+
+.hl-pane-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hl-pane-header h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hl-pane-sub {
+  display: block;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.hl-pane-count {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  color: var(--accent-strong);
+}
+
+.hl-pane-path {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  margin: 6px 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hl-search {
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.hl-group-title {
+  margin: 12px 0 6px;
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 4px;
+}
+
+.hl-group-title span {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-faint);
+  letter-spacing: 0;
+  text-transform: none;
+  margin-left: 6px;
+}
+
+.hl-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.hl-row {
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 2px solid transparent;
+}
+
+.hl-row.disabled {
+  opacity: 0.45;
+}
+
+.hl-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.hl-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.hl-version {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.hl-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+
+/* flex-shrink: 0 keeps the buttons a fixed size so the mod name absorbs the compression
+   instead — the name is ellipsised and has a tooltip, the buttons cannot be. */
+.hl-row-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.hl-row-actions button {
+  padding: 1px 6px;
+  font-size: 10px;
+  min-width: 0;
+}
+
+.hl-danger:hover {
+  border-color: var(--danger-strong);
+  color: var(--danger-strong);
+}
+
+/* --- verdict badges --- */
+.hl-badge {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  cursor: help;
+}
+
+.hl-required {
+  background: var(--accent-wash);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.hl-recommended {
+  background: rgba(122, 148, 86, 0.14);
+  border-color: var(--ok);
+  color: var(--ok-strong);
+}
+
+.hl-optional {
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+
+.hl-unnecessary {
+  border-color: var(--border);
+  color: var(--text-faint);
+}
+
+.hl-unknown {
+  border-color: #6b5a2e;
+  color: #c2a659;
+}
+
+.hl-server-only {
+  border-color: var(--border-soft);
+  color: var(--text-faint);
+  opacity: 0.75;
+}
+
+/* Marks an inference rather than a documented rule — a guess must look like a guess. */
+.hl-guess {
+  font-style: normal;
+  margin-left: 3px;
+  opacity: 0.8;
+}
+
+.hl-override {
+  padding: 1px 4px;
+  font-size: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+}
+
+/* --- issues --- */
+.hl-issue {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: var(--radius);
+  cursor: help;
+}
+
+.hl-issue-tag-missing-required,
+.hl-issue-tag-version-drift {
+  background: rgba(168, 73, 47, 0.18);
+  color: var(--danger-strong);
+}
+
+.hl-issue-tag-missing-recommended,
+.hl-issue-tag-unnecessary-menu-risk,
+.hl-issue-tag-server-mod-in-headless {
+  background: rgba(200, 117, 46, 0.14);
+  color: var(--accent-strong);
+}
+
+.hl-issue-tag-headless-only {
+  background: var(--bg-panel-raised);
+  color: var(--text-dim);
+}
+
+.hl-row.hl-issue-missing-required,
+.hl-row.hl-issue-version-drift {
+  border-left-color: var(--danger);
+}
+
+.hl-row.hl-issue-missing-recommended,
+.hl-row.hl-issue-server-mod-in-headless {
+  border-left-color: var(--accent);
+}
+
+/* --- the break down the middle --- */
+.hl-gutter {
+  padding: 10px 14px;
+  margin: 0 10px;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+
+.hl-gutter-title {
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.hl-gutter-counts {
+  list-style: none;
+  margin: 10px 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 8px;
+}
+
+.hl-gutter-counts li {
+  font-size: 10px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.hl-gutter-counts strong {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-dim);
+  display: block;
+}
+
+.hl-gutter-counts li.ok strong {
+  color: var(--ok-strong);
+}
+
+.hl-gutter-counts li.warn strong {
+  color: var(--accent-strong);
+}
+
+.hl-gutter-counts li.bad strong {
+  color: var(--danger-strong);
+}
+
+.hl-gutter-clear {
+  font-size: 11px;
+  color: var(--ok-strong);
+  line-height: 1.5;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 10px;
+}
+
+.hl-gutter-list {
+  list-style: none;
+  margin: 10px 0;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+.hl-gutter-item {
+  padding: 5px 6px;
+  margin-bottom: 4px;
+  border-radius: var(--radius);
+  cursor: help;
+  background: var(--bg-panel-raised);
+}
+
+.hl-gutter-issue {
+  display: block;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.9;
+}
+
+.hl-gutter-name {
+  display: block;
+  font-size: 11px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hl-gutter-versions {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--danger-strong);
+}
+
+.hl-gutter-more {
+  font-size: 10px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.hl-gutter-note {
+  font-size: 10px;
+  color: var(--text-faint);
+  line-height: 1.5;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 10px;
+  margin-bottom: 0;
+}
+
+/* Below ~980px three columns stop being readable; stack them, keeping the gutter between
+   the two panes so it still reads as the relationship between them, not a footer. */
+@media (max-width: 980px) {
+  .hl-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hl-gutter {
+    border-left: none;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    margin: 10px 0;
+  }
+}

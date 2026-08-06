@@ -31,12 +31,30 @@ import {
   dismissForgeUpdate,
   undismissForgeUpdate
 } from "./modManager";
-import { InstanceConfig, ModInfo } from "./types";
+import {
+  resolveHeadlessInstance,
+  describeHeadlessRejection,
+  buildParityReport,
+  classifyForHeadless,
+  buildServerCounterpartIndex,
+  forgeHintsFor,
+  normaliseModKey,
+  HeadlessClass
+} from "./headless";
+import { InstanceConfig, InstanceId, ModInfo } from "./types";
 
 const MOD_HUB_URL = "https://hub.sp-tarkov.com/";
 
 const store = new Store<InstanceConfig>({
-  defaults: { sptPath: null, serverRoot: null, sptVersionOverride: null, forgeStatusCache: null, forgeCheckedAt: null }
+  defaults: {
+    sptPath: null,
+    serverRoot: null,
+    headlessPath: null,
+    headlessOverrides: null,
+    sptVersionOverride: null,
+    forgeStatusCache: null,
+    forgeCheckedAt: null
+  }
 });
 
 // The stored sptPath is always the CLIENT root. serverRoot equals sptPath in the vast
@@ -45,6 +63,38 @@ const store = new Store<InstanceConfig>({
 // before that change, where serverRoot was never set.
 function getServerRoot(): string | null {
   return store.get("serverRoot") || store.get("sptPath");
+}
+
+/**
+ * Resolves the roots an operation should act on.
+ *
+ * The headless instance deliberately reports the SAME path for client and server. It has no
+ * server of its own — it shares the main instance's. Pointing serverRoot at the headless
+ * root means a scan will surface any server mods that were copied in there by mistake,
+ * which is worth showing precisely because nothing else ever will: they sit in a folder
+ * that looks correct and are silently never loaded.
+ */
+function rootsFor(target: InstanceId | undefined): { clientRoot: string; serverRoot: string } | null {
+  if (target === "headless") {
+    const headlessPath = store.get("headlessPath");
+    return headlessPath ? { clientRoot: headlessPath, serverRoot: headlessPath } : null;
+  }
+  const sptPath = store.get("sptPath");
+  return sptPath ? { clientRoot: sptPath, serverRoot: getServerRoot()! } : null;
+}
+
+function scanInstance(target: InstanceId): ModInfo[] {
+  const roots = rootsFor(target);
+  if (!roots) return [];
+  const instanceVersion = store.get("sptVersionOverride") ?? detectSptSemver(roots.clientRoot);
+  return scanMods(roots.clientRoot, roots.serverRoot).map((mod) => ({
+    ...mod,
+    sptCompatibility: checkSptCompatibility(mod.sptVersion, instanceVersion ?? undefined)
+  }));
+}
+
+function headlessOverrides(): Record<string, HeadlessClass> {
+  return (store.get("headlessOverrides") ?? {}) as Record<string, HeadlessClass>;
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -119,17 +169,96 @@ ipcMain.handle("select-spt-folder", async () => {
 });
 
 // --- IPC: mods ---
-ipcMain.handle("scan-mods", () => {
-  const sptPath = store.get("sptPath");
-  if (!sptPath) return [];
-  // Compatibility is computed here (not during the scan) because it depends on the SPT
-  // version CHOSEN by the user, which the backend only knows via the store. Doing it here
-  // avoids duplicating the version-comparison logic in the renderer process.
-  const instanceVersion = store.get("sptVersionOverride") ?? detectSptSemver(sptPath);
-  return scanMods(sptPath, getServerRoot()!).map((mod) => ({
-    ...mod,
-    sptCompatibility: checkSptCompatibility(mod.sptVersion, instanceVersion ?? undefined)
+// Compatibility is computed in scanInstance (not during the scan itself) because it depends
+// on the SPT version CHOSEN by the user, which the backend only knows via the store.
+ipcMain.handle("scan-mods", (_event, target: InstanceId = "main") => scanInstance(target));
+
+/* --- IPC: headless instance ------------------------------------------------
+ * A headless client is a second SPT+Fika CLIENT that hosts raids. It shares the main
+ * instance's server, so it has no server side of its own — see electron/headless.ts.
+ */
+ipcMain.handle("get-headless-path", () => store.get("headlessPath"));
+
+ipcMain.handle("select-headless-folder", async () => {
+  const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+  if (result.canceled || result.filePaths.length === 0) return { success: false };
+
+  const chosen = result.filePaths[0];
+  const resolved = resolveHeadlessInstance(chosen);
+  if (!resolved) {
+    return { success: false, message: describeHeadlessRejection(chosen) };
+  }
+  // Refusing to point both instances at the same folder. Otherwise the app would compare a
+  // folder with itself, report flawless parity, and imply a headless client is set up when
+  // nothing is actually hosting.
+  if (store.get("sptPath") && path.resolve(resolved.instance.root) === path.resolve(store.get("sptPath")!)) {
+    return { success: false, message: "That is your main SPT install. The headless client must be a separate install." };
+  }
+  store.set("headlessPath", resolved.instance.root);
+  return {
+    success: true,
+    path: resolved.instance.root,
+    message: resolved.autoDetected ? `Headless client found at: ${resolved.instance.root}` : undefined
+  };
+});
+
+ipcMain.handle("clear-headless-path", () => {
+  store.set("headlessPath", null);
+  return { success: true };
+});
+
+/**
+ * The dual-instance view in one call: both mod lists plus the reconciliation between them.
+ * Returned together so the two panels can never render from different scans of the disk.
+ */
+ipcMain.handle("get-headless-view", () => {
+  const headlessPath = store.get("headlessPath");
+  if (!headlessPath) return { configured: false };
+
+  const mainMods = scanInstance("main");
+  const headlessMods = scanInstance("headless");
+  const report = buildParityReport(mainMods, headlessMods, {
+    manual: headlessOverrides(),
+    forge: { ...forgeHintsFor(mainMods), ...forgeHintsFor(headlessMods) }
+  });
+
+  return {
+    configured: true,
+    headlessPath,
+    mainMods,
+    headlessMods,
+    parity: report
+  };
+});
+
+/**
+ * Classifies the main instance's mods for headless suitability WITHOUT a headless install
+ * configured — so the guidance is useful before anyone sets one up.
+ */
+ipcMain.handle("get-headless-advice", () => {
+  const mainMods = scanInstance("main");
+  const serverCounterparts = buildServerCounterpartIndex(mainMods);
+  const hints = forgeHintsFor(mainMods);
+  const manual = headlessOverrides();
+  return mainMods.map((mod) => ({
+    id: mod.id,
+    verdict: classifyForHeadless(mod, {
+      manual: manual[normaliseModKey(mod.id)],
+      forge: hints[normaliseModKey(mod.id)],
+      serverCounterparts
+    })
   }));
+});
+
+// The user's judgement outranks every rule — the same escape hatch the Forge matcher has.
+ipcMain.handle("set-headless-override", (_event, modKey: string, klass: HeadlessClass | null) => {
+  const key = normaliseModKey(modKey || "");
+  if (!key) return { success: false, message: "A mod is required." };
+  const overrides = { ...headlessOverrides() };
+  if (klass) overrides[key] = klass;
+  else delete overrides[key];
+  store.set("headlessOverrides", overrides);
+  return { success: true };
 });
 
 ipcMain.handle("get-spt-version", () => {
@@ -360,16 +489,16 @@ ipcMain.handle("install-mod-abort", (_event, tmpDir: string) => {
   return discardPendingInstall(sptPath, tmpDir);
 });
 
-ipcMain.handle("toggle-mod", (_event, mod: ModInfo) => {
-  const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "No SPT instance configured." };
-  return toggleMod(sptPath, getServerRoot()!, mod);
+ipcMain.handle("toggle-mod", (_event, mod: ModInfo, target: InstanceId = "main") => {
+  const roots = rootsFor(target);
+  if (!roots) return { success: false, message: `No ${target} instance configured.` };
+  return toggleMod(roots.clientRoot, roots.serverRoot, mod);
 });
 
-ipcMain.handle("uninstall-mod", (_event, mod: ModInfo) => {
-  const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "No SPT instance configured." };
-  return uninstallMod(sptPath, getServerRoot()!, mod);
+ipcMain.handle("uninstall-mod", (_event, mod: ModInfo, target: InstanceId = "main") => {
+  const roots = rootsFor(target);
+  if (!roots) return { success: false, message: `No ${target} instance configured.` };
+  return uninstallMod(roots.clientRoot, roots.serverRoot, mod);
 });
 
 ipcMain.handle("rename-mod", (_event, modId: string, alias: string) => {
@@ -378,18 +507,18 @@ ipcMain.handle("rename-mod", (_event, modId: string, alias: string) => {
   return setModAlias(sptPath, modId, alias);
 });
 
-ipcMain.handle("open-mod-folder", (_event, mod: ModInfo) => {
-  const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "No SPT instance configured." };
+ipcMain.handle("open-mod-folder", (_event, mod: ModInfo, target: InstanceId = "main") => {
+  const roots = rootsFor(target);
+  if (!roots) return { success: false, message: `No ${target} instance configured.` };
 
-  const target = resolveModPath(sptPath, getServerRoot()!, mod);
-  if (!fs.existsSync(target)) {
-    return { success: false, message: "Mod path not found: " + target };
+  const modPath = resolveModPath(roots.clientRoot, roots.serverRoot, mod);
+  if (!fs.existsSync(modPath)) {
+    return { success: false, message: "Mod path not found: " + modPath };
   }
-  if (fs.statSync(target).isDirectory()) {
-    shell.openPath(target);
+  if (fs.statSync(modPath).isDirectory()) {
+    shell.openPath(modPath);
   } else {
-    shell.showItemInFolder(target);
+    shell.showItemInFolder(modPath);
   }
   return { success: true, message: "Folder opened." };
 });

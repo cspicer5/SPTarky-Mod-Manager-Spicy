@@ -131,17 +131,87 @@ export interface AppUpdateInfo {
   releaseName?: string;
 }
 
+/** Which install an action applies to. See electron/types.ts for what distinguishes them. */
+export type InstanceId = "main" | "headless";
+
+/** How suitable a mod is for a Fika headless client. */
+export type HeadlessClass = "required" | "recommended" | "optional" | "unnecessary" | "unknown" | "server-only";
+
+/**
+ * What a verdict rests on. Shown in the UI, because "Fika's wiki names this mod" and "its
+ * Forge category is Audio" are not claims of equal strength.
+ */
+export type HeadlessVerdictSource = "manual" | "structural" | "rule" | "pairing" | "category" | "none";
+
+export interface HeadlessVerdict {
+  klass: HeadlessClass;
+  source: HeadlessVerdictSource;
+  why: string;
+  menuRisk?: boolean;
+  config?: string;
+}
+
+export type ParityIssue =
+  | "version-drift"
+  | "missing-required"
+  | "missing-recommended"
+  | "headless-only"
+  | "server-mod-in-headless"
+  | "unnecessary-menu-risk";
+
+export interface ParityRow {
+  /** Collision-safe row identity, scoped by side (server: / client:). */
+  key: string;
+  /** Plain normalised mod name — manual overrides apply to a mod, not to a side. */
+  modKey: string;
+  name: string;
+  type: ModType;
+  mainVersion?: string;
+  headlessVersion?: string;
+  presence: "both" | "main-only" | "headless-only";
+  verdict: HeadlessVerdict;
+  issue?: ParityIssue;
+  detail?: string;
+}
+
+export interface ParityReport {
+  rows: ParityRow[];
+  counts: {
+    aligned: number;
+    versionDrift: number;
+    missingOnHeadless: number;
+    headlessOnly: number;
+    needsReview: number;
+  };
+}
+
+export interface HeadlessView {
+  configured: boolean;
+  headlessPath?: string;
+  mainMods?: ModInfo[];
+  headlessMods?: ModInfo[];
+  parity?: ParityReport;
+}
+
 export interface ModManagerAPI {
   getSptPath: () => Promise<{ path: string; serverRoot: string; split: boolean } | null>;
   selectSptFolder: () => Promise<{ success: boolean; path?: string; serverRoot?: string; split?: boolean; message?: string }>;
   openModHub: () => Promise<void>;
-  scanMods: () => Promise<ModInfo[]>;
+  scanMods: (target?: InstanceId) => Promise<ModInfo[]>;
   installMod: () => Promise<InstallResult>;
   installModFromPath: (filePath: string) => Promise<InstallResult>;
-  toggleMod: (mod: ModInfo) => Promise<{ success: boolean; message: string }>;
-  uninstallMod: (mod: ModInfo) => Promise<{ success: boolean; message: string }>;
+  toggleMod: (mod: ModInfo, target?: InstanceId) => Promise<{ success: boolean; message: string }>;
+  uninstallMod: (mod: ModInfo, target?: InstanceId) => Promise<{ success: boolean; message: string }>;
   renameMod: (modId: string, alias: string) => Promise<{ success: boolean; message: string }>;
-  openModFolder: (mod: ModInfo) => Promise<{ success: boolean; message: string }>;
+  openModFolder: (mod: ModInfo, target?: InstanceId) => Promise<{ success: boolean; message: string }>;
+
+  // --- Fika headless client ---
+  getHeadlessPath: () => Promise<string | null>;
+  selectHeadlessFolder: () => Promise<{ success: boolean; path?: string; message?: string }>;
+  clearHeadlessPath: () => Promise<{ success: boolean }>;
+  getHeadlessView: () => Promise<HeadlessView>;
+  getHeadlessAdvice: () => Promise<{ id: string; verdict: HeadlessVerdict }[]>;
+  setHeadlessOverride: (modKey: string, klass: HeadlessClass | null) => Promise<{ success: boolean; message?: string }>;
   exportModList: () => Promise<{ success: boolean; message: string }>;
   importModList: () => Promise<{
     success: boolean;

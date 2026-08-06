@@ -9,9 +9,13 @@ import {
   ForgeCatalogMod,
   ForgeCategory,
   InstallResult,
-  AppUpdateInfo
+  AppUpdateInfo,
+  HeadlessClass,
+  HeadlessView as HeadlessViewData,
+  InstanceId
 } from "./types";
 import { Lang, translate, translateBackendMessage } from "./i18n";
+import HeadlessView from "./HeadlessView";
 
 
 interface Toast {
@@ -179,6 +183,90 @@ export default function App() {
     setMods(list);
     return list;
   }, []);
+
+  /* --- Fika headless client ------------------------------------------------
+   * Dual mode is only ever entered deliberately, and only once a headless install has been
+   * located: an SPT setup without one is the normal case, and the split view would be a
+   * confusing empty half for everyone in it.
+   */
+  const [headlessPath, setHeadlessPath] = useState<string | null>(null);
+  const [dualMode, setDualMode] = useState(false);
+  const [headlessData, setHeadlessData] = useState<HeadlessViewData | null>(null);
+  const [headlessOverrides, setHeadlessOverrides] = useState<Record<string, HeadlessClass>>({});
+
+  useEffect(() => {
+    window.modManagerAPI.getHeadlessPath().then(setHeadlessPath);
+  }, []);
+
+  const refreshHeadless = useCallback(async () => {
+    const view = await window.modManagerAPI.getHeadlessView();
+    setHeadlessData(view.configured ? view : null);
+    if (view.configured && view.headlessPath) setHeadlessPath(view.headlessPath);
+    return view;
+  }, []);
+
+  useEffect(() => {
+    if (dualMode) void refreshHeadless();
+  }, [dualMode, refreshHeadless]);
+
+  async function handleSelectHeadlessFolder() {
+    const result = await window.modManagerAPI.selectHeadlessFolder();
+    if (!result.success) {
+      if (result.message) pushToast(result.message, false);
+      return;
+    }
+    setHeadlessPath(result.path ?? null);
+    setDualMode(true);
+    await refreshHeadless();
+    pushToast(result.message ?? "Headless client linked.", true);
+  }
+
+  // Entering dual mode without a configured headless install goes straight to the folder
+  // picker, rather than showing an empty right-hand pane and leaving the user to work out
+  // what to do with it.
+  async function handleToggleDualMode() {
+    if (dualMode) {
+      setDualMode(false);
+      return;
+    }
+    if (!headlessPath) {
+      await handleSelectHeadlessFolder();
+      return;
+    }
+    setDualMode(true);
+  }
+
+  async function handleHeadlessOverride(key: string, klass: HeadlessClass | null) {
+    setHeadlessOverrides((prev) => {
+      const next = { ...prev };
+      if (klass) next[key] = klass;
+      else delete next[key];
+      return next;
+    });
+    await window.modManagerAPI.setHeadlessOverride(key, klass);
+    await refreshHeadless();
+  }
+
+  async function handleInstanceToggle(mod: ModInfo, target: InstanceId) {
+    const result = await window.modManagerAPI.toggleMod(mod, target);
+    pushToast(tMsg(result.message), result.success);
+    await refreshHeadless();
+    if (target === "main") await refreshMods();
+  }
+
+  async function handleInstanceUninstall(mod: ModInfo, target: InstanceId) {
+    const where = target === "headless" ? "the headless client" : "the main install";
+    if (!window.confirm(`Remove "${mod.name}" from ${where}?`)) return;
+    const result = await window.modManagerAPI.uninstallMod(mod, target);
+    pushToast(tMsg(result.message), result.success);
+    await refreshHeadless();
+    if (target === "main") await refreshMods();
+  }
+
+  async function handleInstanceOpenFolder(mod: ModInfo, target: InstanceId) {
+    const result = await window.modManagerAPI.openModFolder(mod, target);
+    if (!result.success) pushToast(tMsg(result.message), false);
+  }
 
   // Closes the open actions menu when clicking outside it.
   useEffect(() => {
@@ -1086,6 +1174,17 @@ export default function App() {
                 {t("header.browseForge")}
               </button>
               <button onClick={handleOpenModHub} title={t("header.openHubTitle")}>{t("header.openHub")}</button>
+              <button
+                onClick={handleToggleDualMode}
+                className={dualMode ? "primary" : ""}
+                title={
+                  headlessPath
+                    ? "Show the main install and the Fika headless client side by side"
+                    : "Link a Fika headless client to manage it alongside this install"
+                }
+              >
+                {dualMode ? "Single view" : headlessPath ? "Headless" : "Add headless"}
+              </button>
               <button onClick={handleSelectFolder} title={t("header.changeInstanceTitle")}>{t("header.changeInstance")}</button>
               <button onClick={handleInstall} disabled={loading} className="primary" title={t("header.installButtonTitle")}>
                 {loading ? t("header.installing") : t("header.installButton")}
@@ -1109,6 +1208,28 @@ export default function App() {
             <span className="summary-item summary-valid" title={t("summary.validInstanceTitle")}>✔ {t("summary.validInstance")}</span>
           </div>
 
+          {/* Dual mode replaces the single mod list wholesale rather than sitting alongside
+              it: the filters, sorting and bulk selection below all act on the main instance
+              alone, and leaving them on screen above a two-instance view would imply they
+              apply to both. */}
+          {dualMode && headlessData?.parity ? (
+            <HeadlessView
+              mainPath={sptPath}
+              headlessPath={headlessData.headlessPath ?? headlessPath}
+              mainMods={headlessData.mainMods ?? []}
+              headlessMods={headlessData.headlessMods ?? []}
+              parity={headlessData.parity}
+              overrides={headlessOverrides}
+              onOverride={handleHeadlessOverride}
+              onToggle={handleInstanceToggle}
+              onUninstall={handleInstanceUninstall}
+              onOpenFolder={handleInstanceOpenFolder}
+              onChangeHeadless={handleSelectHeadlessFolder}
+              onDisableDualMode={() => setDualMode(false)}
+              onRefresh={() => void refreshHeadless()}
+            />
+          ) : (
+          <>
           <input
             className="search-bar"
             type="text"
@@ -1421,6 +1542,8 @@ export default function App() {
           <Section title="Client Mods" mods={filteredMods.filter((m) => m.type === "client")} {...listProps} />
           {mods.some((m) => m.type === "hybrid" || m.type === "unknown") && (
             <Section title="Hybrid / Unknown" mods={filteredMods.filter((m) => m.type === "hybrid" || m.type === "unknown")} {...listProps} />
+          )}
+          </>
           )}
         </div>
       )}

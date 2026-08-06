@@ -33,9 +33,26 @@ export interface ModInfo {
   packageSiblings?: { id: string; type: ModType }[];
 }
 
+/**
+ * Which install an operation applies to.
+ *
+ * "main" is the ordinary SPT instance: a client (BepInEx/) and a server (user/mods/).
+ * "headless" is a Fika headless client, which has a client side ONLY — it shares the main
+ * instance's server. Every path-taking IPC handler carries this, because both instances are
+ * visible on screen at once and either can be acted on.
+ */
+export type InstanceId = "main" | "headless";
+
 export interface InstanceConfig {
   sptPath: string | null;
   serverRoot: string | null; // usually the same as sptPath; differs only in "split" installs (client in one folder, server in a subfolder)
+  // Root of the Fika headless client, when one is configured. There is no serverRoot to go
+  // with it: a headless client loads nothing from user/mods, so it has no server side to
+  // point at. Null means the dual-instance view is simply not shown.
+  headlessPath: string | null;
+  // Manual headless classifications, keyed by normalised mod name. The user's judgement
+  // outranks every rule, exactly as a manual Forge pin outranks every matching strategy.
+  headlessOverrides: Record<string, string> | null;
   sptVersionOverride: string | null;
   forgeStatusCache: { name: string; status: "update" | "blocked" | "incompatible" | "info"; version?: string }[] | null;
   forgeCheckedAt: string | null;

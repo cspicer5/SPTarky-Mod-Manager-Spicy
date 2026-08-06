@@ -1,6 +1,6 @@
 {
   "name": "sptarky-mod-manager-spicy",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "A Mod Manager for Single Player Tarkov (SPT). Fork of SPT Mod Manager by Matheus Guida (TioEmir).",
   "license": "MIT",
   "author": "cspicer5",
@@ -20,7 +20,9 @@
     "build": "tsc -b && vite build && tsc -p electron/tsconfig.json",
     "electron:dev": "npm run build && electron .",
     "electron:build": "npm run build && electron-builder",
-    "audit:forge": "npm run build && node scripts/audit-forge-match.js"
+    "audit:forge": "npm run build && node scripts/audit-forge-match.js",
+    "audit:headless": "npm run build && node scripts/audit-headless.js",
+    "test:parity": "tsc -p electron/tsconfig.json && node scripts/test-parity.js"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
@@ -51,7 +53,8 @@
     "copyright": "Copyright © 2026 cspicer5. Based on SPT Mod Manager © 2026 Matheus Guida (TioEmir), MIT.",
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "data/headless-rules.json"
     ],
     "asarUnpack": [
       "node_modules/7zip-bin/**/*"

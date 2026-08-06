@@ -3,9 +3,9 @@
  *
  * WHY THIS EXISTS AND WHY IT IS URGENT
  * ------------------------------------
- * SPT Forge shuts down on 2026-08-12. The mapping from a mod's identity (GUID / Forge id)
- * to its source repository exists ONLY in the Forge API. Once the API is gone, that
- * mapping cannot be rebuilt at any cost.
+ * SPT Forge shuts down on 2026-08-10 (brought forward from the 12th). The mapping from a
+ * mod's identity (GUID / Forge id) to its source repository exists ONLY in the Forge API.
+ * Once the API is gone, that mapping cannot be rebuilt at any cost.
  *
  * This captures it while it is still available, so update checking can move to GitHub
  * releases afterwards. See docs/FORGE-SHUTDOWN.md.
@@ -93,7 +93,20 @@ function condense(m) {
     name: m.name,
     slug: m.slug,
     owner: m.owner?.name ?? undefined,
-    category: m.category?.name ?? undefined,
+    // The category object keys its label as `title`, not `name`. Reading `.name` returned
+    // undefined for all 2389 mods on the first harvest and the loss was silent, because an
+    // absent optional field looks exactly like a mod with no category.
+    category: m.category?.title ?? undefined,
+    // Forge's own Fika co-op compatibility flag. The only machine-readable statement
+    // anywhere about how a mod behaves in multiplayer, and it dies with the API.
+    //
+    // Captured verbatim, but read it carefully: TRUE is meaningful, FALSE is not. The field
+    // is present on every mod, yet it is author-declared and widely left unset - BigBrain
+    // and Waypoints both report false, and both are SAIN dependencies that plainly work
+    // under Fika. Verified against the live /mod/<id> endpoint, so this is the API's own
+    // answer rather than an artefact of the two-pass merge. Treat false as "not declared".
+    fikaCompatible: typeof m.fika_compatibility === "boolean" ? m.fika_compatibility : undefined,
+    teaser: typeof m.teaser === "string" && m.teaser ? m.teaser : undefined,
     downloads: m.downloads ?? 0,
     detailUrl: m.detail_url ?? undefined,
     sourceUrl: github?.url ?? normalised[0]?.url ?? undefined,
@@ -126,7 +139,7 @@ function save(mods, pagesDone, complete) {
     // Stamped so a future reader knows how stale this is, and that it predates the
     // shutdown rather than being a partial post-mortem capture.
     harvestedAt: new Date().toISOString(),
-    forgeShutdownDate: "2026-08-12",
+    forgeShutdownDate: "2026-08-10",
     complete,
     counts: { total: list.length, withSource, withGithub },
     mods: list,
@@ -210,12 +223,18 @@ async function harvestPass(label, includeLegacy, state) {
   console.log("-".repeat(72));
   console.log("SUMMARY");
   console.log("-".repeat(72));
+  const withCategory = list.filter((m) => m.category).length;
+  const withFika = list.filter((m) => typeof m.fikaCompatible === "boolean").length;
+  const fikaYes = list.filter((m) => m.fikaCompatible === true).length;
+
   console.log(`  mods captured     : ${list.length}`);
   console.log(`  with a GUID       : ${withGuid}  (${((100 * withGuid) / list.length).toFixed(1)}%)`);
+  console.log(`  with a category   : ${withCategory}  (${((100 * withCategory) / list.length).toFixed(1)}%)`);
+  console.log(`  with a Fika flag  : ${withFika}  (${fikaYes} compatible, ${withFika - fikaYes} not)`);
   console.log(`  with a source URL : ${withSource}  (${((100 * withSource) / list.length).toFixed(1)}%)`);
   console.log(`  of those, GitHub  : ${withGithub}  (${((100 * withGithub) / Math.max(withSource, 1)).toFixed(1)}%)`);
   console.log(`  file size         : ${(fs.statSync(OUT).size / 1024 / 1024).toFixed(2)} MB`);
   console.log("");
-  console.log("  COMMIT THIS FILE. It cannot be regenerated after 2026-08-12.");
+  console.log("  COMMIT THIS FILE. It cannot be regenerated after 2026-08-10.");
   console.log("");
 })();

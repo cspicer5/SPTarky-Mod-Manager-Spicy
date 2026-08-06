@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "updatedAt": "2026-08-06",
+  "sources": [
+    "https://wiki.project-fika.com/faqandguides/headless-client-faq-and-common-issues/guidance-on-which-mods-should-be-used-on-the-headless-client.md",
+    "https://wiki.project-fika.com/faqandguides/headless-client-faq-and-common-issues/configure-mods-for-the-headless-client.md",
+    "https://wiki.project-fika.com/advanced-features/headless-client.md"
+  ],
+  "note": [
+    "The single structural fact that drives everything here, quoted from Fika's wiki:",
+    "'The headless client is a *client* - clients only load things in BepInEx/. Any mod that is",
+    "in SPT/user/mods/ is loaded only by the backend server, SPT.Server.exe.'",
+    "",
+    "So a server mod is never 'incompatible' with the headless client; it is simply never loaded",
+    "by it. That is a structural fact, not a judgement, and it is decided in code rather than",
+    "listed here.",
+    "",
+    "For client plugins, Fika's guidance is a decision procedure rather than a list:",
+    "  1. Only has an effect in stash or hideout?      -> probably NOT needed on headless.",
+    "  2. Only changes how information is displayed?   -> probably NOT needed on headless.",
+    "  3. Changes in-raid behaviour in any way?        -> probably IS needed on headless.",
+    "",
+    "Two cautions that the wiki states explicitly and that this ruleset preserves:",
+    "  - 'not needed' is NOT the same as 'will break'. The wiki says unnecessary plugins 'may be",
+    "    fine to leave installed... they are unlikely to *solve* any issues'. This file therefore",
+    "    never tells a user to remove something merely because it is unnecessary.",
+    "  - the headless client navigates menus automatically to start and finish a raid, so",
+    "    'anything that changes menus or patches menus may cause problems'. That is the one place",
+    "    an otherwise-harmless display mod becomes a real risk."
+  ],
+  "classes": {
+    "required": "The headless client cannot host correctly without it.",
+    "recommended": "Changes in-raid behaviour. The headless client is the raid host and is authoritative, so it should carry this at the same version as the main install.",
+    "optional": "Safe on the headless client, but it gains nothing by being there.",
+    "unnecessary": "Only affects stash, hideout, or presentation. No benefit on a headless client; may interfere with its automated menu navigation.",
+    "unknown": "No basis to judge. Fika's guidance is to test these rather than guess."
+  },
+  "rules": [
+    {
+      "id": "spt-core",
+      "match": { "folder": ["spt"] },
+      "class": "required",
+      "why": "SPT's own client plugin. Present in every SPT client, headless included."
+    },
+    {
+      "id": "fika-core",
+      "match": { "folder": ["fika"], "guid": ["com.fika.core"] },
+      "class": "required",
+      "why": "The headless client is a Fika client. Without the Fika plugin there is nothing to host with."
+    },
+    {
+      "id": "sain",
+      "match": { "folder": ["sain"], "guid": ["me.sol.sain"] },
+      "class": "recommended",
+      "why": "Named by Fika's wiki as the archetypal in-raid behaviour mod. It replaces AI combat, which the raid host computes.",
+      "config": "SAIN's settings live in BepInEx/plugins/SAIN/Presets/. Configure on the main install and copy the whole SAIN folder across; the headless client has no GUI to configure it with."
+    },
+    {
+      "id": "bigbrain",
+      "match": { "folder": ["drakiaxyz-bigbrain"], "guid": ["xyz.drakia.bigbrain"] },
+      "class": "recommended",
+      "why": "AI decision-layer framework that SAIN and most bot mods build on. If an AI mod is on the headless client, this must be too.",
+      "dependencyOf": ["sain"]
+    },
+    {
+      "id": "waypoints",
+      "match": { "folder": ["drakiaxyz-waypoints"], "guid": ["xyz.drakia.waypoints"] },
+      "class": "recommended",
+      "why": "Expands the bot navmesh. Bot navigation is computed by the raid host, so a mismatch changes how bots move for everyone.",
+      "dependencyOf": ["sain"]
+    },
+    {
+      "id": "looting-bots",
+      "match": { "folder": ["loootingbots", "lootingbots"], "guid": ["me.skwizzy.lootingbots"] },
+      "class": "recommended",
+      "why": "Gives bots looting behaviour in raid — host-side AI behaviour."
+    },
+    {
+      "id": "swag-donuts",
+      "match": { "folder": ["dvize.donuts", "donuts", "swag"] },
+      "class": "recommended",
+      "why": "Spawn waves and bot placement. Spawning is decided by the raid host.",
+      "config": "Donuts settings live in BepInEx/plugins/dvize.Donuts/Config. Configure on the main install and copy the folder across."
+    },
+    {
+      "id": "bot-placement",
+      "match": { "folder": ["acidphantasm-botplacementsystem", "morebotsapi"] },
+      "class": "recommended",
+      "why": "Alters where and how many bots spawn — decided by the raid host."
+    },
+    {
+      "id": "uifixes",
+      "match": { "folder": ["tyfon.uifixes", "tyfon.uifixes.net"], "guid": ["tyfon.uifixes"] },
+      "class": "recommended",
+      "why": "Named explicitly by Fika's wiki as a non-obvious case: it changes how inventory *behaves*, and the raid host is authoritative on inventory actions."
+    },
+    {
+      "id": "amands-graphics",
+      "match": { "folder": ["amandsgraphics"] },
+      "class": "unnecessary",
+      "why": "Named by Fika's wiki as display-only. The headless client renders nothing at all."
+    },
+    {
+      "id": "dynamic-maps",
+      "match": { "folder": ["dynamicmaps"] },
+      "class": "unnecessary",
+      "why": "Named by Fika's wiki as display-only: it presents information the client already has."
+    },
+    {
+      "id": "more-checkmarks",
+      "match": { "folder": ["morecheckmarks"] },
+      "class": "unnecessary",
+      "why": "Named by Fika's wiki as display-only."
+    },
+    {
+      "id": "item-sell-price",
+      "match": { "folder": ["itemsellprice"] },
+      "class": "unnecessary",
+      "why": "Named by Fika's wiki as display-only."
+    },
+    {
+      "id": "quicksell",
+      "match": {
+        "folder": ["quicksell", "com.swiftxp.spt.showmethemoney", "com.swiftxp.spt.showmethemoney.quicksell"]
+      },
+      "class": "unnecessary",
+      "why": "Named by Fika's wiki as the archetypal stash-only mod: it affects in-stash behaviour, which a headless client never performs."
+    },
+    {
+      "id": "trader-ui",
+      "match": { "folder": ["kaeno-traderscrolling"] },
+      "class": "unnecessary",
+      "why": "Trader menu behaviour — out of raid. Also patches menus, which the headless client navigates automatically.",
+      "menuRisk": true
+    },
+    {
+      "id": "fps-limit",
+      "match": { "folder": ["expandedfpslimit"] },
+      "class": "unnecessary",
+      "why": "Frame-rate limiting on a client whose graphics rendering is disabled."
+    },
+    {
+      "id": "visual-fx",
+      "match": { "folder": ["hollywoodfx", "hollywoodgraphics"] },
+      "class": "unnecessary",
+      "why": "Visual effects only. The headless client disables graphics rendering."
+    },
+    {
+      "id": "item-context-menu",
+      "match": { "folder": ["itemcontextmenuextended"] },
+      "class": "optional",
+      "why": "Fika's wiki uses this as its example of a mod that only makes existing behaviour accessible in a new way rather than changing it — so it is not required, but does not hurt.",
+      "menuRisk": true
+    },
+    {
+      "id": "search-open-containers",
+      "match": { "folder": ["searchopencontainers"] },
+      "class": "unknown",
+      "why": "Fika's wiki calls this one out by name as genuinely ambiguous — it can be read either as changing behaviour or as purely client-side. Test it rather than assume."
+    }
+  ],
+  "categoryHints": {
+    "_note": "Weak signals from the mod's Forge category, used only when no rule matches. These produce a suggestion to review, never an assertion — Forge categories describe subject matter, not raid-time behaviour.",
+    "Bots": "recommended",
+    "Overhauls": "recommended",
+    "Audio": "unnecessary",
+    "Retextures": "unnecessary",
+    "Clothing": "unnecessary",
+    "Hideout": "unnecessary",
+    "Traders": "unnecessary"
+  }
+}

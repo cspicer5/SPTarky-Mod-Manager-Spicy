@@ -883,7 +883,7 @@ export interface ConflictReport {
  * "~4.0"), so it works without querying any API at all.
  *
  * That property is about to matter a great deal. The original author noted this mattered
- * "now that Forge is going offline" — SPT Forge is scheduled to shut down on 2026-08-12.
+ * "now that Forge is going offline" — SPT Forge is scheduled to shut down on 2026-08-10.
  * When it does, every Forge-backed feature in this app stops working, and this local check
  * becomes the ONLY compatibility information available. Treat it as load-bearing, not as a
  * fallback. See docs/FORGE-SHUTDOWN.md.

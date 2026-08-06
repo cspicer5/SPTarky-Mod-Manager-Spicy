@@ -1,6 +1,6 @@
-# SPT Forge shutdown — 2026-08-12
+# SPT Forge shutdown — 2026-08-10
 
-SPT Forge is scheduled to shut down on **12 August 2026**. Every Forge-backed feature in
+SPT Forge is scheduled to shut down on **10 August 2026**. Every Forge-backed feature in
 this app stops working on that date. This note records what breaks, what still works, and
 what the options are afterwards.
 
