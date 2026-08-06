@@ -242,6 +242,19 @@ export interface HeadlessView {
   parity?: ParityReport;
 }
 
+export interface AppRelease {
+  tag: string;
+  version: string;
+  name: string;
+  publishedAt?: string;
+  notes?: string;
+  assetUrl?: string;
+  assetName?: string;
+  assetSize?: number;
+  prerelease: boolean;
+  isCurrent: boolean;
+}
+
 export interface ModManagerAPI {
   getSptPath: () => Promise<{ path: string; serverRoot: string; split: boolean } | null>;
   selectSptFolder: () => Promise<{ success: boolean; path?: string; serverRoot?: string; split?: boolean; message?: string }>;
@@ -308,6 +321,9 @@ export interface ModManagerAPI {
   }) => Promise<{ success: boolean; result?: ForgeSearchResult; message?: string }>;
   getForgeCategories: () => Promise<ForgeCategory[]>;
   checkAppUpdate: () => Promise<AppUpdateInfo>;
+  listAppReleases: () => Promise<{ releases: AppRelease[]; error?: string }>;
+  installAppRelease: (tag: string) => Promise<{ success: boolean; message: string }>;
+  onAppUpdateProgress: (callback: (data: { received: number; total: number }) => void) => () => void;
   onForgeCheckProgress: (callback: (data: { done: number; total: number }) => void) => () => void;
   openReleasePage: (url: string) => Promise<{ success: boolean }>;
   findForgeDownloadsForNames: (

@@ -10,10 +10,12 @@ import {
   ForgeCategory,
   InstallResult,
   AppUpdateInfo,
+  AppRelease,
   HeadlessClass,
   HeadlessView as HeadlessViewData,
   InstanceId,
-  ServerSyncReport
+  ServerSyncReport,
+  ServerSyncRow
 } from "./types";
 import { Lang, translate, translateBackendMessage } from "./i18n";
 import InstancesView from "./HeadlessView";
@@ -33,6 +35,22 @@ type SortDirection = "asc" | "desc";
 
 function selectionKey(mod: ModInfo): string {
   return `${mod.type}:${mod.id}`;
+}
+
+/** Numeric semver comparison, so 0.10.0 sorts above 0.9.0 as it should. */
+function compareSemver(a: string, b: string): number {
+  const parse = (v: string) => v.replace(/^v/i, "").split(".").map((n) => parseInt(n, 10) || 0);
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+function formatBytes(n: number): string {
+  return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
 }
 
 function ToastStack({ toasts }: { toasts: Toast[] }) {
@@ -132,11 +150,73 @@ export default function App() {
     return unsubscribe;
   }, []);
 
+  /* --- updating the app itself --------------------------------------------
+   * A version list rather than just "update to latest", so a bad release can be stepped
+   * back from without hunting for a zip. Downgrading is an explicit choice, not the default.
+   */
+  const [updatePanelOpen, setUpdatePanelOpen] = useState(false);
+  const [appReleases, setAppReleases] = useState<AppRelease[]>([]);
+  const [releasesError, setReleasesError] = useState<string | null>(null);
+  const [selectedRelease, setSelectedRelease] = useState<string>("");
+  const [loadingReleases, setLoadingReleases] = useState(false);
+  const [installingApp, setInstallingApp] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<{ received: number; total: number } | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = window.modManagerAPI.onAppUpdateProgress(setUpdateProgress);
+    return unsubscribe;
+  }, []);
+
+  async function openUpdatePanel() {
+    setUpdatePanelOpen(true);
+    setLoadingReleases(true);
+    setReleasesError(null);
+    try {
+      const { releases, error } = await window.modManagerAPI.listAppReleases();
+      setAppReleases(releases);
+      setReleasesError(error ?? null);
+      // Defaults to the newest release that is not the one already running.
+      const newest = releases.find((r) => !r.prerelease) ?? releases[0];
+      setSelectedRelease(newest?.tag ?? "");
+    } finally {
+      setLoadingReleases(false);
+    }
+  }
+
+  async function handleInstallAppRelease() {
+    const release = appReleases.find((r) => r.tag === selectedRelease);
+    if (!release) return;
+    const older = release.isCurrent
+      ? "reinstall the version you are already running"
+      : compareSemver(release.version, appVersionRunning) < 0
+        ? `go BACK to ${release.version} from ${appVersionRunning}`
+        : `update to ${release.version}`;
+    if (
+      !window.confirm(
+        `This will ${older}.\n\n` +
+          "The app closes, swaps itself over, and reopens. Your current version is kept as a backup and restored " +
+          "automatically if the new one fails to start.\n\nYour settings and mods are not touched."
+      )
+    ) {
+      return;
+    }
+    setInstallingApp(true);
+    setUpdateProgress(null);
+    const result = await window.modManagerAPI.installAppRelease(release.tag);
+    pushToast(result.message, result.success);
+    if (!result.success) {
+      setInstallingApp(false);
+      setUpdateProgress(null);
+    }
+    // On success the app is about to quit; leave the button spinning.
+  }
+
   const [appUpdate, setAppUpdate] = useState<AppUpdateInfo | null>(null);
   const [updateDismissed, setUpdateDismissed] = useState(false);
   useEffect(() => {
     window.modManagerAPI.checkAppUpdate().then(setAppUpdate);
   }, []);
+  const appVersionRunning = appUpdate?.currentVersion ?? "";
 
   useEffect(() => {
     const unsubscribe = window.modManagerAPI.onDownloadProgress(({ jobId, receivedBytes, totalBytes }) => {
@@ -313,6 +393,49 @@ export default function App() {
   // there is no toggle, no removal and no install target — see electron/sptServer.ts.
 
   const [syncing, setSyncing] = useState(false);
+  const [installingFromServer, setInstallingFromServer] = useState<string | null>(null);
+
+  /**
+   * Installs a mod the server runs but this install lacks (or has an older copy of).
+   *
+   * Always installs into the MAIN instance, never the headless client: the headless client
+   * gets its copy by syncing from main, which is the only way to guarantee the two ends
+   * agree on a version. The Forge lookup leads with the GUID the server reported, since that
+   * is an exact identifier — falling back to the name is what produced wrong matches in V1.
+   */
+  async function handleInstallFromServer(row: ServerSyncRow) {
+    const lookupName = row.serverName ?? row.name;
+    setInstallingFromServer(row.key);
+    try {
+      const found = await window.modManagerAPI.findForgeDownloadsForNames([{ name: lookupName, guid: row.guid }]);
+      const hit = found[lookupName];
+      if (!hit) {
+        pushToast(
+          `Couldn't find "${lookupName}" on Forge.` +
+            (row.url ? " It does list a source repository — open it from the row." : ""),
+          false
+        );
+        return;
+      }
+      const queueId = pushQueueItem(hit.forgeName ?? lookupName);
+      markQueueActive(queueId);
+      const result = await installArchiveWithConfirmFlow(
+        window.modManagerAPI.installForgeMod(queueId, hit.downloadLink, hit.forgeName ?? lookupName, {
+          name: hit.forgeName,
+          version: hit.version,
+          guid: hit.guid
+        })
+      );
+      markQueueDone(queueId, result.success, tMsg(result.message));
+      pushToast(tMsg(result.message), result.success);
+      if (result.success) {
+        await refreshMods();
+        await refreshMulti();
+      }
+    } finally {
+      setInstallingFromServer(null);
+    }
+  }
 
   async function handleSyncMod(mod: ModInfo) {
     setSyncing(true);
@@ -1310,6 +1433,17 @@ export default function App() {
                   </button>
                 </>
               )}
+              <button
+                onClick={openUpdatePanel}
+                className={appUpdate?.updateAvailable ? "primary" : ""}
+                title={
+                  appUpdate?.updateAvailable
+                    ? `Version ${appUpdate.latestVersion} is available — you have ${appUpdate.currentVersion}`
+                    : "Update the mod manager, or switch to another version"
+                }
+              >
+                {appUpdate?.updateAvailable ? `Update to ${appUpdate.latestVersion}` : "App version"}
+              </button>
               <button onClick={handleSelectFolder} title={t("header.changeInstanceTitle")}>{t("header.changeInstance")}</button>
               <button onClick={handleInstall} disabled={loading} className="primary" title={t("header.installButtonTitle")}>
                 {loading ? t("header.installing") : t("header.installButton")}
@@ -1673,6 +1807,8 @@ export default function App() {
               onRemoveFromHeadless={handleRemoveFromHeadless}
               syncing={syncing}
               headlessConfigured={!!headlessPath}
+              onInstallFromServer={handleInstallFromServer}
+              installingFromServer={installingFromServer}
             />
           ) : (
             <>
@@ -1824,6 +1960,96 @@ export default function App() {
             <div className="confirm-structure-actions">
               <button onClick={handleConfirmAbort}>{t("confirm.abort")}</button>
               <button onClick={handleConfirmProceed} className="primary">{t("confirm.proceed")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {updatePanelOpen && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !installingApp) setUpdatePanelOpen(false);
+          }}
+        >
+          <div className="modal-box update-modal">
+            <div className="modal-header">
+              <strong>Mod manager version</strong>
+              <button onClick={() => setUpdatePanelOpen(false)} disabled={installingApp} title={t("common.close")}>
+                ✕
+              </button>
+            </div>
+
+            <p className="compare-note">
+              Running <code>{appVersionRunning || "?"}</code>. Pick a version and it will be downloaded from the
+              repository and swapped in. Your current copy is kept as a backup and put back automatically if the new one
+              fails to start. Settings, mods and instance paths are untouched.
+            </p>
+
+            {loadingReleases ? (
+              <p className="empty-list">Fetching releases…</p>
+            ) : releasesError ? (
+              <p className="hl-server-error">{releasesError}</p>
+            ) : appReleases.length === 0 ? (
+              <p className="empty-list">No releases found.</p>
+            ) : (
+              <>
+                <select
+                  className="version-input update-select"
+                  value={selectedRelease}
+                  onChange={(e) => setSelectedRelease(e.target.value)}
+                  disabled={installingApp}
+                >
+                  {appReleases.map((r) => (
+                    <option key={r.tag} value={r.tag} disabled={!r.assetUrl}>
+                      {r.version}
+                      {r.isCurrent ? "  (current)" : ""}
+                      {r.prerelease ? "  (pre-release)" : ""}
+                      {!r.assetUrl ? "  — no download attached" : r.assetSize ? `  — ${formatBytes(r.assetSize)}` : ""}
+                    </option>
+                  ))}
+                </select>
+
+                {(() => {
+                  const r = appReleases.find((x) => x.tag === selectedRelease);
+                  if (!r) return null;
+                  const direction = r.isCurrent
+                    ? "reinstall"
+                    : compareSemver(r.version, appVersionRunning) < 0
+                      ? "downgrade"
+                      : "upgrade";
+                  return (
+                    <p className={`update-direction update-${direction}`}>
+                      {direction === "downgrade"
+                        ? `Going back from ${appVersionRunning} to ${r.version}.`
+                        : direction === "reinstall"
+                          ? `Reinstalling ${r.version}.`
+                          : `Updating from ${appVersionRunning} to ${r.version}.`}
+                      {r.publishedAt ? ` Published ${new Date(r.publishedAt).toLocaleDateString(lang)}.` : ""}
+                    </p>
+                  );
+                })()}
+              </>
+            )}
+
+            {updateProgress && updateProgress.total > 0 && (
+              <p className="compare-note">
+                Downloading… {formatBytes(updateProgress.received)} of {formatBytes(updateProgress.total)} (
+                {Math.round((100 * updateProgress.received) / updateProgress.total)}%)
+              </p>
+            )}
+
+            <div className="confirm-structure-actions">
+              <button onClick={() => setUpdatePanelOpen(false)} disabled={installingApp}>
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={handleInstallAppRelease}
+                className="primary"
+                disabled={installingApp || !selectedRelease || !appReleases.find((r) => r.tag === selectedRelease)?.assetUrl}
+              >
+                {installingApp ? "Installing…" : "Install this version"}
+              </button>
             </div>
           </div>
         </div>

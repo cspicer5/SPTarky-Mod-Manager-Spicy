@@ -45,6 +45,7 @@ import {
   HeadlessClass
 } from "./headless";
 import { fetchServerSnapshot, buildServerSyncReport, normaliseServerUrl } from "./sptServer";
+import { listAppReleases, prepareUpdate } from "./selfUpdate";
 import { InstanceConfig, InstanceId, ModInfo } from "./types";
 
 const MOD_HUB_URL = "https://hub.sp-tarkov.com/";
@@ -508,6 +509,40 @@ ipcMain.handle("clear-forge-match", (_event, originalName: string) => {
 });
 
 ipcMain.handle("check-app-update", () => checkAppUpdate(app.getVersion()));
+
+/* --- IPC: updating the app itself ------------------------------------------ */
+ipcMain.handle("list-app-releases", () => listAppReleases(app.getVersion()));
+
+ipcMain.handle("install-app-release", async (_event, tag: string) => {
+  // Only meaningful for a packaged build: in development the "install" is a source tree run
+  // by the electron binary, and replacing it would destroy the working copy.
+  if (!app.isPackaged) {
+    return { success: false, message: "Self-update only works in a packaged build, not when running from source." };
+  }
+
+  const { releases, error } = await listAppReleases(app.getVersion());
+  if (error) return { success: false, message: error };
+  const release = releases.find((r) => r.tag === tag);
+  if (!release) return { success: false, message: `Release ${tag} not found.` };
+
+  const exePath = app.getPath("exe");
+  const result = await prepareUpdate({
+    release,
+    installDir: path.dirname(exePath),
+    exeName: path.basename(exePath),
+    pid: process.pid,
+    onProgress: (received, total) => {
+      mainWindow?.webContents.send("app-update-progress", { received, total });
+    }
+  });
+
+  if (result.success) {
+    // The swap script is already waiting for this process to exit — it cannot move the
+    // folder until then. Give the renderer a moment to show the message first.
+    setTimeout(() => app.quit(), 1200);
+  }
+  return result;
+});
 
 ipcMain.handle("open-release-page", (_event, url: string) => {
   // Allowlist, because the URL arrives from the renderer process, which is not trusted

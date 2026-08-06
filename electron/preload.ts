@@ -55,6 +55,13 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
     ipcRenderer.invoke("dismiss-forge-update", originalName, version),
   undismissForgeUpdate: (originalName: string) => ipcRenderer.invoke("undismiss-forge-update", originalName),
   checkAppUpdate: () => ipcRenderer.invoke("check-app-update"),
+  listAppReleases: () => ipcRenderer.invoke("list-app-releases"),
+  installAppRelease: (tag: string) => ipcRenderer.invoke("install-app-release", tag),
+  onAppUpdateProgress: (callback: (data: { received: number; total: number }) => void) => {
+    const handler = (_e: unknown, data: { received: number; total: number }) => callback(data);
+    ipcRenderer.on("app-update-progress", handler);
+    return () => ipcRenderer.removeListener("app-update-progress", handler);
+  },
   onForgeCheckProgress: (callback: (data: { done: number; total: number }) => void) => {
     const handler = (_e: unknown, data: { done: number; total: number }) => callback(data);
     ipcRenderer.on("forge-check-progress", handler);

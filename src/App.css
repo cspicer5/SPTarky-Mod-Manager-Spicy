@@ -1147,3 +1147,34 @@ button:hover > .btn-scope {
   border-color: var(--accent);
   color: var(--accent-strong);
 }
+
+/* --- app self-update --- */
+.update-modal {
+  max-width: 520px;
+}
+
+.update-select {
+  width: 100%;
+  margin: 8px 0 4px;
+}
+
+.update-direction {
+  font-size: 12px;
+  margin: 4px 0 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  background: var(--bg-panel-raised);
+  color: var(--text-dim);
+}
+
+/* Going backwards is legitimate — stepping off a bad release — but it should never be
+   mistaken for the normal path, so it is marked rather than styled like an update. */
+.update-downgrade {
+  background: rgba(200, 117, 46, 0.14);
+  color: var(--accent-strong);
+}
+
+.update-upgrade {
+  background: rgba(122, 148, 86, 0.14);
+  color: var(--ok-strong);
+}

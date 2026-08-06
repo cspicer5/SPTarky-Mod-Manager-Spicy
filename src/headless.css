@@ -639,3 +639,22 @@
 .hl-sync-btn:disabled {
   opacity: 0.4;
 }
+
+/* Pulls a mod from Forge into the MAIN install. Sits in the server pane but never writes to
+   the server, so it is styled as an action on your own install rather than on the remote. */
+.hl-install-btn {
+  padding: 1px 7px;
+  font-size: 10px;
+  min-width: 0;
+  border-color: var(--accent) !important;
+  color: var(--accent-strong) !important;
+  flex-shrink: 0;
+}
+
+.hl-install-btn:hover:not(:disabled) {
+  background: var(--accent-wash);
+}
+
+.hl-install-btn:disabled {
+  opacity: 0.4;
+}

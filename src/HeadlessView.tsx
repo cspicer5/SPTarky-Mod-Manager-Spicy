@@ -313,7 +313,9 @@ function ServerPane({
   onToggleCollapse,
   onChangeServer,
   onClearServer,
-  query
+  query,
+  onInstall,
+  installing
 }: {
   report: ServerSyncReport | null;
   url: string | null;
@@ -322,6 +324,9 @@ function ServerPane({
   onChangeServer: () => void;
   onClearServer: () => void;
   query: string;
+  /** Fetch this mod from Forge into the MAIN install. The server itself is never written to. */
+  onInstall: (row: ServerSyncRow) => void;
+  installing: string | null;
 }) {
   if (!url) {
     return (
@@ -381,6 +386,24 @@ function ServerPane({
           {row.name}
         </span>
         <span className="hl-version">{row.serverVersion ?? "—"}</span>
+        {/* Offered only where it would change something: a mod the server runs that is
+            absent or older here. It installs into the MAIN install — never the server,
+            which is read only, and never the headless client, which is synced from main so
+            the two can never disagree on a version. */}
+        {(row.issue === "missing-locally" || row.issue === "outdated-locally") && (
+          <button
+            className="hl-install-btn"
+            onClick={() => onInstall(row)}
+            disabled={installing !== null}
+            title={
+              row.issue === "outdated-locally"
+                ? `Get ${row.serverVersion} from Forge and install it here`
+                : "Find this on Forge and install it into the main install"
+            }
+          >
+            {installing === row.key ? "…" : row.issue === "outdated-locally" ? "Update" : "Install"}
+          </button>
+        )}
       </div>
       <div className="hl-row-meta">
         {row.issue && (
@@ -558,7 +581,9 @@ export default function InstancesView({
   onSyncAll,
   onRemoveFromHeadless,
   syncing,
-  headlessConfigured
+  headlessConfigured,
+  onInstallFromServer,
+  installingFromServer
 }: {
   mainPath: string | null;
   headlessPath: string | null;
@@ -587,6 +612,8 @@ export default function InstancesView({
   onRemoveFromHeadless: (mod: ModInfo) => void;
   syncing: boolean;
   headlessConfigured: boolean;
+  onInstallFromServer: (row: ServerSyncRow) => void;
+  installingFromServer: string | null;
 }) {
   // Collapsed panes are remembered per session so a chosen comparison stays put across a
   // rescan. Server starts collapsed when nothing is connected — an empty invitation should
@@ -662,6 +689,8 @@ export default function InstancesView({
             onChangeServer={onChangeServer}
             onClearServer={onClearServer}
             query={searchQuery}
+            onInstall={onInstallFromServer}
+            installing={installingFromServer}
           />
         )}
 
