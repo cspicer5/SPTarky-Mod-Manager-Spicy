@@ -1029,6 +1029,77 @@ h2 {
   vertical-align: middle;
 }
 
+/* ==========================================================================
+   "Needs confirmation" — matches the app is not confident about
+   Deliberately styled as a caution rather than an error: nothing is broken, but
+   acting on one of these without checking could install the wrong mod.
+   ========================================================================== */
+.unconfirmed-block {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.unconfirmed-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 7px 0;
+  border-top: 1px solid var(--border);
+}
+
+.unconfirmed-row:first-of-type {
+  border-top: none;
+}
+
+.unconfirmed-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.unconfirmed-mod {
+  font-weight: 600;
+}
+
+.unconfirmed-arrow {
+  color: var(--muted);
+}
+
+.unconfirmed-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.unconfirmed-actions button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* A button that reads as a link: used for the Forge mod name, which opens its page so the
+   suggested match can be eyeballed before accepting it. */
+.link-button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  color: var(--text);
+}
+
 /* Chip marking a mod as part of a multi-part package */
 .package-chip {
   border-color: var(--accent);

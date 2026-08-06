@@ -1,4 +1,4 @@
-# SPT Mod Manager
+# SPTarky Mod Manager Spicy
 
 A **Vortex / Mod Organizer 2**-style mod manager, built specifically for **Single Player Tarkov (SPT)**.
 
@@ -7,6 +7,25 @@ A desktop app (Electron + React + TypeScript) that handles installing, organizin
 Styled with its own "tactical manifest" look — condensed headers, monospace technical data, a warm accent color — rather than a generic dark-mode template.
 
 > ⚠️ Personal project, not affiliated with the SPT team or Battlestate Games. Tarkov and Escape from Tarkov are trademarks of their respective owners. ⚠️
+
+## Credits
+
+This is a fork of **[SPT Mod Manager](https://github.com/Nevek20/SPT_Mod_Manager)** by
+**Matheus Guida (TioEmir)**, released under the MIT licence. The original is the entire
+foundation of this project — the installer, the package handling, the conflict detection
+and the interface are all his work, and the fork would not exist without it.
+
+This fork is maintained separately and does not track upstream releases. Changes here are:
+
+- Forge mod matching rewritten around declared GUIDs read from CLI metadata, taking the
+  match rate on a 54-mod reference install from 51% to 100%
+- Match provenance and confirmation, so a guess is never presented as a verified match
+- English-only; the pt-BR translation layer was removed
+- A harvested archive of the Forge catalogue, ahead of the platform's shutdown
+  (see [docs/FORGE-SHUTDOWN.md](docs/FORGE-SHUTDOWN.md))
+
+Bugs in this fork are the fork's, not the original author's — please do not report them
+upstream.
 
 ---
 

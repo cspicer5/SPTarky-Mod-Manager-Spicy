@@ -1963,6 +1963,16 @@ export interface ForgeUpdateItem {
   reason?: string;
 }
 
+/** A match the app cannot stand behind, offered to the user to confirm or correct. */
+export interface ForgeUnconfirmedMatch {
+  name: string; // display name
+  originalName: string; // folder name — the key a manual pin is stored against
+  modId: number;
+  forgeName?: string;
+  method: string;
+  detailUrl: string;
+}
+
 export interface ForgeUpdateCheckResult {
   sptVersionUsed: string;
   updates: ForgeUpdateItem[];
@@ -1972,6 +1982,7 @@ export interface ForgeUpdateCheckResult {
   infoOnly: ForgeUpdateItem[];
   unmatched: string[];
   skippedByBudget?: string[]; // never queried: the request budget ran out first
+  unconfirmed?: ForgeUnconfirmedMatch[]; // matched, but by guesswork — needs a human
 }
 
 export interface ForgeSptVersion {
@@ -2943,8 +2954,8 @@ export async function findForgeDownloadForName(
   name: string,
   sptVersion?: string
 ): Promise<{ found: boolean; downloadLink?: string; version?: string; forgeName?: string }> {
-  // Uses the same multi-strategy matcher as the update check, so that
-  // restaurar uma modlist ache tanto quanto ela acha.
+  // Uses the same multi-strategy matcher as the update check, so restoring a modlist finds
+  // as much as the update check does.
   const matches = await matchForgeMods([name]);
   const info = matches.get(name);
   if (!info || !info.latestVersionLink) {
@@ -2957,7 +2968,17 @@ export async function findForgeDownloadForName(
 }
 
 export async function checkForgeUpdates(
-  mods: { name: string; originalName: string; version?: string; guid?: string }[],
+  // packageId/packageInferred are required for sibling propagation: a mod part that cannot
+  // be resolved alone inherits its package sibling's match. Omitting them here silently
+  // disables that — the matcher still runs, just with every mod in a group of one.
+  mods: {
+    name: string;
+    originalName: string;
+    version?: string;
+    guid?: string;
+    packageId?: string;
+    packageInferred?: boolean;
+  }[],
   sptVersion: string,
   onProgress?: (done: number, total: number) => void,
   cacheRoot?: string
@@ -2985,6 +3006,27 @@ export async function checkForgeUpdates(
   const matches = await matchForgeMods(buildForgeMatchInput(mods), onProgress, cacheRoot);
 
   const notChecked = (matches as Map<string, ForgeMatch> & { notChecked?: Set<string> }).notChecked;
+
+  // Matches the app is NOT confident about. These are reported separately from the update
+  // buckets because they are a different kind of statement: not "this mod has an update",
+  // but "this mod was guessed, and acting on the guess could install the wrong thing".
+  // Without surfacing this, a guess is indistinguishable from a verified match — which is
+  // exactly how the previous version silently mapped fika-server onto SVM.
+  const unconfirmed: ForgeUnconfirmedMatch[] = [];
+  for (const mod of mods) {
+    const info = matches.get(mod.originalName);
+    if (info?.needsConfirmation) {
+      unconfirmed.push({
+        name: mod.name,
+        originalName: mod.originalName,
+        modId: info.modId,
+        forgeName: info.forgeName,
+        method: info.method,
+        detailUrl: `https://forge.sp-tarkov.com/mod/${info.modId}`
+      });
+    }
+  }
+
   for (const mod of mods) {
     const info = matches.get(mod.originalName);
     if (!info) {
@@ -3016,7 +3058,8 @@ export async function checkForgeUpdates(
     incompatible: [],
     infoOnly,
     unmatched,
-    skippedByBudget
+    skippedByBudget,
+    unconfirmed
   };
   if (pairs.length === 0) return empty;
 
@@ -3026,7 +3069,7 @@ export async function checkForgeUpdates(
     const res = await fetch(url, { headers: { Accept: "application/json" } });
     json = await res.json();
     if (!res.ok || json?.success === false) {
-      throw new Error(json?.message || `Forge respondeu ${res.status}`);
+      throw new Error(json?.message || `Forge responded ${res.status}`);
     }
   } catch (err: any) {
     throw new Error(`Couldn't reach Forge: ${err.message || err}`);
@@ -3180,7 +3223,7 @@ export async function searchForgeMods(params: {
   const res = await fetch(url.toString(), { headers: { Accept: "application/json" } });
   const json: any = await res.json();
   if (!res.ok || json?.success === false) {
-    throw new Error(json?.message || `Forge respondeu ${res.status}`);
+    throw new Error(json?.message || `Forge responded ${res.status}`);
   }
 
   return {
@@ -3290,26 +3333,33 @@ export async function installForgeModVersion(
  * navegador se a pessoa quiser.
  * ========================================================================== */
 
-const GITHUB_RELEASES_API = "https://api.github.com/repos/Nevek20/SPT_Mod_Manager/releases/latest";
-
-// The version comes from GitHub's releases API (that is where the number is published),
-// but the link shown is Forge's — that is where SPT users actually download from.
-//
-// FORK NOTE: both of these still point at UPSTREAM (Nevek20's repo and its Forge page).
-// In this private fork that means the app will announce "a new version is available"
-// whenever upstream publishes, and send you to download the ORIGINAL over your own build.
-// Left as-is for now because changing it is a behavioural decision, not a translation —
-// the options are to disable this check, or repoint it and treat it as "upstream has moved
-// on" information only. A private repo's releases API needs auth, so it cannot simply be
-// swapped for the fork's URL.
-const FORGE_MOD_PAGE = "https://forge.sp-tarkov.com/mod/2851/spt-mod-manager";
+/*
+ * This fork checks ONLY its own repository. Upstream (Nevek20/SPT_Mod_Manager) is
+ * deliberately not consulted: pointing at it would announce someone else's releases and
+ * offer to install the original over this build, which is worse than no check at all.
+ *
+ * Credit for the original work belongs to TioEmir / Nevek20 and is recorded in LICENSE
+ * and README.md — cutting the update channel is not a claim of authorship.
+ *
+ * NOTE ON PRIVATE REPOSITORIES: GitHub's releases API returns 404 for a private repo
+ * without authentication, and this function treats any non-OK response as "no update
+ * known" rather than an error. So while this repository stays private and unauthenticated,
+ * the check is effectively inert — it will never report an update, and never nag. That is
+ * the intended behaviour for now; if releases are published later, or a token is wired in
+ * (see docs/FORGE-SHUTDOWN.md on GitHub tokens), it starts working with no further change.
+ */
+const GITHUB_REPO = "cspicer5/SPTarky-Mod-Manager-Spicy";
+const GITHUB_RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+// Downloads come from this repository's own releases page. The original pointed at the
+// upstream project's Forge listing, which is not this application.
+const RELEASES_PAGE = `https://github.com/${GITHUB_REPO}/releases`;
 
 export interface AppUpdateInfo {
   updateAvailable: boolean;
   currentVersion: string;
   latestVersion?: string;
-  downloadPageUrl?: string; // the Forge page — where the person actually downloads
-  releaseUrl?: string; // the GitHub release page (changelog/code), as a secondary link
+  downloadPageUrl?: string; // this fork's releases page — where the download lives
+  releaseUrl?: string; // the specific GitHub release (changelog/code), as a secondary link
   releaseName?: string;
 }
 
@@ -3348,7 +3398,7 @@ export async function checkAppUpdate(currentVersion: string): Promise<AppUpdateI
       updateAvailable: compareVersions(latestVersion, currentVersion) > 0,
       currentVersion,
       latestVersion: latestVersion.replace(/^v/i, ""),
-      downloadPageUrl: FORGE_MOD_PAGE,
+      downloadPageUrl: RELEASES_PAGE,
       releaseUrl: json?.html_url,
       releaseName: json?.name || undefined
     };

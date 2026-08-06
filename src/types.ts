@@ -41,6 +41,16 @@ export interface ForgeUpdateItem {
   reason?: string;
 }
 
+/** A Forge match the app arrived at by guesswork and will not act on unconfirmed. */
+export interface ForgeUnconfirmedMatch {
+  name: string;
+  originalName: string;
+  modId: number;
+  forgeName?: string;
+  method: string;
+  detailUrl: string;
+}
+
 export interface ForgeUpdateCheckResult {
   sptVersionUsed: string;
   updates: ForgeUpdateItem[];
@@ -50,6 +60,7 @@ export interface ForgeUpdateCheckResult {
   infoOnly: ForgeUpdateItem[];
   unmatched: string[];
   skippedByBudget?: string[];
+  unconfirmed?: ForgeUnconfirmedMatch[];
 }
 
 export interface ForgeSptVersion {
@@ -145,9 +156,13 @@ export interface ModManagerAPI {
   getForgeCache: () => Promise<{ statusCache: ForgeStatusCacheEntry[] | null; checkedAt: string | null }>;
   setForgeCache: (statusCache: ForgeStatusCacheEntry[]) => Promise<void>;
   checkForgeUpdates: (
-    mods: { name: string; originalName: string; version?: string; guid?: string }[],
+    mods: { name: string; originalName: string; version?: string; guid?: string; packageId?: string; packageInferred?: boolean }[],
     sptVersion: string
   ) => Promise<{ success: boolean; result?: ForgeUpdateCheckResult; message?: string }>;
+  /** Pins a mod to a Forge id by hand. Overrides automatic matching permanently. */
+  setForgeMatch: (originalName: string, modId: number) => Promise<{ success: boolean; message?: string }>;
+  /** Removes a manual pin, returning the mod to automatic matching. */
+  clearForgeMatch: (originalName: string) => Promise<{ success: boolean; message?: string }>;
   searchForgeMods: (params: {
     query?: string;
     categorySlug?: string;

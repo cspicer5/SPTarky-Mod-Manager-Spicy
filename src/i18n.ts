@@ -120,10 +120,21 @@ const en: Dict = {
   "forge.infoOnlyTitle": "No local version to compare (showing what Forge has):",
   "forge.infoHasVersion": "Forge has v{version}",
   "forge.allUpToDateDetailed": "Every mod identified on Forge is up to date.",
-  "forge.unmatchedPrefix": "Not found on Forge (matched by name):",
+  "forge.unmatchedPrefix": "Not found on Forge:",
   "forge.skippedByBudget": "{count} mod(s) weren't checked: Forge's request limit was reached. Run the check again to finish — whatever was already resolved is cached and won't be looked up again.",
   "forge.matchNote":
-    "Matching against Forge's catalogue is done by name — it may not find mods with a very generic name, or ones not listed there.",
+    "Mods are identified by the GUID declared inside their own files, which is exact. Where a mod declares no GUID, the name is used instead and the result is flagged for you to confirm.",
+
+  "forge.unconfirmedTitle": "Needs confirmation",
+  "forge.unconfirmedExplain":
+    "These were matched by name rather than by a declared ID, so they might be wrong. Nothing will be updated or downloaded for them until you confirm — a wrong match here would install the wrong mod.",
+  "forge.unconfirmedConfirm": "That's correct",
+  "forge.unconfirmedRelink": "Wrong — pick another",
+  "forge.unconfirmedOpenTitle": "Open this mod's page on Forge to check",
+  "forge.relinkPrompt":
+    "Which Forge mod is \"{name}\"?\n\nPaste the Forge mod URL or enter its numeric ID.\nExample: https://forge.sp-tarkov.com/mod/791/sain   or just   791",
+  "forge.relinkInvalid": "That didn't look like a Forge mod URL or ID.",
+  "forge.linkSaved": "Linked to {name}. This choice overrides automatic matching from now on.",
 
   "bulk.selectedCount": "{count} selected",
   "bulk.enable": "Enable",
