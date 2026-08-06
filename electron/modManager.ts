@@ -1563,8 +1563,8 @@ function findPackageSiblings(clientRoot: string, modId: string, modType: ModType
   const registry = loadRegistry(clientRoot);
   const own = registry.find((r) => r.id === modId && r.type === modType);
   if (!own?.packageId) return [];
-  // Compara por id + tipo: as duas metades do Wedge têm o mesmo id, e comparar só por id
-  // descartaria justamente a outra parte que a gente quer alternar junto.
+  // Compare by id + type: Wedge's two halves share an id, and comparing by id alone would
+  // discard precisely the other part we want to toggle alongside it.
   return registry.filter(
     (r) => r.packageId === own.packageId && !(r.id === modId && r.type === modType) && !r.id.startsWith("hybrid-manifest-")
   );
@@ -1572,7 +1572,7 @@ function findPackageSiblings(clientRoot: string, modId: string, modType: ModType
 
 export function toggleMod(clientRoot: string, serverRoot: string, mod: ModInfo): { success: boolean; message: string } {
   if (mod.type === "client" && isProtectedClientEntry(mod.id)) {
-    return { success: false, message: "Esse item é um arquivo do próprio SPT (não é um mod) e não pode ser alternado." };
+    return { success: false, message: "This item is one of SPT's own files (not a mod) and can't be toggled." };
   }
 
   const isServer = mod.type === "server";
@@ -1586,12 +1586,12 @@ export function toggleMod(clientRoot: string, serverRoot: string, mod: ModInfo):
   const to = mod.enabled ? path.join(disabledDir, mod.id) : path.join(activeDir, mod.id);
 
   if (!fs.existsSync(from)) {
-    return { success: false, message: "Arquivo/pasta do mod não encontrado: " + from };
+    return { success: false, message: "Mod file/folder not found: " + from };
   }
   fs.renameSync(from, to);
 
-  // A pasta de dados que acompanha um .dll solto precisa acompanhar o habilitar/
-  // desabilitar também — senão o plugin é movido e os dados dele ficam pra trás.
+  // The data folder accompanying a loose .dll has to follow the enable/disable too —
+  // otherwise the plugin moves and its data is left behind.
   if (!isServer && mod.id.toLowerCase().endsWith(".dll")) {
     const baseName = mod.id.slice(0, -4);
     const companionFrom = path.join(mod.enabled ? activeDir : disabledDir, baseName);
@@ -1601,8 +1601,8 @@ export function toggleMod(clientRoot: string, serverRoot: string, mod: ModInfo):
     }
   }
 
-  // Prepatchers do mesmo mod acompanham o habilitar/desabilitar. Sem isso, desabilitar
-  // o Wedge (por exemplo) movia Wedge.Client.dll mas deixava Wedge.Prepatch.dll rodando.
+  // Prepatchers from the same mod follow the enable/disable. Without this, disabling Wedge
+  // (for example) moved Wedge.Client.dll but left Wedge.Prepatch.dll running.
   let movedPatchers = 0;
   if (!isServer) {
     const patchersActive = p(clientRoot, CLIENT_PATCHERS_DIR);
@@ -1628,13 +1628,14 @@ export function toggleMod(clientRoot: string, serverRoot: string, mod: ModInfo):
     }
   }
 
-  // As outras partes do mesmo pacote acompanham: um mod com metade servidor e metade
-  // cliente meio desabilitado normalmente não funciona, e o usuário quase nunca quer isso.
+  // The other parts of the same package follow along: a mod with a server half and a
+  // client half, only half disabled, usually does not work — and users almost never want
+  // that.
   let movedSiblings = 0;
   if (mod.packageId?.startsWith("inferred:")) {
-    // Pacote inferido: as partes podem ter nomes DIFERENTES ("MoreBotsServer" e
-    // "MoreBotsAPI"), então quem sabe quais são é o scan — que já mandou os ids no
-    // próprio mod. Sem isso, só agrupava quando os nomes eram idênticos.
+    // Inferred package: the parts can have DIFFERENT names ("MoreBotsServer" and
+    // "MoreBotsAPI"), so the scan is what knows which they are — and it already passed the
+    // ids on the mod itself. Without this, grouping only worked for identical names.
     for (const sibling of mod.packageSiblings ?? []) {
       if (moveModEntry(clientRoot, serverRoot, sibling.id, sibling.type, !mod.enabled)) movedSiblings++;
     }
@@ -1648,8 +1649,8 @@ export function toggleMod(clientRoot: string, serverRoot: string, mod: ModInfo):
     return {
       success: true,
       message: mod.enabled
-        ? `Mod desabilitado (${movedSiblings + 1} partes do pacote).`
-        : `Mod habilitado (${movedSiblings + 1} partes do pacote).`
+        ? `Mod disabled (${movedSiblings + 1} package parts).`
+        : `Mod enabled (${movedSiblings + 1} package parts).`
     };
   }
 
@@ -1657,22 +1658,22 @@ export function toggleMod(clientRoot: string, serverRoot: string, mod: ModInfo):
     return {
       success: true,
       message: mod.enabled
-        ? `Mod desabilitado (e ${movedPatchers} patcher(s) junto).`
-        : `Mod habilitado (e ${movedPatchers} patcher(s) junto).`
+        ? `Mod disabled (along with ${movedPatchers} patcher(s)).`
+        : `Mod enabled (along with ${movedPatchers} patcher(s)).`
     };
   }
-  return { success: true, message: mod.enabled ? "Mod desabilitado." : "Mod habilitado." };
+  return { success: true, message: mod.enabled ? "Mod disabled." : "Mod enabled." };
 }
 
-// --- Desinstalar ---
+// --- Uninstall ---
 export function uninstallMod(clientRoot: string, serverRoot: string, mod: ModInfo): { success: boolean; message: string } {
   if (mod.type === "client" && isProtectedClientEntry(mod.id)) {
-    return { success: false, message: "Esse item é um arquivo do próprio SPT (não é um mod) e não pode ser removido pelo Manager." };
+    return { success: false, message: "This item is one of SPT's own files (not a mod) and can't be removed by the Manager." };
   }
 
-  // Mods "órfãos" (manifestOnly) não têm uma pasta própria com o nome do mod —
-  // são arquivos soltos rastreados individualmente no manifesto. Precisa apagar
-  // cada arquivo listado, em vez de tentar achar uma pasta chamada `mod.id`.
+  // "Orphan" mods (manifestOnly) have no folder of their own named after the mod — they
+  // are loose files tracked individually in the manifest. Each listed file has to be
+  // deleted, rather than looking for a folder called `mod.id`.
   if (mod.manifestOnly) {
     const manifest = loadManifest(clientRoot);
     const files = manifest[mod.id];
