@@ -7,19 +7,19 @@ import { createExtractorFromFile } from "node-unrar-js";
 import { ModInfo, ModType, RegistryEntry, ModListComparison } from "./types";
 
 /**
- * Lê a versão do SPT a partir de SPT_Data/Server/configs/core.json — é o mesmo arquivo
- * que o pipeline oficial do SPT usa pra validar compatibilidade, então é uma fonte confiável.
- * Best-effort: se o arquivo não existir ou o formato mudar numa versão futura, retorna undefined
- * em vez de quebrar o resto do app.
+ * Reads the SPT version from SPT_Data/Server/configs/core.json — the same file SPT's own
+ * pipeline uses to validate compatibility, so it is a trustworthy source.
+ * Best-effort: if the file is missing or the format changes in a future version, returns
+ * undefined rather than breaking the rest of the app.
  */
-// A estrutura de pastas do SPT varia entre versões e formas de instalar —
-// às vezes tem uma pasta "Server" no meio do caminho, às vezes não; às vezes
-// tem uma pasta extra com o mesmo nome do SPT (dependendo de como o release
-// foi extraído). Em vez de chutar um caminho fixo (e continuar errando pra
-// instalações diferentes da nossa), procura o core.json de verdade dentro da
-// instância — pulando pastas pesadas (user/mods, BepInEx, database) que não
-// têm esse arquivo e só deixariam a busca lenta à toa. A pasta "database"
-// também é onde mora um OUTRO core.json (de bots), que não é o que queremos.
+// SPT's folder layout varies between versions and installation methods — sometimes there
+// is a "Server" folder in the path, sometimes not; sometimes there is an extra folder
+// with the same name as SPT (depending on how the release was extracted). Rather than
+// guessing a fixed path (and continuing to get it wrong for installs unlike our own),
+// this searches for the real core.json inside the instance — skipping heavy folders
+// (user/mods, BepInEx, database) that don't contain it and would only slow the search
+// down. The "database" folder is also home to a DIFFERENT core.json (for bots), which is
+// not the one we want.
 function findCoreJson(sptPath: string): any | undefined {
   const IGNORED_DIRS = new Set(["user", "bepinex", "database", "node_modules", ".git"]);
   const MAX_DEPTH = 5;
@@ -64,19 +64,19 @@ export function detectSptVersion(sptPath: string): string | undefined {
   if (!core) return undefined;
   if (typeof core.sptVersion === "string") return `SPT ${core.sptVersion}`;
   if (typeof core.akiVersion === "string") return `SPT ${core.akiVersion}`;
-  // A partir do SPT 4.0, o core.json não guarda mais a versão do SPT em si —
-  // só a versão do Tarkov com que ele é compatível. Não é a mesma informação,
-  // mas é a melhor pista disponível nesse arquivo, então mostra com o rótulo
-  // certo em vez de apresentar como se fosse a versão do SPT.
+  // From SPT 4.0 on, core.json no longer stores the SPT version itself — only the Tarkov
+  // version it is compatible with. That is not the same information, but it is the best
+  // hint this file offers, so label it correctly rather than passing it off as the SPT
+  // version.
   if (typeof core.compatibleTarkovVersion === "string") return `Tarkov ${core.compatibleTarkovVersion}`;
   return undefined;
 }
 
-// Versão "crua" (sem rótulo, sem fallback pra versão do Tarkov) — pra uso
-// funcional, tipo mandar pra API do Forge, que espera um semver de verdade
-// (ex: "3.11.5") e não entenderia "Tarkov 0.16.9.40087". Em instalações
-// SPT 4.0+ que não expõem mais esse campo, retorna undefined de propósito —
-// melhor pedir pro usuário informar do que mandar algo errado pro Forge.
+// "Raw" version (no label, no fallback to the Tarkov version) — for functional use, such
+// as sending to the Forge API, which expects a real semver (e.g. "3.11.5") and would not
+// understand "Tarkov 0.16.9.40087". On SPT 4.0+ installs that no longer expose the field
+// this deliberately returns undefined — better to ask the user than to send Forge
+// something wrong.
 export function detectSptSemver(sptPath: string): string | undefined {
   const core = findCoreJson(sptPath);
   if (!core) return undefined;
@@ -86,15 +86,15 @@ export function detectSptSemver(sptPath: string): string | undefined {
 }
 
 /**
- * Extrai .zip, .7z ou .rar pra uma pasta de destino.
- * .zip usa adm-zip (puro JS, sem binário externo).
- * .7z usa o binário 7za empacotado via 7zip-bin, através do node-7z.
- * .rar usa node-unrar-js (WASM da biblioteca oficial unrar, sem binário externo).
+ * Extracts a .zip, .7z, or .rar into a destination folder.
+ * .zip uses adm-zip (pure JS, no external binary).
+ * .7z uses the 7za binary bundled via 7zip-bin, driven by node-7z.
+ * .rar uses node-unrar-js (WASM build of the official unrar library, no external binary).
  */
-// Detecta entrada de arquivo tentando escapar da pasta de destino ("zip slip") — ex:
-// uma entrada chamada "../../../Windows/System32/evil.dll", ou um caminho absoluto tipo
-// "C:\Windows\evil.dll". Normaliza barra invertida pra barra normal antes de checar, pra
-// pegar os dois estilos de caminho independente de qual SO gerou o arquivo.
+// Detects an archive entry trying to escape the destination folder ("zip slip") — e.g. an
+// entry named "../../../Windows/System32/evil.dll", or an absolute path like
+// "C:\Windows\evil.dll". Backslashes are normalised to forward slashes before checking so
+// both path styles are caught regardless of which OS produced the archive.
 function isDangerousEntryPath(entryPath: string): boolean {
   const normalized = entryPath.replace(/\\/g, "/");
   if (path.isAbsolute(normalized) || /^[a-zA-Z]:/.test(normalized)) return true;
@@ -102,19 +102,19 @@ function isDangerousEntryPath(entryPath: string): boolean {
 }
 
 /**
- * Confere a lista de entradas de um arquivo ANTES de extrair de verdade — nunca depois.
- * Um mod malicioso (ou um arquivo corrompido/adulterado) poderia, em tese, tentar gravar
- * fora da pasta temporária de extração. .zip já vem protegido pela própria lib (AdmZip
- * normaliza e trava cada caminho dentro do destino). Pra .7z e .rar, que não têm essa
- * garantia embutida confirmada, listamos as entradas sem extrair e recusamos o arquivo
- * inteiro se achar qualquer uma suspeita — melhor rejeitar tudo do que extrair parcial ou
- * tentar "consertar" nomes de arquivo sozinho.
+ * Checks an archive's entry list BEFORE extracting anything — never after.
+ * A malicious mod (or a corrupted/tampered archive) could in principle try to write
+ * outside the temporary extraction folder. .zip is already protected by the library
+ * itself (AdmZip normalises and clamps every path inside the destination). For .7z and
+ * .rar, which have no such confirmed built-in guarantee, we list the entries without
+ * extracting and reject the whole archive if any looks suspicious — better to refuse
+ * outright than to extract partially or try to "fix" filenames ourselves.
  */
 async function validateArchiveEntries(archivePath: string): Promise<void> {
   const ext = path.extname(archivePath).toLowerCase();
 
-  // .zip grande é extraído pelo 7za (ver extractArchive), então perde a sanitização
-  // do AdmZip — precisa passar pela mesma validação de entradas do .7z.
+  // A large .zip is extracted by 7za (see extractArchive), so it loses AdmZip's
+  // sanitisation — it needs the same entry validation as a .7z.
   const zipHandledBySevenZip =
     ext === ".zip" && fs.existsSync(archivePath) && fs.statSync(archivePath).size >= LARGE_ARCHIVE_THRESHOLD_BYTES;
 
@@ -130,7 +130,7 @@ async function validateArchiveEntries(archivePath: string): Promise<void> {
     });
     const dangerous = entries.find(isDangerousEntryPath);
     if (dangerous) {
-      throw new Error(`Arquivo rejeitado por segurança: entrada suspeita no ${ext} ("${dangerous}").`);
+      throw new Error(`File rejected for security reasons: suspicious entry in the ${ext} ("${dangerous}").`);
     }
     return;
   }
@@ -140,18 +140,18 @@ async function validateArchiveEntries(archivePath: string): Promise<void> {
     const { fileHeaders } = extractor.getFileList();
     for (const header of fileHeaders) {
       if (isDangerousEntryPath(header.name)) {
-        throw new Error(`Arquivo rejeitado por segurança: entrada suspeita no .rar ("${header.name}").`);
+        throw new Error(`File rejected for security reasons: suspicious entry in the .rar ("${header.name}").`);
       }
     }
     return;
   }
 
-  // .zip: a própria AdmZip já sanitiza cada caminho contra o destino antes de gravar
-  // (confirmado na versão instalada) — não precisa de checagem adicional aqui.
+  // .zip: AdmZip itself already sanitises every path against the destination before
+  // writing (confirmed in the installed version) — no extra check needed here.
 }
 
-// Acima disso o AdmZip não dá conta (limite de 2 GiB de buffer do Node); a margem
-// evita chegar perto do teto por causa de overhead interno.
+// Above this, AdmZip cannot cope (Node's 2 GiB buffer limit); the margin keeps us clear
+// of the ceiling given internal overhead.
 const LARGE_ARCHIVE_THRESHOLD_BYTES = 1_500_000_000;
 
 function extractWithSevenZip(archivePath: string, destDir: string): Promise<void> {
@@ -167,9 +167,9 @@ async function extractArchive(archivePath: string, destDir: string): Promise<voi
   await validateArchiveEntries(archivePath);
 
   if (ext === ".zip") {
-    // AdmZip carrega o arquivo inteiro na memória (readFileSync), e o Node recusa
-    // buffer acima de 2 GiB — mods de conteúdo passam disso com folga. Acima do
-    // limite usamos o 7za, que também abre .zip e trabalha em streaming.
+    // AdmZip loads the whole archive into memory (readFileSync), and Node refuses
+    // buffers above 2 GiB — content mods exceed that comfortably. Above the threshold we
+    // use 7za, which also opens .zip and works in streaming mode.
     if (fs.statSync(archivePath).size >= LARGE_ARCHIVE_THRESHOLD_BYTES) {
       return extractWithSevenZip(archivePath, destDir);
     }
@@ -184,27 +184,27 @@ async function extractArchive(archivePath: string, destDir: string): Promise<voi
 
   if (ext === ".rar") {
     const extractor = await createExtractorFromFile({ filepath: archivePath, targetPath: destDir });
-    // A extração é "lazy" (generator) — precisa iterar pra realmente escrever os arquivos em disco.
+    // Extraction is lazy (a generator) — it must be iterated to actually write files to disk.
     const { files } = extractor.extract();
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     for (const _file of files) {
-      // só percorrendo pra forçar a extração de cada entrada
+      // iterating purely to force each entry to be extracted
     }
     return;
   }
 
-  throw new Error(`Formato de arquivo não suportado: ${ext}. Use .zip, .7z ou .rar.`);
+  throw new Error(`Unsupported archive format: ${ext}. Use .zip, .7z, or .rar.`);
 }
 
 /**
- * Quando empacotado, o app roda de dentro de um arquivo .asar — mas um binário (.exe)
- * não pode ser executado de dentro do asar, porque ele não existe ali como um arquivo
- * de verdade em disco (é só uma entrada virtual dentro do arquivo empacotado). O
- * electron-builder foi configurado (via "asarUnpack" no package.json) pra copiar o
- * 7za.exe pra fora do asar, numa pasta irmã "app.asar.unpacked" — só que o pacote
- * 7zip-bin calcula o caminho do binário relativo ao seu próprio __dirname, que continua
- * apontando pra dentro do .asar. Essa função corrige isso na hora de spawnar. Em modo
- * dev (sem asar) o caminho não contém ".asar" e a função não faz nada.
+ * When packaged, the app runs from inside an .asar archive — but a binary (.exe) cannot
+ * be executed from inside the asar, because it does not exist there as a real file on
+ * disk (it is only a virtual entry inside the packaged archive). electron-builder is
+ * configured (via "asarUnpack" in package.json) to copy 7za.exe outside the asar into a
+ * sibling "app.asar.unpacked" folder — except the 7zip-bin package computes the binary's
+ * path relative to its own __dirname, which still points inside the .asar. This function
+ * corrects that at spawn time. In dev mode (no asar) the path contains no ".asar" and the
+ * function is a no-op.
  */
 function resolveUnpackedBinaryPath(binPath: string): string {
   const asarSegment = `.asar${path.sep}`;
@@ -214,33 +214,33 @@ function resolveUnpackedBinaryPath(binPath: string): string {
   return binPath;
 }
 
-// --- Pastas relevantes dentro de uma instância SPT ---
+// --- Folders of interest inside an SPT instance ---
 const SERVER_MODS_DIR = ["user", "mods"];
 const SERVER_MODS_DISABLED_DIR = ["user", "mods.disabled"];
 const CLIENT_PLUGINS_DIR = ["BepInEx", "plugins"];
 const CLIENT_PLUGINS_DISABLED_DIR = ["BepInEx", "plugins.disabled"];
-// Prepatchers rodam ANTES do jogo carregar e ficam fora de plugins/. Um mod pode ter as
-// duas partes (ex: Wedge traz Wedge.Client.dll em plugins/ e Wedge.Prepatch.dll em
-// patchers/), e desabilitar só o plugin deixava o patcher ativo — pior que não desabilitar,
-// porque o mod fica meio ligado.
+// Prepatchers run BEFORE the game loads and live outside plugins/. A mod can ship both
+// parts (e.g. Wedge has Wedge.Client.dll in plugins/ and Wedge.Prepatch.dll in patchers/),
+// and disabling only the plugin left the patcher active — worse than not disabling at
+// all, because the mod ends up half-loaded.
 const CLIENT_PATCHERS_DIR = ["BepInEx", "patchers"];
 const CLIENT_PATCHERS_DISABLED_DIR = ["BepInEx", "patchers.disabled"];
 
 /**
- * Arquivos/pastas que pertencem ao próprio SPT (não são mods) mas moram dentro de
- * BepInEx/plugins — o mesmo diretório onde os client mods ficam. O scanner do Manager
- * NUNCA pode listar, alternar ou remover essas entradas, nem que o usuário selecione
- * "tudo" e mande remover: fazer isso quebra a instalação inteira da SPT (foi exatamente
- * o que aconteceu removendo "spt/spt-core.dll"). Se a SPT algum dia renomear esses
- * arquivos, o certo é ampliar esta lista — errar pro lado de "não mexer".
+ * Files/folders that belong to SPT itself (not mods) but live inside BepInEx/plugins —
+ * the same directory client mods use. The Manager's scanner must NEVER list, toggle, or
+ * remove these entries, not even when the user selects "everything" and hits remove:
+ * doing so breaks the entire SPT installation (which is exactly what happened when
+ * "spt/spt-core.dll" was removed). If SPT ever renames these files, the right move is to
+ * widen this list — err on the side of not touching things.
  */
 const PROTECTED_CLIENT_PLUGIN_NAMES = new Set(["spt", "spt-core.dll"]);
 
 /**
- * Muitos client mods se instalam como "plugins/Mod.dll" + "plugins/Mod/" (a pasta com
- * config, assets, etc). A pasta não é um mod — é dado do plugin. Sem isso, ela aparecia
- * como uma segunda entrada com o mesmo nome e sem metadado nenhum, poluindo a lista e
- * a modlist exportada.
+ * Many client mods install as "plugins/Mod.dll" + "plugins/Mod/" (the folder holding
+ * config, assets, and so on). That folder is not a mod — it is the plugin's data. Without
+ * this, it showed up as a second entry with the same name and no metadata at all,
+ * cluttering both the list and the exported modlist.
  */
 function listCompanionFolderNames(dir: string): Set<string> {
   if (!fs.existsSync(dir)) return new Set();
@@ -254,16 +254,16 @@ function listCompanionFolderNames(dir: string): Set<string> {
 }
 
 /**
- * Arquivos em BepInEx/patchers que pertencem a um mod client.
+ * Files in BepInEx/patchers that belong to a client mod.
  *
- * Duas fontes, nessa ordem:
- *  1. o manifesto — quando o mod foi instalado pelo app, sabemos exatamente quais
- *     arquivos vieram com ele;
- *  2. o nome — pra mods instalados por fora, um patcher costuma se chamar
- *     "<NomeDoMod>.Prepatch.dll", "<NomeDoMod>.Patcher.dll" ou só "<NomeDoMod>.dll".
+ * Two sources, in this order:
+ *  1. the manifest — when the app installed the mod, we know exactly which files came
+ *     with it;
+ *  2. the name — for mods installed outside the app, a patcher is usually called
+ *     "<ModName>.Prepatch.dll", "<ModName>.Patcher.dll", or just "<ModName>.dll".
  *
- * A regra por nome exige limite de palavra: "Wedge" casa com "Wedge.Prepatch.dll", mas
- * NÃO com "WedgeExtras.dll" — mover o patcher de outro mod quebraria esse outro mod.
+ * The name rule requires a word boundary: "Wedge" matches "Wedge.Prepatch.dll" but NOT
+ * "WedgeExtras.dll" — moving another mod's patcher would break that other mod.
  */
 function findRelatedPatcherFiles(dir: string, modId: string, manifestFiles: string[] = []): string[] {
   if (!fs.existsSync(dir)) return [];
@@ -283,7 +283,7 @@ function findRelatedPatcherFiles(dir: string, modId: string, manifestFiles: stri
       if (fromManifest.has(lower)) return true;
       const base = lower.replace(/\.dll$/i, "");
       if (base === modBase) return true;
-      // limite de palavra: o caractere logo após o nome do mod não pode ser letra/número
+      // word boundary: the character right after the mod name must not be alphanumeric
       return base.startsWith(modBase) && !/[a-z0-9]/.test(base.charAt(modBase.length));
     })
     .map((entry) => path.join(dir, entry.name));
@@ -294,16 +294,16 @@ function isProtectedClientEntry(name: string): boolean {
 }
 
 /**
- * Um caminho relativo (dentro do arquivo do mod) que cairia em cima do núcleo do client
- * da SPT — "BepInEx/plugins/spt/..." ou "BepInEx/plugins/spt-core.dll".
+ * A relative path (inside the mod's archive) that would land on top of SPT's client core
+ * — "BepInEx/plugins/spt/..." or "BepInEx/plugins/spt-core.dll".
  *
- * Alguns mods empacotam a árvore inteira da SPT junto, incluindo uma cópia (geralmente
- * mais antiga) desses arquivos. Sem essa checagem, instalar um mod desses sobrescrevia o
- * core do usuário e o jogo passava a acusar
+ * Some mods package SPT's entire tree alongside their own files, including a (usually
+ * older) copy of these. Without this check, installing such a mod overwrote the user's
+ * core and the game started reporting
  * "spt-core.dll file version doesn't match what was expected".
  *
- * Isso é diferente da proteção que já existia: aquela impede LISTAR e REMOVER o core;
- * esta impede SOBRESCREVER durante a instalação.
+ * This is distinct from the protection that already existed: that one prevents LISTING
+ * and REMOVING the core; this one prevents OVERWRITING it during installation.
  */
 function isProtectedInstancePath(relPath: string): boolean {
   const parts = relPath.replace(/\\/g, "/").toLowerCase().split("/").filter(Boolean);
@@ -324,27 +324,26 @@ function ensureDir(dirPath: string) {
 }
 
 /**
- * Lê version/author do package.json do mod, quando existe. É best-effort:
- * client mods (BepInEx) raramente têm isso, então retorna vazio sem erro nesses casos.
+ * Reads version/author from the mod's package.json, when present. Best-effort: client
+ * mods (BepInEx) rarely have one, so this returns empty without erroring in those cases.
  */
 /* --------------------------------------------------------------------------
- * Leitura de metadados do mod.
+ * Reading mod metadata.
  *
- * Mods do SPT 3.x traziam package.json com name/version/author. No SPT 4.0 os
- * mods viraram assemblies .NET e essa informação passou a morar DENTRO da DLL,
- * na classe de metadados do mod (ModMetadata / BepInPlugin), gravada como
- * strings UTF-16 no assembly:
+ * SPT 3.x mods shipped a package.json with name/version/author. In SPT 4.0 mods became
+ * .NET assemblies and that information moved INSIDE the DLL, into the mod's metadata
+ * class (ModMetadata / BepInPlugin), stored as UTF-16 strings in the assembly:
  *
  *   "com.toha3673.unbreakablekeys"  <- GUID
- *   "Unbreakable Keys"              <- nome
- *   "Toha3673"                      <- autor
- *   "2.0.0"                         <- versão do mod
- *   "~4.0.0"                        <- versão do SPT suportada
+ *   "Unbreakable Keys"              <- name
+ *   "Toha3673"                      <- author
+ *   "2.0.0"                         <- mod version
+ *   "~4.0.0"                        <- supported SPT version
  *
- * Importante: NÃO dá pra usar o AssemblyVersion/FileVersion do PE aqui. Num mod
- * real conferido, o assembly dizia 0.0.1.0 enquanto a versão publicada era 2.0.0
- * — o autor simplesmente não versiona o assembly. O valor que vale é o declarado
- * na classe de metadados.
+ * Important: the PE's AssemblyVersion/FileVersion CANNOT be used here. In a real mod that
+ * was checked, the assembly claimed 0.0.1.0 while the published version was 2.0.0 — the
+ * author simply does not version the assembly. The value that counts is the one declared
+ * in the metadata class.
  * ------------------------------------------------------------------------ */
 
 export interface ForgeInstallInfo {
@@ -366,8 +365,8 @@ const DLL_VERSION_RE = /^\d+\.\d+(\.\d+)?(\.\d+)?$/;
 const DLL_CONSTRAINT_RE = /^[~^>=<]/;
 const DLL_GUID_RE = /^[a-z][a-z0-9_]*(\.[a-z0-9_-]+){1,4}$/i;
 
-// Extrai strings UTF-16LE imprimíveis — é assim que o .NET guarda literais de
-// código no heap #US, e é onde os metadados do mod acabam.
+// Extracts printable UTF-16LE strings — this is how .NET stores code literals in the #US
+// heap, and where the mod's metadata ends up.
 function extractUtf16Strings(buffer: Buffer, minLen = 3, maxLen = 120): string[] {
   const out: string[] = [];
   let current: number[] = [];
@@ -388,8 +387,8 @@ function extractUtf16Strings(buffer: Buffer, minLen = 3, maxLen = 120): string[]
 
 const DLL_LICENSE_RE = /^(MIT|ISC|Apache|GPL|LGPL|AGPL|BSD|MPL|Unlicense|CC0|WTFPL|Zlib|Proprietary)[-\s0-9.]*$/i;
 
-// Extrai strings ASCII/UTF-8 — é onde ficam os argumentos de atributo (heap #Blob),
-// usados pelo BepInPlugin dos client mods.
+// Extracts ASCII/UTF-8 strings — where attribute arguments live (the #Blob heap), used by
+// the BepInPlugin attribute on client mods.
 function extractAsciiStrings(buffer: Buffer, minLen = 3, maxLen = 120): string[] {
   const out: string[] = [];
   let current: number[] = [];
@@ -414,8 +413,8 @@ function looksLikeModGuid(value: string): boolean {
   return true;
 }
 
-// Nome plausível de mod — rejeita strings vizinhas que claramente NÃO são nome
-// (mensagem de log, campo do VS_VERSION_INFO, caminho, frase).
+// A plausible mod name — rejects neighbouring strings that clearly are NOT a name (a log
+// message, a VS_VERSION_INFO field, a path, a sentence).
 function looksLikeModName(value: string): boolean {
   if (!value || value.length > 60) return false;
   if (/[[\]{}<>:;/\\|=]/.test(value)) return false;
@@ -426,17 +425,16 @@ function looksLikeModName(value: string): boolean {
 }
 
 /**
- * Server mod (SPT 4.0): os valores ficam como literais UTF-16, logo depois do
- * marcador "ModMetadata". A ORDEM DOS CAMPOS VARIA de mod pra mod, porque depende
- * de como o autor escreveu o inicializador — conferido em dois mods do mesmo autor:
+ * Server mod (SPT 4.0): the values sit as UTF-16 literals right after the "ModMetadata"
+ * marker. THE FIELD ORDER VARIES from mod to mod, because it depends on how the author
+ * wrote the initialiser — verified across two mods by the same author:
  *
- *   bosseshavelegamedals: ModMetadata, " { ", GUID, nome, autor, versão, ~spt, MIT
- *   brightlasers:         ModMetadata, " { ", nome, autor, versão, ~spt, MIT, GUID
+ *   bosseshavelegamedals: ModMetadata, " { ", GUID, name, author, version, ~spt, MIT
+ *   brightlasers:         ModMetadata, " { ", name, author, version, ~spt, MIT, GUID
  *
- * Por isso NÃO dá pra ler por posição fixa a partir do GUID (foi o que fez metade
- * dos mods sair em branco). Ancoramos no marcador "ModMetadata" e classificamos
- * cada string por FORMATO; o que sobra de texto é nome e autor, nessa ordem
- * (consistente nos mods conferidos).
+ * So reading by fixed offset from the GUID does NOT work (that is what left half the mods
+ * blank). We anchor on the "ModMetadata" marker and classify each string by SHAPE; the
+ * leftover text is name and author, in that order (consistent across the mods checked).
  */
 function parseServerModMetadata(utf16: string[]): DllModMetadata | null {
   const anchor = utf16.findIndex((v) => v === "ModMetadata");
@@ -448,8 +446,8 @@ function parseServerModMetadata(utf16: string[]): DllModMetadata | null {
   const sptVersion = window.find((v) => DLL_CONSTRAINT_RE.test(v) && /\d/.test(v));
   const textual = window.filter(
     (v) =>
-      // Exclui QUALQUER string com cara de GUID, não só a escolhida — mods com
-      // dependência declarada têm mais de uma, e a segunda virava "autor".
+      // Excludes ANY GUID-shaped string, not just the chosen one — mods that declare a
+      // dependency have more than one, and the second was being treated as "author".
       !looksLikeModGuid(v) &&
       !DLL_VERSION_RE.test(v) &&
       !DLL_CONSTRAINT_RE.test(v) &&
@@ -462,22 +460,22 @@ function parseServerModMetadata(utf16: string[]): DllModMetadata | null {
 }
 
 /**
- * Client mod (BepInEx): [BepInPlugin(GUID, Nome, Versão)]. Argumentos de atributo
- * são constantes de compilação e ficam no heap #Blob em UTF-8 — NÃO em UTF-16 —,
- * por isso ler só UTF-16 não achava nada nesses mods. Os três valores ficam
- * adjacentes, e o GUID é minúsculo por convenção (o que o distingue dos namespaces
- * PascalCase do próprio assembly, tipo "DrakiaXYZ.BigBrain").
- * Esse formato não tem campo de autor — deixamos vazio em vez de inventar.
+ * Client mod (BepInEx): [BepInPlugin(GUID, Name, Version)]. Attribute arguments are
+ * compile-time constants stored in the #Blob heap as UTF-8 — NOT UTF-16 — which is why
+ * reading only UTF-16 found nothing in these mods. The three values sit adjacent to each
+ * other, and the GUID is lowercase by convention (which distinguishes it from the
+ * assembly's own PascalCase namespaces, e.g. "DrakiaXYZ.BigBrain").
+ * This format has no author field — we leave it empty rather than inventing one.
  */
 function parseClientModMetadata(ascii: string[]): DllModMetadata | null {
-  // Coleta TODOS os blocos (guid, nome, versão) plausíveis e fica com o de GUID mais
-  // "qualificado" (mais segmentos de domínio invertido).
+  // Collects ALL plausible (guid, name, version) blocks and keeps the one with the most
+  // "qualified" GUID (the most reverse-domain segments).
   //
-  // Exigir 3+ segmentos, como antes, servia pra pular um bloco falso que alguns
-  // assemblies carregam antes do verdadeiro — mas descartava GUID legítimo de 2
-  // segmentos ("Kat.BetterAmmoLoadingList", "Tosox.DynamicItemWeights"), e esses mods
-  // ficavam sem versão nenhuma na lista. Escolher o mais qualificado resolve os dois:
-  // no IcyClawz, o falso tem 2 segmentos e o real tem 3, então o real ganha.
+  // Requiring 3+ segments, as before, served to skip a decoy block some assemblies carry
+  // ahead of the real one — but it discarded legitimate two-segment GUIDs
+  // ("Kat.BetterAmmoLoadingList", "Tosox.DynamicItemWeights"), leaving those mods with no
+  // version at all in the list. Picking the most qualified solves both: in IcyClawz the
+  // decoy has 2 segments and the real one has 3, so the real one wins.
   const candidates: { meta: DllModMetadata; segments: number }[] = [];
   for (let i = 0; i < ascii.length - 2; i++) {
     const value = ascii[i];
@@ -499,7 +497,7 @@ export function parseModMetadataFromStrings(utf16: string[], ascii: string[] = [
 export function readDllModMetadata(dllPath: string): DllModMetadata {
   try {
     const buffer = fs.readFileSync(dllPath);
-    if (buffer.length < 2 || buffer[0] !== 0x4d || buffer[1] !== 0x5a) return {}; // não é PE ("MZ")
+    if (buffer.length < 2 || buffer[0] !== 0x4d || buffer[1] !== 0x5a) return {}; // not a PE ("MZ")
     return parseModMetadataFromStrings(extractUtf16Strings(buffer), extractAsciiStrings(buffer));
   } catch {
     return {};
@@ -516,7 +514,7 @@ function readModMetadata(modPath: string): {
   try {
     if (!fs.existsSync(modPath)) return {};
 
-    // Client mod pode ser uma .dll solta, sem pasta própria.
+    // A client mod can be a loose .dll with no folder of its own.
     if (!fs.statSync(modPath).isDirectory()) {
       if (modPath.toLowerCase().endsWith(".dll")) {
         const meta = readDllModMetadata(modPath);
@@ -525,7 +523,7 @@ function readModMetadata(modPath: string): {
       return {};
     }
 
-    // SPT 3.x: package.json continua valendo quando existe.
+    // SPT 3.x: package.json still counts when it exists.
     const pkgPath = path.join(modPath, "package.json");
     if (fs.existsSync(pkgPath)) {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
@@ -535,7 +533,7 @@ function readModMetadata(modPath: string): {
       }
     }
 
-    // SPT 4.0: metadados dentro da DLL.
+    // SPT 4.0: metadata lives inside the DLL.
     for (const dll of findFilesRecursive(modPath, ".dll")) {
       const meta = readDllModMetadata(dll);
       if (meta.version || meta.guid) {
@@ -549,8 +547,8 @@ function readModMetadata(modPath: string): {
 }
 
 /**
- * Resolve o caminho absoluto (pasta ou arquivo) de um mod já escaneado, considerando
- * se está ativo ou desabilitado. Usado pra "Abrir pasta" e outras ações pontuais.
+ * Resolves the absolute path (folder or file) of an already-scanned mod, accounting for
+ * whether it is enabled or disabled. Used by "Open folder" and other one-off actions.
  */
 export function resolveModPath(
   clientRoot: string,
@@ -578,10 +576,10 @@ function hasServerMarkers(dir: string): boolean {
 
 export function validateSptPath(sptPath: string): { valid: boolean; reason?: string } {
   if (!fs.existsSync(sptPath)) {
-    return { valid: false, reason: "Pasta não existe." };
+    return { valid: false, reason: "Folder does not exist." };
   }
   if (!fs.statSync(sptPath).isDirectory()) {
-    return { valid: false, reason: "O caminho selecionado não é uma pasta." };
+    return { valid: false, reason: "The selected path is not a folder." };
   }
 
   const valid = hasClientMarkers(sptPath) || hasServerMarkers(sptPath);
@@ -590,26 +588,26 @@ export function validateSptPath(sptPath: string): { valid: boolean; reason?: str
     return {
       valid: false,
       reason:
-        "Não parece ser uma instância SPT válida. Esperava encontrar SPT.Server.exe, EscapeFromTarkov.exe, ou as pastas user/ e BepInEx/ juntas."
+        "This does not look like a valid SPT instance. Expected to find SPT.Server.exe, EscapeFromTarkov.exe, or the user/ and BepInEx/ folders together."
     };
   }
   return { valid: true };
 }
 
 export interface SptInstancePaths {
-  clientRoot: string; // onde fica BepInEx/ e o executável do jogo
-  serverRoot: string; // onde fica SPT.Server.exe e user/ — igual a clientRoot na grande maioria dos casos
-  split: boolean; // true quando client e server estão em pastas diferentes
+  clientRoot: string; // where BepInEx/ and the game executable live
+  serverRoot: string; // where SPT.Server.exe and user/ live — same as clientRoot in the vast majority of cases
+  split: boolean; // true when client and server sit in different folders
 }
 
 /**
- * Descobre onde ficam os arquivos de client (BepInEx/, exe do jogo) e de server
- * (SPT.Server.exe, user/) a partir da pasta escolhida pelo usuário. Na maioria das
- * instalações os dois estão juntos na mesma pasta. Mas o instalador oficial da SPT 4.x
- * pode criar uma estrutura "dividida": o client fica na pasta escolhida, e o server fica
- * numa subpasta (geralmente também chamada "SPT") um nível abaixo. Se isso não for
- * tratado à parte, mods de servidor (user/mods/...) acabam instalados no lugar errado —
- * o server real nem enxerga eles, porque roda de dentro da subpasta.
+ * Works out where the client files (BepInEx/, game exe) and server files (SPT.Server.exe,
+ * user/) live, starting from the folder the user picked. In most installations both sit
+ * together in the same folder. But SPT 4.x's official installer can create a "split"
+ * layout: the client in the chosen folder, and the server in a subfolder (usually also
+ * called "SPT") one level down. If that is not handled separately, server mods
+ * (user/mods/...) end up installed in the wrong place — the real server never sees them,
+ * because it runs from inside the subfolder.
  */
 export function resolveSptInstance(chosenPath: string): { instance: SptInstancePaths; autoDetected: boolean } | null {
   if (!fs.existsSync(chosenPath) || !fs.statSync(chosenPath).isDirectory()) return null;
@@ -617,7 +615,7 @@ export function resolveSptInstance(chosenPath: string): { instance: SptInstanceP
   const chosenHasClient = hasClientMarkers(chosenPath);
   const chosenHasServer = hasServerMarkers(chosenPath);
 
-  // Caso comum: tudo já está na pasta escolhida.
+  // Common case: everything is already in the chosen folder.
   if (chosenHasClient && chosenHasServer) {
     return { instance: { clientRoot: chosenPath, serverRoot: chosenPath, split: false }, autoDetected: false };
   }
@@ -638,8 +636,8 @@ export function resolveSptInstance(chosenPath: string): { instance: SptInstanceP
     return { instance: { clientRoot, serverRoot, split }, autoDetected };
   }
 
-  // Achou só um dos dois (ex: só o client, se o server nunca rodou ainda) — usa o mesmo
-  // caminho pros dois, mantendo o comportamento de antes pra esse caso.
+  // Only one of the two was found (e.g. client only, if the server has never run) — use
+  // the same path for both, preserving the previous behaviour for that case.
   const single = clientRoot || serverRoot;
   if (single) {
     return { instance: { clientRoot: single, serverRoot: single, split: false }, autoDetected: single !== chosenPath };
@@ -648,7 +646,7 @@ export function resolveSptInstance(chosenPath: string): { instance: SptInstanceP
   return null;
 }
 
-// --- Registro local de mods instalados via app (pra saber a diferença de "instalado manualmente") ---
+// --- Local registry of mods installed through the app (so we can tell them apart from "installed manually") ---
 function getRegistryPath(sptPath: string): string {
   return path.join(sptPath, ".spt-mod-manager-registry.json");
 }
@@ -669,9 +667,9 @@ function saveRegistry(sptPath: string, entries: RegistryEntry[]) {
 
 function addToRegistry(sptPath: string, entry: RegistryEntry) {
   const reg = loadRegistry(sptPath);
-  // A identidade de uma entrada é id + tipo, não só o id: um pacote pode instalar uma
-  // parte servidor e uma cliente com o MESMO nome de pasta (o Wedge faz isso). Filtrar
-  // só por id fazia o registro da segunda apagar o da primeira.
+  // An entry's identity is id + type, not id alone: one package can install a server part
+  // and a client part with the SAME folder name (Wedge does this). Filtering by id alone
+  // made the second one's registry entry erase the first's.
   const filtered = reg.filter((e) => !(e.id === entry.id && e.type === entry.type));
   filtered.push(entry);
   saveRegistry(sptPath, filtered);
@@ -679,8 +677,8 @@ function addToRegistry(sptPath: string, entry: RegistryEntry) {
 
 function removeFromRegistry(sptPath: string, id: string, type?: ModType) {
   const reg = loadRegistry(sptPath);
-  // Mesma razão do addToRegistry: sem o tipo, remover a parte servidor do Wedge apagaria
-  // também o registro da parte cliente, que tem o mesmo id.
+  // Same reason as addToRegistry: without the type, removing Wedge's server part would
+  // also erase the client part's registry entry, since they share an id.
   saveRegistry(
     sptPath,
     reg.filter((e) => !(e.id === id && (type === undefined || e.type === type)))
