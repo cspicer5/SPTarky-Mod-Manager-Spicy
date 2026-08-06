@@ -29,7 +29,8 @@
     "test:ledger": "tsc -p electron/tsconfig.json && node scripts/test-version-ledger.js",
     "test:presets": "tsc -p electron/tsconfig.json && node scripts/test-presets.js",
     "test:bulk": "tsc -p electron/tsconfig.json && node scripts/test-bulk-reinstall.js",
-    "test": "npm run test:parity && npm run test:sync && npm run test:update && npm run test:ledger && npm run test:presets && npm run test:bulk"
+    "test:sptpick": "tsc -p electron/tsconfig.json && node scripts/test-spt-version-pick.js",
+    "test": "npm run test:parity && npm run test:sync && npm run test:update && npm run test:ledger && npm run test:presets && npm run test:bulk && npm run test:sptpick"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

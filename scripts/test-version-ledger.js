@@ -75,6 +75,38 @@ check("falls back to the declared version", mod?.version, "2.0.9");
 check("flagged as a stale record", mod?.versionSource, "stale-record");
 check("no longer claims an origin", mod?.versionOrigin, undefined);
 
+console.log("\nHYBRID archive (user/ + BepInEx/ together) — the path most real mods take");
+{
+  // This is the shape that shipped unrecorded: the merge path had its own addToRegistry
+  // calls, so a 67-entry bulk reinstall captured zero versions. Most mods ship both halves
+  // in one archive, so this path matters more than the single-folder one.
+  const zip = new AdmZip();
+  zip.addFile("user/mods/mpstark-dynamicmaps/package.json", Buffer.from(JSON.stringify({ name: "dm", version: "0.0.1" })));
+  zip.addFile("user/mods/mpstark-dynamicmaps/mod.js", Buffer.from("//"));
+  zip.addFile("BepInEx/plugins/DynamicMaps/DynamicMaps.dll", Buffer.from("binary"));
+  const hybridPath = path.join(root, "DynamicMaps-1.2.0.zip");
+  zip.writeZip(hybridPath);
+
+  const r = await installModFromArchive(INSTALL, INSTALL, hybridPath);
+  check("hybrid install succeeded", r.success, true);
+
+  const all = scanMods(INSTALL, INSTALL);
+  const server = all.find((m) => m.id === "mpstark-dynamicmaps" && m.type === "server");
+  const client = all.find((m) => m.id === "DynamicMaps" && m.type === "client");
+
+  check("server half recorded", server?.versionSource, "recorded");
+  check("server half took the archive version, not its package.json", server?.version, "1.2.0");
+  check("server half surfaces the disagreement", server?.declaredVersion, "0.0.1");
+  check("client half recorded", client?.versionSource, "recorded");
+  check("client half has the same version", client?.version, "1.2.0");
+
+  const reg = JSON.parse(fs.readFileSync(path.join(INSTALL, ".spt-mod-manager-registry.json"), "utf-8"));
+  const both = reg.filter((e) => ["mpstark-dynamicmaps", "DynamicMaps"].includes(e.id));
+  check("both halves written to the registry", both.length, 2);
+  check("both carry a version", both.filter((e) => e.installedVersion === "1.2.0").length, 2);
+  check("both carry a fingerprint", both.filter((e) => e.fingerprint?.files > 0).length, 2);
+}
+
 console.log("\na mod whose archive carries no version");
 const plain = makeArchive("SomeClientMod.zip", "SomeClientMod", "1.2.3");
 await installModFromArchive(INSTALL, INSTALL, plain);

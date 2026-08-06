@@ -395,7 +395,11 @@ ipcMain.handle("run-bulk-reinstall", async (_event, opts: { sptVersion?: string;
     const found = await findForgeDownloadsForNames(
       mods.map((m) => ({ name: m.originalName, guid: m.guid })),
       (done, total) => report({ phase: "resolve", done, total }),
-      roots.clientRoot
+      roots.clientRoot,
+      // The whole premise of the dialog is "mods for THIS SPT version". Without this the
+      // resolver returned each mod's newest release regardless, which installed builds for
+      // a different SPT — DynamicMaps 1.2.0 onto a 4.0.13 install.
+      opts?.sptVersion ?? localSptVersion()
     );
     for (const mod of mods) {
       const hit = found[mod.originalName];
@@ -427,7 +431,7 @@ ipcMain.handle("run-bulk-reinstall", async (_event, opts: { sptVersion?: string;
             ? mod.sourceRepo
               ? `No downloadable release on ${mod.sourceRepo}.`
               : "No known GitHub repository for this mod."
-            : "Couldn't find it on Forge."
+            : `Nothing published for SPT ${opts?.sptVersion ?? localSptVersion() ?? "?"}, or couldn't find it on Forge.`
       });
       continue;
     }

@@ -28,6 +28,17 @@ function PresetRowItem({ row }: { row: PresetRow }) {
         <span className="preset-row-name" title={row.guid ? `GUID: ${row.guid}` : row.name}>
           {row.name}
         </span>
+        {/* The preset records enabled/disabled per mod, but nothing showed it — so a preset
+            containing two deliberately-disabled mods looked like it had not captured that
+            at all. Shown on every row, not only on a mismatch. */}
+        {row.presetEnabled !== undefined && (
+          <span
+            className={`preset-state ${row.presetEnabled ? "on" : "off"}`}
+            title={`This preset expects the mod to be ${row.presetEnabled ? "enabled" : "disabled"}.`}
+          >
+            {row.presetEnabled ? "on" : "off"}
+          </span>
+        )}
         <span className={`type-badge type-${row.type}`}>{row.type}</span>
         {!row.required && (
           <span className="preset-optional" title="Part of this preset, but you can play without it.">
@@ -155,6 +166,10 @@ export default function PresetsPanel({
                     <span className="preset-item-name">{p.name}</span>
                     <span className="preset-item-meta">
                       {p.mods.length} mods
+                      {(() => {
+                        const off = p.mods.filter((m) => m.enabled === false).length;
+                        return off > 0 ? ` (${p.mods.length - off} on, ${off} off)` : "";
+                      })()}
                       {p.sptVersion ? ` · SPT ${p.sptVersion}` : ""}
                     </span>
                     {p.description && <span className="preset-item-desc">{p.description}</span>}

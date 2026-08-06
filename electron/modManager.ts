@@ -1432,42 +1432,13 @@ export async function installModFromArchive(
     // which build it served; the archive filename is next best; the mod's own claim at this
     // moment is the last resort and is at least pinned to a known point in time.
     const installedPath = path.join(destBase, modId);
-    const declaredNow = readModMetadata(installedPath)?.version;
-    let installedVersion: string | undefined;
-    let versionOrigin: VersionOrigin | undefined;
-    let versionEvidence: string | undefined;
-
-    if (forgeInfo?.version) {
-      installedVersion = forgeInfo.version;
-      versionOrigin = forgeInfo.origin ?? "forge";
-      versionEvidence =
-        versionOrigin === "github"
-          ? `GitHub release ${forgeInfo.version}${forgeInfo.sourceUrl ? ` — ${forgeInfo.sourceUrl}` : ""}`
-          : forgeInfo.name
-            ? `Forge: ${forgeInfo.name} ${forgeInfo.version}`
-            : `Forge ${forgeInfo.version}`;
-    } else {
-      const fromName = versionFromArchiveName(archivePath);
-      if (fromName) {
-        installedVersion = fromName;
-        versionOrigin = "archive-name";
-        versionEvidence = path.basename(archivePath);
-      } else if (declaredNow) {
-        installedVersion = declaredNow;
-        versionOrigin = "declared-at-install";
-        versionEvidence = `declared ${declaredNow} when installed`;
-      }
-    }
-
     addToRegistry(clientRoot, {
       id: modId,
       displayName: modId,
       type,
       installedAt: new Date().toISOString(),
       source: "archive-install",
-      installedVersion,
-      versionOrigin,
-      versionEvidence,
+      ...determineInstalledVersion(installedPath, archivePath, forgeInfo),
       fingerprint: fingerprintPath(installedPath),
       forgeName: forgeInfo?.name,
       forgeAuthor: forgeInfo?.author,
@@ -1647,24 +1618,41 @@ function performMerge(
   // "Wedge server" and "Wedge client" to be treated as a single mod later on.
   const packageId = `pkg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+  // Every part of the package gets the SAME recorded version, because they came out of one
+  // archive. Without this the merge path recorded nothing, and since most real mods ship
+  // user/ and BepInEx/ together, that meant almost nothing was ever recorded at all.
   for (const name of serverModNames) {
+    const installedPath = path.join(p(serverRoot, SERVER_MODS_DIR), name);
     addToRegistry(clientRoot, {
       id: name,
       displayName: name,
       type: "server",
       installedAt: new Date().toISOString(),
       source: "archive-install",
+      ...determineInstalledVersion(installedPath, archivePath, forgeInfo),
+      fingerprint: fingerprintPath(installedPath),
+      forgeName: forgeInfo?.name,
+      forgeAuthor: forgeInfo?.author,
+      forgeVersion: forgeInfo?.version,
+      forgeGuid: forgeInfo?.guid,
       packageId,
       linkedModId: orphanId
     });
   }
   for (const name of clientModNames) {
+    const installedPath = path.join(p(clientRoot, CLIENT_PLUGINS_DIR), name);
     addToRegistry(clientRoot, {
       id: name,
       displayName: name,
       type: "client",
       installedAt: new Date().toISOString(),
       source: "archive-install",
+      ...determineInstalledVersion(installedPath, archivePath, forgeInfo),
+      fingerprint: fingerprintPath(installedPath),
+      forgeName: forgeInfo?.name,
+      forgeAuthor: forgeInfo?.author,
+      forgeVersion: forgeInfo?.version,
+      forgeGuid: forgeInfo?.guid,
       packageId,
       linkedModId: orphanId
     });
@@ -2211,6 +2199,49 @@ function fingerprintMatches(recorded: ModFingerprint | undefined, current: ModFi
  * is not mistaken for a version. Anchored to the END of the name, because that is where
  * versions live — a leading number is far more often part of the mod's own name.
  */
+/**
+ * Works out what version was actually installed, from the best evidence available.
+ *
+ * Shared by BOTH install paths. It was originally inlined in the single-mod path only, so
+ * the merge path — which handles every archive shipping user/ and BepInEx/ together, i.e.
+ * most real mods — recorded nothing at all. A 67-entry bulk reinstall captured zero
+ * versions before this was pulled out.
+ */
+export function determineInstalledVersion(
+  installedPath: string,
+  archivePath: string,
+  forgeInfo?: ForgeInstallInfo
+): { installedVersion?: string; versionOrigin?: VersionOrigin; versionEvidence?: string } {
+  if (forgeInfo?.version) {
+    const origin = forgeInfo.origin ?? "forge";
+    return {
+      installedVersion: forgeInfo.version,
+      versionOrigin: origin,
+      versionEvidence:
+        origin === "github"
+          ? `GitHub release ${forgeInfo.version}${forgeInfo.sourceUrl ? ` — ${forgeInfo.sourceUrl}` : ""}`
+          : forgeInfo.name
+            ? `Forge: ${forgeInfo.name} ${forgeInfo.version}`
+            : `Forge ${forgeInfo.version}`
+    };
+  }
+
+  const fromName = versionFromArchiveName(archivePath);
+  if (fromName) {
+    return { installedVersion: fromName, versionOrigin: "archive-name", versionEvidence: path.basename(archivePath) };
+  }
+
+  const declaredNow = readModMetadata(installedPath)?.version;
+  if (declaredNow) {
+    return {
+      installedVersion: declaredNow,
+      versionOrigin: "declared-at-install",
+      versionEvidence: `declared ${declaredNow} when installed`
+    };
+  }
+  return {};
+}
+
 export function versionFromArchiveName(archivePath: string): string | undefined {
   const base = path.parse(archivePath).name;
   const match = base.match(/(?:^|[^0-9A-Za-z])[vV]?(\d+(?:[._]\d+){1,3})(?:[-_.]?(?:release|final|spt)?)?$/i);
@@ -2670,11 +2701,25 @@ function methodNeedsConfirmation(method: ForgeMatchMethod, groupTrusted = true):
   return false;
 }
 
+export interface ForgeVersionOption {
+  version?: string;
+  link?: string;
+  sptConstraint?: string;
+}
+
 interface ForgeMatch {
   identifier: string;
   modId: number; // Forge's numeric id — always present, even when guid is null
   latestVersion?: string;
   latestVersionLink?: string;
+  /**
+   * Every published version, newest first, with its SPT constraint.
+   *
+   * Only the newest used to be kept, which made "reinstall everything for SPT 4.0.13"
+   * impossible to honour — it silently fetched each mod's newest release instead, and
+   * installed builds for a different SPT version.
+   */
+  versions?: ForgeVersionOption[];
   forgeName?: string;
   /** Kept for compatibility with the rest of the code/UI that already reads this field. */
   confidence: "exact" | "derived";
@@ -2694,6 +2739,11 @@ function toForgeMatch(entry: any, method: ForgeMatchMethod, groupTrusted = true)
     modId: Number(entry.id),
     latestVersion: latest?.version,
     latestVersionLink: latest?.link,
+    versions: versions.map((v: any) => ({
+      version: v?.version,
+      link: v?.link,
+      sptConstraint: v?.spt_version_constraint || undefined
+    })),
     forgeName: typeof entry.name === "string" ? entry.name : undefined,
     confidence: needsConfirmation ? "derived" : "exact",
     method,
@@ -3348,10 +3398,39 @@ async function findForgeModInfo(
  * Sharing a single budget means the whole operation gives up together and finishes in
  * predictable time.
  */
+/**
+ * Picks the newest published version that is safe to install on a given SPT version.
+ *
+ * A mod's newest release is frequently built for a NEWER SPT than the one installed —
+ * DynamicMaps 1.2.0 against an SPT 4.0.13 install, for instance. Taking versions[0]
+ * unconditionally is what made "reinstall everything for SPT 4.0.13" install things that
+ * do not run on 4.0.13.
+ *
+ * Explicitly compatible wins. A version with no constraint at all ("unknown") is accepted
+ * only if nothing compatible exists, because a missing constraint is not a promise. A
+ * version known to be incompatible is never chosen; if every version is incompatible, this
+ * returns nothing and the caller leaves the mod alone rather than installing something that
+ * will not load.
+ */
+export function pickForgeVersionForSpt(
+  versions: ForgeVersionOption[] | undefined,
+  sptVersion: string | undefined
+): ForgeVersionOption | undefined {
+  const withLink = (versions ?? []).filter((v) => v.link);
+  if (withLink.length === 0) return undefined;
+  if (!sptVersion) return withLink[0];
+
+  const compatible = withLink.find((v) => checkSptCompatibility(v.sptConstraint, sptVersion) === "compatible");
+  if (compatible) return compatible;
+  return withLink.find((v) => checkSptCompatibility(v.sptConstraint, sptVersion) === "unknown");
+}
+
 export async function findForgeDownloadsForNames(
   entries: { name: string; guid?: string }[],
   onProgress?: (done: number, total: number) => void,
-  cacheRoot?: string
+  cacheRoot?: string,
+  /** When given, each mod resolves to its newest release built for THIS SPT version. */
+  sptVersion?: string
 ): Promise<Record<string, { downloadLink: string; version?: string; forgeName?: string; guid?: string }>> {
   // When the exported list carries GUIDs, matching is exact and resolved in a batch — no
   // name guessing. Older lists (without GUIDs) still work via the name path.
@@ -3365,6 +3444,23 @@ export async function findForgeDownloadsForNames(
   for (const { name } of entries) {
     const info = matches.get(name);
     if (!info) continue;
+
+    // With an SPT version in hand, pick the newest release built for IT rather than the
+    // newest release overall — those are often not the same thing, and installing the
+    // latter produces mods that will not load.
+    const chosen = sptVersion ? pickForgeVersionForSpt(info.versions, sptVersion) : undefined;
+    if (chosen?.link) {
+      out[name] = {
+        downloadLink: chosen.link,
+        version: chosen.version,
+        forgeName: info.forgeName,
+        guid: info.identifier
+      };
+      continue;
+    }
+    // An SPT version was requested and NOTHING this mod publishes suits it. Skipping is the
+    // honest outcome: the caller reports it and leaves the installed copy alone.
+    if (sptVersion && info.versions && info.versions.length > 0) continue;
 
     if (info.latestVersionLink) {
       out[name] = {

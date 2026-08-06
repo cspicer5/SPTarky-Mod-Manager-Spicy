@@ -293,3 +293,25 @@
     border-bottom: 1px solid var(--border);
   }
 }
+
+/* What the preset expects a mod's on/off state to be. Shown on every row: a preset with two
+   deliberately-disabled mods looked like it had not recorded state at all when this was
+   only rendered on a mismatch. */
+.preset-state {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.preset-state.on {
+  color: var(--ok-strong);
+  border-color: var(--ok);
+}
+
+.preset-state.off {
+  color: var(--text-faint);
+}
