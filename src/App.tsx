@@ -1024,7 +1024,7 @@ export default function App() {
 
       {!sptPath ? (
         <div className="empty-state">
-          <h1>SPT Mod Manager</h1>
+          <h1>SPTarky Mod Manager Spicy</h1>
           <p>{t("empty.selectFolder")}</p>
           <button onClick={handleSelectFolder}>{t("empty.selectFolderButton")}</button>
           <button onClick={handleOpenModHub}>{t("empty.downloadModsButton")}</button>
@@ -1044,7 +1044,7 @@ export default function App() {
           )}
           <header>
             <div>
-              <h1>SPT Mod Manager</h1>
+              <h1>SPTarky Mod Manager Spicy</h1>
               {isSplitInstance ? (
                 <span className="instance-path" title={`Client: ${sptPath}\nServer: ${serverRoot}`}>
                   {t("header.splitInstance", { client: sptPath ?? "", server: serverRoot ?? "" })}
