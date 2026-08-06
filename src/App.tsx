@@ -264,14 +264,18 @@ export default function App() {
     pushToast("Server disconnected.", true);
   }
 
-  // Entering multi mode with nothing to compare against goes straight to the relevant
-  // picker, rather than showing an empty pane and leaving the user to work out what to do.
-  async function handleToggleMultiMode() {
-    if (multiMode) {
-      setMultiMode(false);
+  // Each button opens its own picker when nothing is configured, rather than showing an
+  // empty pane and leaving the user to work out what to do with it.
+  function handleServerButton() {
+    if (!serverUrl) {
+      setServerPrompt(true);
       return;
     }
-    if (!headlessPath && !serverUrl) {
+    setMultiMode(true);
+  }
+
+  async function handleHeadlessButton() {
+    if (!headlessPath) {
       await handleSelectHeadlessFolder();
       return;
     }
@@ -307,6 +311,54 @@ export default function App() {
 
   // The server pane has no equivalent of these. It is remote and read-only by design, so
   // there is no toggle, no removal and no install target — see electron/sptServer.ts.
+
+  const [syncing, setSyncing] = useState(false);
+
+  async function handleSyncMod(mod: ModInfo) {
+    setSyncing(true);
+    try {
+      const result = await window.modManagerAPI.syncModToHeadless(mod);
+      pushToast(tMsg(result.message), result.success);
+      await refreshHeadless();
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function handleRemoveFromHeadless(mod: ModInfo) {
+    if (!window.confirm(`Remove "${mod.name}" from the headless client? The main install is untouched.`)) return;
+    const result = await window.modManagerAPI.removeModFromHeadless(mod);
+    pushToast(tMsg(result.message), result.success);
+    await refreshHeadless();
+  }
+
+  // Bulk sync is confirmed first because it overwrites whatever is on the headless side —
+  // that overwrite IS the drift repair, but it should not be a surprise.
+  async function handleSyncAll() {
+    const pending = headlessData?.parity?.counts;
+    const total = (pending?.missingOnHeadless ?? 0) + (pending?.versionDrift ?? 0);
+    if (total === 0) {
+      pushToast("Nothing to sync — the headless client already matches.", true);
+      return;
+    }
+    if (
+      !window.confirm(
+        `Copy ${total} plugin(s) from the main install to the headless client?\n\n` +
+          "Anything already there with the same name is replaced. Only mods that must match are copied — " +
+          "display-only and stash-only plugins are left alone."
+      )
+    ) {
+      return;
+    }
+    setSyncing(true);
+    try {
+      const result = await window.modManagerAPI.syncAllToHeadless();
+      pushToast(tMsg(result.message), result.success);
+      await refreshHeadless();
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   async function handleInstanceOpenFolder(mod: ModInfo, target: InstanceId) {
     const result = await window.modManagerAPI.openModFolder(mod, target);
@@ -1224,17 +1276,40 @@ export default function App() {
                 {t("header.browseForge")}
               </button>
               <button onClick={handleOpenModHub} title={t("header.openHubTitle")}>{t("header.openHub")}</button>
-              <button
-                onClick={handleToggleMultiMode}
-                className={multiMode ? "primary" : ""}
-                title={
-                  headlessPath || serverUrl
-                    ? "Compare this install against the server and the headless client"
-                    : "Link a Fika headless client or a live server to compare against"
-                }
-              >
-                {multiMode ? "Single view" : headlessPath || serverUrl ? "Instances" : "Add instance"}
-              </button>
+              {/* Two distinct things, so two buttons. A tracked server is on ANOTHER machine
+                  and is reached over the network; a headless client is realistically always
+                  on this one, since it is a folder the app has to read and write. Hiding
+                  both behind one "Instances" button implied they were interchangeable. */}
+              {multiMode ? (
+                <button onClick={() => setMultiMode(false)} className="primary" title="Back to the single mod list">
+                  Single view
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={handleServerButton}
+                    title={
+                      serverUrl
+                        ? `Compare against the server at ${serverUrl}`
+                        : "Track a live SPT server running on another machine (read only)"
+                    }
+                  >
+                    {serverUrl ? "Server" : "Add server"}
+                    <span className="btn-scope">remote</span>
+                  </button>
+                  <button
+                    onClick={handleHeadlessButton}
+                    title={
+                      headlessPath
+                        ? "Compare against the Fika headless client on this machine"
+                        : "Track a Fika headless client installed on this machine"
+                    }
+                  >
+                    {headlessPath ? "Headless" : "Add headless"}
+                    <span className="btn-scope">local</span>
+                  </button>
+                </>
+              )}
               <button onClick={handleSelectFolder} title={t("header.changeInstanceTitle")}>{t("header.changeInstance")}</button>
               <button onClick={handleInstall} disabled={loading} className="primary" title={t("header.installButtonTitle")}>
                 {loading ? t("header.installing") : t("header.installButton")}
@@ -1593,6 +1668,11 @@ export default function App() {
               onRefresh={() => void refreshMulti()}
               refreshing={multiRefreshing}
               searchQuery={searchQuery}
+              onSyncMod={handleSyncMod}
+              onSyncAll={handleSyncAll}
+              onRemoveFromHeadless={handleRemoveFromHeadless}
+              syncing={syncing}
+              headlessConfigured={!!headlessPath}
             />
           ) : (
             <>

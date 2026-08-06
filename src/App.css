@@ -1125,3 +1125,25 @@ h2 {
   color: var(--accent-strong);
   cursor: help;
 }
+
+/* Scope tag on the header instance buttons. A tracked server lives on another machine and
+   is read over the network; a headless client is a folder on this one. Saying so on the
+   button removes the main source of confusion about what each one does. */
+.btn-scope {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  vertical-align: middle;
+}
+
+button:hover > .btn-scope {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}

@@ -29,7 +29,9 @@ import {
   setManualForgeMatch,
   clearManualForgeMatch,
   dismissForgeUpdate,
-  undismissForgeUpdate
+  undismissForgeUpdate,
+  copyClientModToHeadless,
+  removeModFromHeadless
 } from "./modManager";
 import {
   resolveHeadlessInstance,
@@ -39,6 +41,7 @@ import {
   buildServerCounterpartIndex,
   forgeHintsFor,
   normaliseModKey,
+  parityKey,
   HeadlessClass
 } from "./headless";
 import { fetchServerSnapshot, buildServerSyncReport, normaliseServerUrl } from "./sptServer";
@@ -250,6 +253,81 @@ ipcMain.handle("get-headless-advice", () => {
       serverCounterparts
     })
   }));
+});
+
+/* --- IPC: syncing the headless client from the main install -----------------
+ * One direction only: main -> headless. The main install is the copy the user configures
+ * and plays with, so it is the source of truth, and Fika's own guidance is to configure on
+ * the main game and copy across rather than install twice.
+ */
+ipcMain.handle("sync-mod-to-headless", (_event, mod: ModInfo) => {
+  const sptPath = store.get("sptPath");
+  const headlessPath = store.get("headlessPath");
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
+  if (!headlessPath) return { success: false, message: "No headless client configured." };
+  return copyClientModToHeadless(sptPath, headlessPath, mod);
+});
+
+ipcMain.handle("remove-mod-from-headless", (_event, mod: ModInfo) => {
+  const headlessPath = store.get("headlessPath");
+  if (!headlessPath) return { success: false, message: "No headless client configured." };
+  return removeModFromHeadless(headlessPath, mod);
+});
+
+/**
+ * Copies every plugin the parity report says is missing from the headless client or drifted
+ * out of version with it.
+ *
+ * Scoped to what MUST match — required and recommended — rather than everything present.
+ * Copying the cosmetic mods too would be easy and wrong: they gain the headless client
+ * nothing, and menu-patching ones can stop it hosting at all.
+ */
+ipcMain.handle("sync-all-to-headless", (_event) => {
+  const sptPath = store.get("sptPath");
+  const headlessPath = store.get("headlessPath");
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
+  if (!headlessPath) return { success: false, message: "No headless client configured." };
+
+  const mainMods = scanInstance("main");
+  const headlessMods = scanInstance("headless");
+  const report = buildParityReport(mainMods, headlessMods, {
+    manual: headlessOverrides(),
+    forge: { ...forgeHintsFor(mainMods), ...forgeHintsFor(headlessMods) }
+  });
+
+  const wanted = report.rows.filter(
+    (row) =>
+      (row.issue === "missing-required" || row.issue === "missing-recommended" || row.issue === "version-drift") &&
+      row.type !== "server"
+  );
+
+  // Keyed by parityKey, NOT by name. Several mods ship a server half and a client half under
+  // one folder name; keyed by name alone the map ends up holding whichever was scanned last,
+  // which is the SERVER half — and the copy is then correctly refused as a server mod, so the
+  // client plugin silently never syncs. Cost two plugins on the reference install
+  // (acidphantasm-botplacementsystem, WTT-PackNStrap) and reported success while doing it.
+  const byKey = new Map(mainMods.map((m) => [parityKey(m), m]));
+  const done: string[] = [];
+  const failed: string[] = [];
+
+  for (const row of wanted) {
+    const mod = byKey.get(row.key);
+    if (!mod) {
+      failed.push(row.name);
+      continue;
+    }
+    const result = copyClientModToHeadless(sptPath, headlessPath, mod);
+    (result.success ? done : failed).push(mod.name);
+  }
+
+  if (!wanted.length) return { success: true, message: "Nothing to sync — the headless client already matches.", copied: 0 };
+  return {
+    success: failed.length === 0,
+    copied: done.length,
+    message:
+      `Copied ${done.length} plugin(s) to the headless client.` +
+      (failed.length ? ` ${failed.length} failed: ${failed.slice(0, 3).join(", ")}${failed.length > 3 ? "…" : ""}` : "")
+  };
 });
 
 /* --- IPC: live SPT server (remote, READ-ONLY) ------------------------------

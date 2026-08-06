@@ -262,6 +262,11 @@ export interface ModManagerAPI {
   getHeadlessAdvice: () => Promise<{ id: string; verdict: HeadlessVerdict }[]>;
   setHeadlessOverride: (modKey: string, klass: HeadlessClass | null) => Promise<{ success: boolean; message?: string }>;
 
+  // --- headless sync (main -> headless only; the main install is the source of truth) ---
+  syncModToHeadless: (mod: ModInfo) => Promise<{ success: boolean; message: string }>;
+  removeModFromHeadless: (mod: ModInfo) => Promise<{ success: boolean; message: string }>;
+  syncAllToHeadless: () => Promise<{ success: boolean; message: string; copied?: number }>;
+
   // --- live SPT server (remote, READ-ONLY — there is deliberately no write method) ---
   getServerUrl: () => Promise<string | null>;
   setServerUrl: (url: string) => Promise<{ success: boolean; url?: string; message?: string }>;

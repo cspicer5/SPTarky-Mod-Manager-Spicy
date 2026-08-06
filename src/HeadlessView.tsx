@@ -178,7 +178,10 @@ function InstancePane({
   showVerdicts,
   collapsed,
   onToggleCollapse,
-  filtersActive
+  filtersActive,
+  onSyncMod,
+  syncing,
+  canSync
 }: {
   title: string;
   subtitle: string;
@@ -195,6 +198,10 @@ function InstancePane({
   collapsed: boolean;
   onToggleCollapse: () => void;
   filtersActive: boolean;
+  /** Copy this plugin to the headless client. Only offered where it would change something. */
+  onSyncMod?: (mod: ModInfo) => void;
+  syncing?: boolean;
+  canSync?: boolean;
 }) {
   const servers = mods.filter((m) => m.type === "server");
   const clients = mods.filter((m) => m.type !== "server");
@@ -214,6 +221,26 @@ function InstancePane({
           </span>
           <span className="hl-version">{mod.version ?? "—"}</span>
           <div className="hl-row-actions">
+            {/* Offered only where copying would actually change something — on a row that
+                is missing from the headless client or has drifted out of version with it.
+                A copy button on an already-matching row invites pointless overwrites. */}
+            {canSync &&
+              onSyncMod &&
+              mod.type !== "server" &&
+              (issue === "missing-required" || issue === "missing-recommended" || issue === "version-drift") && (
+                <button
+                  className="hl-sync-btn"
+                  onClick={() => onSyncMod(mod)}
+                  disabled={syncing}
+                  title={
+                    issue === "version-drift"
+                      ? `Copy ${mod.version ?? "this version"} over the headless client's copy`
+                      : "Copy this plugin to the headless client"
+                  }
+                >
+                  →
+                </button>
+              )}
             <button onClick={() => onToggle(mod)} title={mod.enabled ? "Disable" : "Enable"}>
               {mod.enabled ? "On" : "Off"}
             </button>
@@ -300,7 +327,7 @@ function ServerPane({
     return (
       <PaneShell
         title="Server"
-        subtitle="Not connected"
+        subtitle="Remote — not connected"
         location={null}
         count="—"
         collapsed={collapsed}
@@ -387,7 +414,7 @@ function ServerPane({
   return (
     <PaneShell
       title="Server"
-      subtitle="Loaded server mods — read only"
+      subtitle="Remote — loaded server mods, read only"
       location={url}
       count={report ? serverModCount : "…"}
       collapsed={collapsed}
@@ -526,7 +553,12 @@ export default function InstancesView({
   onExitMultiMode,
   onRefresh,
   refreshing,
-  searchQuery
+  searchQuery,
+  onSyncMod,
+  onSyncAll,
+  onRemoveFromHeadless,
+  syncing,
+  headlessConfigured
 }: {
   mainPath: string | null;
   headlessPath: string | null;
@@ -550,25 +582,36 @@ export default function InstancesView({
   /** The shared search box. Applied to the server pane too — it has its own row shape, so
       it cannot go through applyFilterSort with the local panes. */
   searchQuery: string;
+  onSyncMod: (mod: ModInfo) => void;
+  onSyncAll: () => void;
+  onRemoveFromHeadless: (mod: ModInfo) => void;
+  syncing: boolean;
+  headlessConfigured: boolean;
 }) {
   // Collapsed panes are remembered per session so a chosen comparison stays put across a
   // rescan. Server starts collapsed when nothing is connected — an empty invitation should
   // not cost a third of the width.
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ server: !serverUrl });
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const toggle = (k: string) => setCollapsed((prev) => ({ ...prev, [k]: !prev[k] }));
 
   const rowsByKey = new Map((parity?.rows ?? []).map((r) => [r.key, r]));
   const openCount = ["main", "server", "headless"].filter((k) => !collapsed[k]).length;
+  const outOfStep = (parity?.counts.missingOnHeadless ?? 0) + (parity?.counts.versionDrift ?? 0);
 
   return (
     <div className="hl-wrapper">
       <div className="hl-toolbar">
         <strong>Instances</strong>
         <span className="hl-toolbar-note">
-          Main install{serverUrl ? ", live server" : ""}
-          {headlessPath ? ", Fika headless client" : ""} — filters and search above apply to every pane.
+          Main install (local){serverUrl ? ", server (remote, read only)" : ""}
+          {headlessPath ? ", headless client (local)" : ""} — filters and search above apply to every pane.
         </span>
         <div className="hl-toolbar-actions">
+          {headlessConfigured && (
+            <button onClick={onSyncAll} disabled={syncing || outOfStep === 0} className={outOfStep > 0 ? "primary" : ""}>
+              {syncing ? "Syncing…" : outOfStep > 0 ? `Sync headless (${outOfStep})` : "Headless in sync"}
+            </button>
+          )}
           <button onClick={onRefresh} disabled={refreshing}>
             {refreshing ? "Rescanning…" : "Rescan all"}
           </button>
@@ -578,10 +621,20 @@ export default function InstancesView({
         </div>
       </div>
 
+      {/* Only configured instances get a pane.
+       *
+       * In practice a setup is one of two shapes, and they do not overlap:
+       *   player — their own PC plus a remote server. The host's headless client exists but
+       *            is unreachable except in-game, so there is nothing to manage.
+       *   host   — their own machine plus a local headless client. They ARE the server, so
+       *            there is no remote one to track.
+       * Showing the unused pane as a permanent "connect to…" invitation cost a third of the
+       * width to something most people will never use. Both can still be added from the
+       * toolbar, and all three panes work if someone genuinely wants that. */}
       <div className={`hl-split hl-open-${openCount}`}>
         <InstancePane
           title="Main install"
-          subtitle="Client + server — this machine"
+          subtitle="Local — client + server"
           path={mainPath}
           mods={mainMods}
           rowsByKey={rowsByKey}
@@ -595,30 +648,40 @@ export default function InstancesView({
           collapsed={!!collapsed.main}
           onToggleCollapse={() => toggle("main")}
           filtersActive={filtersActive}
+          onSyncMod={onSyncMod}
+          syncing={syncing}
+          canSync={headlessConfigured}
         />
 
-        <ServerPane
-          report={server}
-          url={serverUrl}
-          collapsed={!!collapsed.server}
-          onToggleCollapse={() => toggle("server")}
-          onChangeServer={onChangeServer}
-          onClearServer={onClearServer}
-          query={searchQuery}
-        />
+        {serverUrl && (
+          <ServerPane
+            report={server}
+            url={serverUrl}
+            collapsed={!!collapsed.server}
+            onToggleCollapse={() => toggle("server")}
+            onChangeServer={onChangeServer}
+            onClearServer={onClearServer}
+            query={searchQuery}
+          />
+        )}
 
-        <ParityGutter parity={parity} />
+        {/* The gutter reconciles the two LOCAL installs, so it belongs to the headless
+            client. Without one there is nothing for it to say. */}
+        {headlessConfigured && <ParityGutter parity={parity} />}
 
+        {headlessConfigured && (
         <InstancePane
           title="Headless client"
-          subtitle="Client only — shares the main server"
+          subtitle="Local — client only, shares the server"
           path={headlessPath}
           mods={headlessMods}
           rowsByKey={rowsByKey}
           overrides={overrides}
           onOverride={onOverride}
           onToggle={(m) => onToggle(m, "headless")}
-          onUninstall={(m) => onUninstall(m, "headless")}
+          // Removing from the headless pane must never touch the main install, so it goes
+          // through the headless-scoped removal rather than the shared uninstall.
+          onUninstall={onRemoveFromHeadless}
           onOpenFolder={(m) => onOpenFolder(m, "headless")}
           emptyMessage="No plugins installed on the headless client yet."
           showVerdicts={false}
@@ -626,6 +689,7 @@ export default function InstancesView({
           onToggleCollapse={() => toggle("headless")}
           filtersActive={filtersActive}
         />
+        )}
       </div>
     </div>
   );

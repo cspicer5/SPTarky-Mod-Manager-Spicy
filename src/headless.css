@@ -623,3 +623,19 @@
     margin: 10px 0;
   }
 }
+
+/* The copy-to-headless action. Given the accent colour because it is the one button in the
+   row that changes the other pane rather than this one. */
+.hl-sync-btn {
+  border-color: var(--accent) !important;
+  color: var(--accent-strong) !important;
+  font-weight: 600;
+}
+
+.hl-sync-btn:hover:not(:disabled) {
+  background: var(--accent-wash);
+}
+
+.hl-sync-btn:disabled {
+  opacity: 0.4;
+}

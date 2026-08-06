@@ -1898,6 +1898,164 @@ export function uninstallMod(clientRoot: string, serverRoot: string, mod: ModInf
   };
 }
 
+/* ==========================================================================
+ * Syncing a client plugin from the main install to the headless client
+ *
+ * Copying rather than installing separately is deliberate, and it is what Fika's own
+ * documentation recommends: "configure your mods on your main game, then copy the folder
+ * over". Installing the same mod twice from Forge is how the two ends drift apart, which is
+ * precisely the failure this feature exists to prevent — the raid host being authoritative
+ * means a version mismatch changes the raid for everyone.
+ *
+ * A plugin is rarely one file. All four of these have to travel together or the mod is
+ * half-installed in a way nothing reports:
+ *   - the folder OR the loose .dll named by mod.id;
+ *   - the companion data folder a loose .dll may own ("Mod.dll" + "Mod/");
+ *   - prepatchers in BepInEx/patchers, which load before BepInEx does;
+ *   - the mod's config in BepInEx/config, so the headless client behaves the same. SAIN and
+ *     Donuts keep their settings INSIDE the plugin folder instead, so those come along with
+ *     the folder copy automatically.
+ * ========================================================================== */
+
+export interface HeadlessSyncResult {
+  success: boolean;
+  message: string;
+  copiedPlugin?: boolean;
+  copiedCompanion?: boolean;
+  copiedPatchers?: number;
+  copiedConfigs?: number;
+}
+
+/**
+ * Copies one client plugin from the main install into the headless client, overwriting what
+ * is there. Overwriting IS the drift repair: the main install is treated as the source of
+ * truth, because that is the copy the user actually configures and plays with.
+ */
+export function copyClientModToHeadless(
+  mainClientRoot: string,
+  headlessRoot: string,
+  mod: Pick<ModInfo, "id" | "type" | "enabled" | "guid" | "name">
+): HeadlessSyncResult {
+  // Structural refusal, not a preference. A headless client loads BepInEx/ and nothing else,
+  // so a server mod copied there would sit in a folder that is never read — the appearance
+  // of having done something, with no effect.
+  if (mod.type === "server") {
+    return {
+      success: false,
+      message: `"${mod.name}" is a server mod. A headless client never loads user/mods, so copying it there would do nothing.`
+    };
+  }
+  if (path.resolve(mainClientRoot) === path.resolve(headlessRoot)) {
+    return { success: false, message: "The main install and the headless client are the same folder." };
+  }
+  if (isProtectedClientEntry(mod.id)) {
+    return { success: false, message: `"${mod.id}" belongs to SPT itself and is not copied.` };
+  }
+
+  // Read from wherever it actually is. A plugin disabled on the main install still has files
+  // worth copying, and it lands enabled on the headless side only if it is enabled here.
+  const sourceDir = p(mainClientRoot, mod.enabled ? CLIENT_PLUGINS_DIR : CLIENT_PLUGINS_DISABLED_DIR);
+  const targetDir = p(headlessRoot, mod.enabled ? CLIENT_PLUGINS_DIR : CLIENT_PLUGINS_DISABLED_DIR);
+  const source = path.join(sourceDir, mod.id);
+
+  if (!fs.existsSync(source)) {
+    return { success: false, message: `Couldn't find "${mod.id}" in the main install.` };
+  }
+
+  const result: HeadlessSyncResult = { success: true, message: "", copiedPatchers: 0, copiedConfigs: 0 };
+
+  try {
+    ensureDir(targetDir);
+    const stat = fs.statSync(source);
+    const target = path.join(targetDir, mod.id);
+
+    if (stat.isDirectory()) {
+      // Replaced rather than merged: leftovers from an older version of the mod would
+      // otherwise survive underneath the new files, which is its own class of bug.
+      if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
+      copyRecursive(source, target);
+    } else {
+      fs.copyFileSync(source, target);
+
+      // "Mod.dll" often owns a "Mod/" folder holding its assets and config. Copying only the
+      // DLL leaves the plugin loading against nothing.
+      const base = mod.id.replace(/\.dll$/i, "");
+      const companionSource = path.join(sourceDir, base);
+      if (base && fs.existsSync(companionSource) && fs.statSync(companionSource).isDirectory()) {
+        const companionTarget = path.join(targetDir, base);
+        if (fs.existsSync(companionTarget)) fs.rmSync(companionTarget, { recursive: true, force: true });
+        copyRecursive(companionSource, companionTarget);
+        result.copiedCompanion = true;
+      }
+    }
+    result.copiedPlugin = true;
+
+    // Prepatchers load before BepInEx and are a separate directory. A mod split across both
+    // is half-installed without them — the same reasoning as the toggle cascade.
+    for (const [from, to] of [
+      [p(mainClientRoot, CLIENT_PATCHERS_DIR), p(headlessRoot, CLIENT_PATCHERS_DIR)],
+      [p(mainClientRoot, CLIENT_PATCHERS_DISABLED_DIR), p(headlessRoot, CLIENT_PATCHERS_DISABLED_DIR)]
+    ]) {
+      for (const patcher of findRelatedPatcherFiles(from, mod.id)) {
+        ensureDir(to);
+        const dest = path.join(to, path.basename(patcher));
+        if (fs.statSync(patcher).isDirectory()) {
+          if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true, force: true });
+          copyRecursive(patcher, dest);
+        } else {
+          fs.copyFileSync(patcher, dest);
+        }
+        result.copiedPatchers!++;
+      }
+    }
+
+    // BepInEx names a config after the plugin's GUID ("com.tyfon.uifixes.cfg"), though some
+    // use the mod's name instead, so both are tried. Without this the headless client runs
+    // the right mod with default settings, which looks like the mod misbehaving.
+    const configDir = path.join(mainClientRoot, "BepInEx", "config");
+    if (fs.existsSync(configDir)) {
+      const candidates = new Set(
+        [mod.guid, mod.id.replace(/\.dll$/i, ""), mod.name].filter((x): x is string => !!x).map((x) => `${x.toLowerCase()}.cfg`)
+      );
+      for (const entry of fs.readdirSync(configDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !candidates.has(entry.name.toLowerCase())) continue;
+        const destDir = path.join(headlessRoot, "BepInEx", "config");
+        ensureDir(destDir);
+        fs.copyFileSync(path.join(configDir, entry.name), path.join(destDir, entry.name));
+        result.copiedConfigs!++;
+      }
+    }
+  } catch (err: any) {
+    return { success: false, message: `Couldn't copy "${mod.name}": ${err?.message ?? err}` };
+  }
+
+  const extras = [
+    result.copiedCompanion ? "data folder" : null,
+    result.copiedPatchers ? `${result.copiedPatchers} patcher file(s)` : null,
+    result.copiedConfigs ? `${result.copiedConfigs} config file(s)` : null
+  ].filter(Boolean);
+
+  result.message = `Copied "${mod.name}" to the headless client${extras.length ? ` (plus ${extras.join(", ")})` : ""}.`;
+  return result;
+}
+
+/**
+ * Removes a client plugin from the headless client only. The main install is untouched.
+ *
+ * Reuses uninstallMod with the headless root as BOTH roots, which is correct rather than a
+ * shortcut: a headless instance genuinely has no separate server root, so passing its own
+ * path for both is what every other headless code path already does.
+ */
+export function removeModFromHeadless(
+  headlessRoot: string,
+  mod: Pick<ModInfo, "id" | "type" | "enabled" | "name">
+): { success: boolean; message: string } {
+  if (mod.type === "server") {
+    return { success: false, message: "That is a server mod; the headless client does not load it in the first place." };
+  }
+  return uninstallMod(headlessRoot, headlessRoot, mod as ModInfo);
+}
+
 // --- Filesystem helpers ---
 function copyRecursive(src: string, dest: string) {
   ensureDir(dest);

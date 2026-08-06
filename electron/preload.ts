@@ -23,6 +23,11 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   setHeadlessOverride: (modKey: string, klass: string | null) =>
     ipcRenderer.invoke("set-headless-override", modKey, klass),
 
+  // --- headless sync (main -> headless only) ---
+  syncModToHeadless: (mod: ModInfo) => ipcRenderer.invoke("sync-mod-to-headless", mod),
+  removeModFromHeadless: (mod: ModInfo) => ipcRenderer.invoke("remove-mod-from-headless", mod),
+  syncAllToHeadless: () => ipcRenderer.invoke("sync-all-to-headless"),
+
   // --- live SPT server (remote, read-only: no write methods exposed) ---
   getServerUrl: () => ipcRenderer.invoke("get-server-url"),
   setServerUrl: (url: string) => ipcRenderer.invoke("set-server-url", url),
