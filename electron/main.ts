@@ -27,7 +27,9 @@ import {
   finalizeUnrecognizedInstall,
   discardPendingInstall,
   setManualForgeMatch,
-  clearManualForgeMatch
+  clearManualForgeMatch,
+  dismissForgeUpdate,
+  undismissForgeUpdate
 } from "./modManager";
 import { InstanceConfig, ModInfo } from "./types";
 
@@ -217,6 +219,30 @@ ipcMain.handle("set-forge-match", (_event, originalName: string, modId: number) 
     return { success: true, message: `Linked "${originalName}" to Forge mod ${modId}.` };
   } catch (err: any) {
     return { success: false, message: err?.message || "Couldn't save the link." };
+  }
+});
+
+// "I already have this" — see the note on dismissed updates in modManager.ts.
+ipcMain.handle("dismiss-forge-update", (_event, originalName: string, version: string) => {
+  const sptPath = store.get("sptPath");
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
+  if (!originalName || !version) return { success: false, message: "A mod and version are required." };
+  try {
+    dismissForgeUpdate(sptPath, originalName, version);
+    return { success: true, message: `Won't offer ${version} for "${originalName}" again.` };
+  } catch (err: any) {
+    return { success: false, message: err?.message || "Couldn't save that." };
+  }
+});
+
+ipcMain.handle("undismiss-forge-update", (_event, originalName: string) => {
+  const sptPath = store.get("sptPath");
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
+  try {
+    undismissForgeUpdate(sptPath, originalName);
+    return { success: true, message: `Updates for "${originalName}" will be offered again.` };
+  } catch (err: any) {
+    return { success: false, message: err?.message || "Couldn't remove that." };
   }
 });
 

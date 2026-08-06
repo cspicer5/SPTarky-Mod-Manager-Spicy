@@ -30,6 +30,9 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   getForgeCategories: () => ipcRenderer.invoke("get-forge-categories"),
   setForgeMatch: (originalName: string, modId: number) => ipcRenderer.invoke("set-forge-match", originalName, modId),
   clearForgeMatch: (originalName: string) => ipcRenderer.invoke("clear-forge-match", originalName),
+  dismissForgeUpdate: (originalName: string, version: string) =>
+    ipcRenderer.invoke("dismiss-forge-update", originalName, version),
+  undismissForgeUpdate: (originalName: string) => ipcRenderer.invoke("undismiss-forge-update", originalName),
   checkAppUpdate: () => ipcRenderer.invoke("check-app-update"),
   onForgeCheckProgress: (callback: (data: { done: number; total: number }) => void) => {
     const handler = (_e: unknown, data: { done: number; total: number }) => callback(data);

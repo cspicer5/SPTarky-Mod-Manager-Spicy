@@ -707,6 +707,29 @@ export default function App() {
   const [updatingModName, setUpdatingModName] = useState<string | null>(null);
 
   /**
+   * "I already have this." Some authors ship a new build without bumping the version
+   * recorded inside the files, so Forge reports a version the installed copy already is.
+   * Nothing local can tell the difference — only the user knows — so this records their
+   * answer and stops offering that specific version.
+   */
+  async function dismissUpdate(originalName: string, version: string, displayName: string) {
+    const res = await window.modManagerAPI.dismissForgeUpdate(originalName, version);
+    pushToast(tMsg(res.message) || t("forge.dismissed", { name: displayName, version }), res.success);
+    if (res.success) {
+      setForgeResult((prev) =>
+        prev ? { ...prev, updates: prev.updates.filter((u) => u.originalName !== originalName) } : prev
+      );
+      // The row also carries an "update available" marker in the mod list; clear it so the
+      // list agrees with the panel.
+      setForgeStatusByName((prev) => {
+        const next = new Map(prev);
+        next.delete(displayName);
+        return next;
+      });
+    }
+  }
+
+  /**
    * Accepts a guessed match. The pin outranks all automatic strategies from here on, so
    * the same guess never has to be re-made or re-confirmed.
    */
@@ -1252,6 +1275,18 @@ export default function App() {
                             onClick={() => handleInstallUpdate(u.name, u.downloadLink!, u.recommendedVersion, u.guid)}
                           >
                             {updatingModName === u.name ? t("forge.updating") : t("forge.updateNow")}
+                          </button>
+                        </>
+                      )}
+                      {u.originalName && u.recommendedVersion && (
+                        <>
+                          {" "}
+                          <button
+                            className="inline-update-button"
+                            title={t("forge.dismissTitle")}
+                            onClick={() => dismissUpdate(u.originalName!, u.recommendedVersion!, u.name)}
+                          >
+                            {t("forge.dismiss")}
                           </button>
                         </>
                       )}
