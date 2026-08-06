@@ -1218,6 +1218,37 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
     }
   }
 
+  /* --- Borrow a missing version from a package sibling -------------------------------
+   * The two halves of a mod ship together and carry the same version, so when one half
+   * declares no version the other half's is the right answer.
+   *
+   * This matters beyond cosmetics: without a local version there is nothing to compare
+   * against Forge, so the mod drops out of update checking entirely and is reported only
+   * as "Forge has vX" with no idea whether that is newer than what is installed.
+   *
+   * Measured on the reference install: 13 of 54 mods declared no version — all server
+   * halves, because SPT's AbstractModMetadata types Version as a SemanticVersioning.Version
+   * object rather than a string and the value is not recoverable the way the other fields
+   * are. Nine of those thirteen have a sibling that does declare one.
+   *
+   * The borrowed value is flagged so the UI can be honest that it was inferred from the
+   * other half rather than read from this mod's own files.
+   */
+  const membersByPackage = new Map<string, ModInfo[]>();
+  for (const mod of mods) {
+    if (!mod.packageId) continue;
+    if (!membersByPackage.has(mod.packageId)) membersByPackage.set(mod.packageId, []);
+    membersByPackage.get(mod.packageId)!.push(mod);
+  }
+  for (const mod of mods) {
+    if (mod.version || !mod.packageId) continue;
+    const donor = (membersByPackage.get(mod.packageId) ?? []).find((s) => s !== mod && s.version);
+    if (donor) {
+      mod.version = donor.version;
+      mod.versionFromSibling = true;
+    }
+  }
+
   return mods.sort((a, b) => a.loadOrder - b.loadOrder || a.name.localeCompare(b.name));
 }
 
@@ -1956,6 +1987,7 @@ const FORGE_API_BASE = "https://forge.sp-tarkov.com/api/v0";
 
 export interface ForgeUpdateItem {
   name: string;
+  originalName?: string; // folder name — the stable key for dismissals and pins
   currentVersion?: string;
   recommendedVersion?: string;
   downloadLink?: string;
@@ -2576,6 +2608,58 @@ export function buildForgeMatchInput(
   }));
 }
 
+/* ==========================================================================
+ * Dismissed updates.
+ *
+ * A mod's declared version can be wrong. Authors sometimes ship a new build without
+ * bumping the version inside the files — WTT-Artem 3.0.1 still declares 3.0.0 — so Forge
+ * correctly reports a newer version than the installed files claim, and the app correctly
+ * reports an update that the user already has.
+ *
+ * Nothing local can detect this: the only evidence that the installed copy is really 3.0.1
+ * is the user knowing it. So they get to say so, and it sticks.
+ *
+ * Keyed by folder name AND the dismissed version, deliberately. Dismissing 3.0.1 hides
+ * only 3.0.1 — when 3.0.2 is published the update reappears, because the reason for
+ * dismissing it no longer applies.
+ * ========================================================================== */
+const FORGE_DISMISSED_FILE = ".spt-mod-manager-forge-dismissed.json";
+
+function loadDismissedUpdates(root: string): Record<string, string> {
+  try {
+    const file = path.join(root, FORGE_DISMISSED_FILE);
+    if (!fs.existsSync(file)) return {};
+    const parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
+    return typeof parsed === "object" && parsed ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveDismissedUpdates(root: string, data: Record<string, string>): void {
+  try {
+    fs.writeFileSync(path.join(root, FORGE_DISMISSED_FILE), JSON.stringify(data, null, 2), "utf-8");
+  } catch {
+    // Best-effort: failing to record a dismissal must not break the update check.
+  }
+}
+
+/** Marks a specific recommended version as "already installed, stop offering it". */
+export function dismissForgeUpdate(root: string, originalName: string, version: string): void {
+  const data = loadDismissedUpdates(root);
+  data[originalName] = version.trim().replace(/^v/i, "");
+  saveDismissedUpdates(root, data);
+}
+
+/** Restores a dismissed update so it is offered again. */
+export function undismissForgeUpdate(root: string, originalName: string): void {
+  const data = loadDismissedUpdates(root);
+  if (data[originalName]) {
+    delete data[originalName];
+    saveDismissedUpdates(root, data);
+  }
+}
+
 /** A link made by hand by the user — takes precedence over any automation. */
 export function setManualForgeMatch(root: string, folderName: string, modId: number | string): void {
   const cache = loadForgeMatchCache(root);
@@ -2990,6 +3074,11 @@ export async function checkForgeUpdates(
 
   const pairs: string[] = [];
   const nameByIdentifier = new Map<string, string>();
+  // Display name -> folder name. Updates are reported under the display name, but anything
+  // persisted (a dismissal, a pin) has to key off the folder name, which never changes.
+  const originalByDisplayName = new Map<string, string>();
+  for (const m of mods) originalByDisplayName.set(m.name, m.originalName);
+  const dismissed = cacheRoot ? loadDismissedUpdates(cacheRoot) : {};
   const unmatched: string[] = [];
   const skippedByBudget: string[] = [];
   const infoOnly: ForgeUpdateItem[] = [];
@@ -3104,8 +3193,13 @@ export async function checkForgeUpdates(
         // announcing an update to a version the person already has is noise.
         const local = localVersionByName.get(u.name);
         if (local && norm(u.recommendedVersion) === norm(local)) return false;
+        // Explicitly dismissed by the user: they know the installed files are really this
+        // version even though the mod declares otherwise.
+        const original = originalByDisplayName.get(u.name);
+        if (original && dismissed[original] && norm(dismissed[original]) === norm(u.recommendedVersion)) return false;
         return norm(u.recommendedVersion) !== norm(u.currentVersion);
-      }),
+      })
+      .map((u: ForgeUpdateItem) => ({ ...u, originalName: originalByDisplayName.get(u.name) })),
     blocked: (data.blocked_updates || []).map((b: any) => ({
       name: nameFor(b.current_version?.guid, b.current_version?.name),
       currentVersion: b.current_version?.version,
@@ -3124,15 +3218,18 @@ export async function checkForgeUpdates(
     })),
     infoOnly,
     unmatched,
-    skippedByBudget
+    skippedByBudget,
+    // Must be repeated here: this function has two return paths, and omitting it from this
+    // one meant the confirmation UI silently never rendered on any install that had at
+    // least one comparable mod — i.e. essentially always.
+    unconfirmed
   };
 }
 
 /* ==========================================================================
  * Searching/browsing Forge's mod catalogue plus one-click installation.
  * Unlike checkForgeUpdates above (which compares mods ALREADY installed), this part lets
- * the user discover new mods inside the app, without opening
- * o navegador.
+ * the user discover new mods inside the app, without opening a browser.
  * ========================================================================== */
 
 export interface ForgeCatalogVersion {

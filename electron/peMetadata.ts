@@ -546,6 +546,13 @@ function readMethodBody(t: Tables, rva: number): Buffer | null {
  * generated constructor shape (ldarg.0; ldstr "..."; call set_X) and degrades to finding
  * nothing rather than finding something wrong.
  */
+/**
+ * Calls that wrap a string literal without consuming it — the value still ends up in the
+ * field that is stored next. Conversions and constructors only; anything else is treated
+ * as consuming the literal, so an unrelated call cannot leak a value into the wrong field.
+ */
+const CONVERSION_METHODS = new Set(["op_Implicit", "op_Explicit", "Parse", "TryParse", ".ctor"]);
+
 function harvestIlStrings(t: Tables, il: Buffer, methodName: string, out: AssemblyModMetadata): void {
   let pendingString: string | null = null;
 
@@ -585,8 +592,8 @@ function harvestIlStrings(t: Tables, il: Buffer, methodName: string, out: Assemb
       continue;
     }
 
-    if (op === 0x28 || op === 0x6f) {
-      // call / callvirt <method token>
+    if (op === 0x28 || op === 0x6f || op === 0x73) {
+      // call / callvirt / newobj <method token>
       if (p + 5 > il.length) break;
       const token = il.readUInt32LE(p + 1);
       const table = token >>> 24;
@@ -601,8 +608,20 @@ function harvestIlStrings(t: Tables, il: Buffer, methodName: string, out: Assemb
       }
       if (calleeName && pendingString !== null && calleeName.startsWith("set_")) {
         assignMetadataField(calleeName.slice(4), pendingString, out);
+        pendingString = null;
+      } else if (calleeName && CONVERSION_METHODS.has(calleeName)) {
+        // Transparent: the literal is being converted, not consumed. SPT's
+        // AbstractModMetadata types Version as SemanticVersioning.Version rather than a
+        // string, so `Version = "3.0.0"` compiles to
+        //     ldstr "3.0.0"; call op_Implicit(string)->Version; stfld <Version>k__Backing
+        // Treating that op_Implicit as a normal call discarded the literal, and Version
+        // came back blank for 13 of 54 mods on the reference install while every other
+        // field parsed fine. Keeping the pending string lets the following store claim it.
+        p += 5;
+        continue;
+      } else {
+        pendingString = null;
       }
-      pendingString = null;
       p += 5;
       continue;
     }

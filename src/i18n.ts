@@ -125,6 +125,11 @@ const en: Dict = {
   "forge.matchNote":
     "Mods are identified by the GUID declared inside their own files, which is exact. Where a mod declares no GUID, the name is used instead and the result is flagged for you to confirm.",
 
+  "forge.dismiss": "Already have it",
+  "forge.dismissTitle":
+    "Some authors ship a new build without updating the version inside the files. If you know this version is already installed, this stops it being offered — until a newer one appears.",
+  "forge.dismissed": "Won't offer {version} for {name} again.",
+
   "forge.unconfirmedTitle": "Needs confirmation",
   "forge.unconfirmedExplain":
     "These were matched by name rather than by a declared ID, so they might be wrong. Nothing will be updated or downloaded for them until you confirm — a wrong match here would install the wrong mod.",

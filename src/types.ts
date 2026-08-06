@@ -9,6 +9,7 @@ export interface ModInfo {
   installedManually: boolean;
   loadOrder: number;
   version?: string;
+  versionFromSibling?: boolean; // inferred from another part of the same package
   author?: string;
   installedAt?: string;
   manifestOnly?: boolean;
@@ -34,6 +35,7 @@ export interface ConflictReport {
 
 export interface ForgeUpdateItem {
   name: string;
+  originalName?: string;
   currentVersion?: string;
   recommendedVersion?: string;
   downloadLink?: string;
@@ -163,6 +165,10 @@ export interface ModManagerAPI {
   setForgeMatch: (originalName: string, modId: number) => Promise<{ success: boolean; message?: string }>;
   /** Removes a manual pin, returning the mod to automatic matching. */
   clearForgeMatch: (originalName: string) => Promise<{ success: boolean; message?: string }>;
+  /** "I already have this version" — stops this exact version being offered again. */
+  dismissForgeUpdate: (originalName: string, version: string) => Promise<{ success: boolean; message?: string }>;
+  /** Undoes a dismissal. */
+  undismissForgeUpdate: (originalName: string) => Promise<{ success: boolean; message?: string }>;
   searchForgeMods: (params: {
     query?: string;
     categorySlug?: string;
