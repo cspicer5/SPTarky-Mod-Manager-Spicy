@@ -2244,7 +2244,31 @@ function ModList({
                   {mod.enabled ? t("modlist.statusActive") : t("modlist.statusDisabled")}
                 </span>
                 <span className="origin-chip">{mod.installedManually ? "Manual" : "Manager"}</span>
-                {mod.version && <span className="meta-chip">v{mod.version}</span>}
+                {/* Where the version came from is worth showing, because they are not
+                    equally trustworthy. A recorded version is what the app installed; a mod
+                    that never updates its own version string cannot contradict it. */}
+                {mod.version && (
+                  <span
+                    className={`meta-chip${mod.versionSource === "recorded" ? " version-recorded" : ""}${
+                      mod.versionSource === "stale-record" ? " version-stale" : ""
+                    }`}
+                    title={
+                      mod.versionSource === "recorded"
+                        ? `Installed by this app${mod.versionEvidence ? ` — ${mod.versionEvidence}` : ""}.` +
+                          (mod.declaredVersion ? `\n\nThe mod itself still claims ${mod.declaredVersion}; its author does not maintain that field.` : "")
+                        : mod.versionSource === "stale-record"
+                          ? "The files have changed since this app installed the mod, so its own declared version is shown instead."
+                          : mod.versionSource === "sibling"
+                            ? "Taken from another part of the same package."
+                            : mod.versionSource === "assembly"
+                              ? "Read from the compiled assembly — may be stale."
+                              : "Declared by the mod."
+                    }
+                  >
+                    v{mod.version}
+                    {mod.declaredVersion && <em className="version-disputed"> ≠ {mod.declaredVersion}</em>}
+                  </span>
+                )}
                 {mod.author && <span className="meta-chip">{t("browse.byAuthor", { author: mod.author })}</span>}
                 {forgeStatus?.status === "update" && (
                   <span className="meta-chip forge-chip-update" title={t("modlist.forgeUpdateAvailableTitle")}>

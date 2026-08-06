@@ -1178,3 +1178,24 @@ button:hover > .btn-scope {
   background: rgba(122, 148, 86, 0.14);
   color: var(--ok-strong);
 }
+
+/* A version the app installed itself, rather than one the mod claims about itself. */
+.version-recorded {
+  border-color: var(--ok) !important;
+  color: var(--ok-strong) !important;
+}
+
+/* A version that WAS recorded, but the files have changed since — so the record no longer
+   describes what is on disk and the mod's own claim is shown instead. */
+.version-stale {
+  border-color: #6b5a2e !important;
+  color: #c2a659 !important;
+}
+
+/* The mod disagrees with what we installed. Shown rather than hidden: it is how you spot an
+   author who never bumps their version string. */
+.version-disputed {
+  font-style: normal;
+  opacity: 0.75;
+  margin-left: 3px;
+}

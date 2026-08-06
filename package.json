@@ -26,7 +26,8 @@
     "test:parity": "tsc -p electron/tsconfig.json && node scripts/test-parity.js",
     "test:sync": "tsc -p electron/tsconfig.json && node scripts/test-headless-sync.js",
     "test:update": "tsc -p electron/tsconfig.json && node scripts/test-update-swap.js",
-    "test": "npm run test:parity && npm run test:sync && npm run test:update"
+    "test:ledger": "tsc -p electron/tsconfig.json && node scripts/test-version-ledger.js",
+    "test": "npm run test:parity && npm run test:sync && npm run test:update && npm run test:ledger"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

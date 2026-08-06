@@ -10,12 +10,24 @@ export interface ModInfo {
   loadOrder: number; // position in the load order (only meaningful for server mods)
   version?: string; // read from the mod's package.json, when present
   /**
-   * Where `version` came from, when it was not declared by the mod itself. Absent means
-   * the mod declared it directly, which is the only fully trustworthy case.
+   * Where `version` came from.
+   *
+   *   "recorded" - what the app actually installed, with the files unchanged since. The
+   *                STRONGEST source, and it outranks the mod's own declaration: a mod that
+   *                does not maintain its version string cannot contradict the release we
+   *                downloaded.
+   *   "declared" - the mod's own metadata. Absent for brevity when nothing else applies.
    *   "sibling"  - taken from another part of the same package
    *   "assembly" - the compiled assembly's own version; weakest, may be stale
+   *   "stale-record" - a version WAS recorded at install, but the files have changed since,
+   *                so the record can no longer be trusted and the declaration is shown.
    */
-  versionSource?: "sibling" | "assembly";
+  versionSource?: "recorded" | "sibling" | "assembly" | "stale-record";
+  /** For a recorded version: where it came from and the evidence, for display. */
+  versionOrigin?: VersionOrigin;
+  versionEvidence?: string;
+  /** Set when the recorded and declared versions disagree — the interesting case. */
+  declaredVersion?: string;
   assemblyVersion?: string; // the assembly's own version, kept for the fallback above
   author?: string; // read from the mod's package.json, when present
   installedAt?: string; // ISO date of when the app installed it (local registry)
@@ -63,12 +75,48 @@ export interface InstanceConfig {
   forgeCheckedAt: string | null;
 }
 
+/**
+ * Where a recorded version came from. Ordered strongest to weakest.
+ *
+ * "forge" and "github" are statements by the place the file was downloaded FROM, which is
+ * the only party that reliably knows which release it handed over. "archive-name" is read
+ * off the filename. "declared-at-install" is what the mod itself claimed at the moment it
+ * went in — kept because it at least pins a point in time.
+ */
+export type VersionOrigin = "forge" | "github" | "archive-name" | "declared-at-install";
+
+/**
+ * A cheap signature of a mod's files on disk, taken at install time.
+ *
+ * Its only job is to answer "have these files changed since we put them there?", so that a
+ * recorded version is not reported with confidence after someone has dropped a newer build
+ * over the top by hand. Deliberately NOT a content hash: the largest mods here are ~4.7 GB
+ * (Unity asset bundles), and hashing those on every scan would make scanning unusable. A
+ * stat-only walk catches replaced, added and removed files, which is the realistic case.
+ */
+export interface ModFingerprint {
+  files: number;
+  bytes: number;
+  newestMtime: string;
+}
+
 export interface RegistryEntry {
   id: string;
   displayName: string;
   type: ModType;
   installedAt: string;
   source: "archive-install" | "manual";
+  /**
+   * The version the app actually installed, as opposed to whatever the mod says about
+   * itself. These disagree often enough to matter: Fika's server mod declares 2.0.9 no
+   * matter which build you have, so an install of 2.3.5 reports as 2.0.9 forever.
+   */
+  installedVersion?: string;
+  versionOrigin?: VersionOrigin;
+  /** What the origin was, in words — an archive filename, a release tag, a Forge mod id. */
+  versionEvidence?: string;
+  /** Files as they were immediately after installation. See ModFingerprint. */
+  fingerprint?: ModFingerprint;
   linkedModId?: string;
   linkedModIds?: string[]; // on the orphan's registry entry: every mod that came from the same archive
   // Data Forge gave us at install time — a trustworthy source, used when the mod does

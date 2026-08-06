@@ -4,7 +4,7 @@ import AdmZip from "adm-zip";
 import Seven from "node-7z";
 import { path7za } from "7zip-bin";
 import { createExtractorFromFile } from "node-unrar-js";
-import { ModInfo, ModType, RegistryEntry, ModListComparison } from "./types";
+import { ModInfo, ModType, RegistryEntry, ModListComparison, ModFingerprint, VersionOrigin } from "./types";
 import { readAssemblyModMetadata } from "./peMetadata";
 
 /**
@@ -1034,6 +1034,34 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
     // Look up by id + type: with Wedge-server and Wedge-client both in the registry,
     // searching by id alone would return the wrong entry for one of the two rows.
     const registryEntry = registry.find((r) => r.id === id && r.type === type);
+
+    /*
+     * Which version to believe.
+     *
+     * A mod's own declaration used to win. It should not: several authors never bump it, so
+     * the app confidently reported a version nobody had. Fika's server mod declares 2.0.9
+     * whichever build is installed — download 2.3.5 and the app still said 2.0.9.
+     *
+     * What the app INSTALLED is better evidence, because the place it was downloaded from
+     * said so. That holds only while the files are the ones we put there, so the record is
+     * used only if the fingerprint still matches; otherwise the mod was changed outside the
+     * app and its own claim is the better guess again.
+     */
+    const recorded = registryEntry?.installedVersion;
+    const recordStillValid =
+      !!recorded && !!modPath && fingerprintMatches(registryEntry?.fingerprint, fingerprintPath(modPath));
+
+    let version: string | undefined;
+    let versionSource: ModInfo["versionSource"];
+    if (recordStillValid) {
+      version = recorded;
+      versionSource = "recorded";
+    } else if (metadata.version) {
+      version = metadata.version;
+      versionSource = recorded ? "stale-record" : undefined;
+    } else {
+      version = registryEntry?.forgeVersion;
+    }
     mods.push({
       id,
       name: aliases[id] ?? cleanName,
@@ -1042,10 +1070,13 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
       enabled,
       installedManually: !registryIds.has(id),
       loadOrder,
-      // Priority: whatever the mod declares locally; failing that, whatever Forge told us
-      // when the app installed it (a trustworthy source — client mods, for instance, have
-      // no author field in the DLL at all).
-      version: metadata.version ?? registryEntry?.forgeVersion,
+      version,
+      versionSource,
+      versionOrigin: recordStillValid ? registryEntry?.versionOrigin : undefined,
+      versionEvidence: recordStillValid ? registryEntry?.versionEvidence : undefined,
+      // Carried only when the two disagree — that is the case worth surfacing, and it is
+      // exactly how a mod that never updates its version string is spotted.
+      declaredVersion: recordStillValid && metadata.version && metadata.version !== recorded ? metadata.version : undefined,
       // Carried, not applied. The sibling and assembly fallbacks run after grouping, once
       // package membership is known, and only fill mods still without a version.
       assemblyVersion: metadata.assemblyVersion,
@@ -1387,12 +1418,43 @@ export async function installModFromArchive(
     }
 
     cleanup(tmpExtractDir);
+
+    // What we actually installed, best evidence first. Forge (or a GitHub release) states
+    // which build it served; the archive filename is next best; the mod's own claim at this
+    // moment is the last resort and is at least pinned to a known point in time.
+    const installedPath = path.join(destBase, modId);
+    const declaredNow = readModMetadata(installedPath)?.version;
+    let installedVersion: string | undefined;
+    let versionOrigin: VersionOrigin | undefined;
+    let versionEvidence: string | undefined;
+
+    if (forgeInfo?.version) {
+      installedVersion = forgeInfo.version;
+      versionOrigin = "forge";
+      versionEvidence = forgeInfo.name ? `Forge: ${forgeInfo.name} ${forgeInfo.version}` : `Forge ${forgeInfo.version}`;
+    } else {
+      const fromName = versionFromArchiveName(archivePath);
+      if (fromName) {
+        installedVersion = fromName;
+        versionOrigin = "archive-name";
+        versionEvidence = path.basename(archivePath);
+      } else if (declaredNow) {
+        installedVersion = declaredNow;
+        versionOrigin = "declared-at-install";
+        versionEvidence = `declared ${declaredNow} when installed`;
+      }
+    }
+
     addToRegistry(clientRoot, {
       id: modId,
       displayName: modId,
       type,
       installedAt: new Date().toISOString(),
       source: "archive-install",
+      installedVersion,
+      versionOrigin,
+      versionEvidence,
+      fingerprint: fingerprintPath(installedPath),
       forgeName: forgeInfo?.name,
       forgeAuthor: forgeInfo?.author,
       forgeVersion: forgeInfo?.version,
@@ -2054,6 +2116,95 @@ export function removeModFromHeadless(
     return { success: false, message: "That is a server mod; the headless client does not load it in the first place." };
   }
   return uninstallMod(headlessRoot, headlessRoot, mod as ModInfo);
+}
+
+/* ==========================================================================
+ * Recording what was actually installed
+ *
+ * A mod's own version string is not evidence of which build you have. Fika's server mod
+ * declares 2.0.9 regardless, so installing 2.3.5 reports as 2.0.9 for ever; several other
+ * authors simply never bump theirs. The download, by contrast, is unambiguous: Forge says
+ * which version it served, a GitHub release has a tag, and an archive is usually named after
+ * its version.
+ *
+ * So the app records what it installed and prefers that. The fingerprint is what keeps that
+ * honest — if the files change afterwards (someone drops a newer build in by hand) the
+ * record is no longer describing what is on disk, and the app falls back to the declaration
+ * rather than stating a stale version confidently.
+ * ========================================================================== */
+
+/**
+ * Stat-only signature of a mod's files. No contents are read: the biggest mods here are
+ * ~4.7 GB of Unity asset bundles, and hashing those on every scan would make scanning
+ * unusable. This catches files being replaced, added or removed, which is what actually
+ * happens when someone updates a mod outside the app.
+ */
+export function fingerprintPath(target: string): ModFingerprint | undefined {
+  if (!fs.existsSync(target)) return undefined;
+  let files = 0;
+  let bytes = 0;
+  let newest = 0;
+
+  const walk = (current: string) => {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(current);
+    } catch {
+      return;
+    }
+    if (stat.isDirectory()) {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) walk(path.join(current, entry.name));
+      return;
+    }
+    files++;
+    bytes += stat.size;
+    if (stat.mtimeMs > newest) newest = stat.mtimeMs;
+  };
+
+  walk(target);
+  return { files, bytes, newestMtime: new Date(newest).toISOString() };
+}
+
+/**
+ * Whether the files still look like what was installed.
+ *
+ * mtime is compared with a second of tolerance: copying preserves timestamps only
+ * approximately across filesystems, and a sub-second difference is not someone editing a
+ * mod. File count and total size are exact — those do not drift on their own.
+ */
+function fingerprintMatches(recorded: ModFingerprint | undefined, current: ModFingerprint | undefined): boolean {
+  if (!recorded || !current) return false;
+  if (recorded.files !== current.files || recorded.bytes !== current.bytes) return false;
+  const a = Date.parse(recorded.newestMtime);
+  const b = Date.parse(current.newestMtime);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return true; // sizes matched; do not fail on a bad date
+  return Math.abs(a - b) <= 1000;
+}
+
+/**
+ * Pulls a version out of a downloaded archive's filename.
+ *
+ * Mod archives are named for their release far more reliably than mods declare their
+ * version: "Fika.Server.Release.2.3.5.zip", "SAIN-4.4.3.zip", "MergeConsumables.1.5.4.zip".
+ *
+ * Requires at least two numeric parts, so a name ending in a single number ("Wedge2.zip")
+ * is not mistaken for a version. Anchored to the END of the name, because that is where
+ * versions live — a leading number is far more often part of the mod's own name.
+ */
+export function versionFromArchiveName(archivePath: string): string | undefined {
+  const base = path.parse(archivePath).name;
+  const match = base.match(/(?:^|[^0-9A-Za-z])[vV]?(\d+(?:[._]\d+){1,3})(?:[-_.]?(?:release|final|spt)?)?$/i);
+  if (!match) return undefined;
+  const version = match[1].replace(/_/g, ".");
+  // A four-part all-zeros or a date-like run is not a version anyone means.
+  if (/^0(\.0)+$/.test(version)) return undefined;
+  return version;
 }
 
 // --- Filesystem helpers ---

@@ -9,6 +9,16 @@ export interface ModInfo {
   installedManually: boolean;
   loadOrder: number;
   version?: string;
+  /**
+   * Where `version` came from. "recorded" is the strongest — what the app actually installed,
+   * with the files unchanged since — and it outranks the mod's own declaration, because
+   * several authors never update theirs (Fika's server mod declares 2.0.9 whatever you have).
+   */
+  versionSource?: "recorded" | "sibling" | "assembly" | "stale-record";
+  versionOrigin?: "forge" | "github" | "archive-name" | "declared-at-install";
+  versionEvidence?: string;
+  /** Present only when the recorded and declared versions disagree. */
+  declaredVersion?: string;
   versionFromSibling?: boolean; // inferred from another part of the same package
   author?: string;
   installedAt?: string;
