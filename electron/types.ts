@@ -9,9 +9,14 @@ export interface ModInfo {
   installedManually: boolean; // true if absent from our registry (dropped into the folder by hand)
   loadOrder: number; // position in the load order (only meaningful for server mods)
   version?: string; // read from the mod's package.json, when present
-  // true = this version was taken from another part of the same package because this part
-  // declares none of its own; it is inferred, not read from this mod's files
-  versionFromSibling?: boolean;
+  /**
+   * Where `version` came from, when it was not declared by the mod itself. Absent means
+   * the mod declared it directly, which is the only fully trustworthy case.
+   *   "sibling"  - taken from another part of the same package
+   *   "assembly" - the compiled assembly's own version; weakest, may be stale
+   */
+  versionSource?: "sibling" | "assembly";
+  assemblyVersion?: string; // the assembly's own version, kept for the fallback above
   author?: string; // read from the mod's package.json, when present
   installedAt?: string; // ISO date of when the app installed it (local registry)
   // true = "orphan" mod tracked by manifest (no folder of its own); cannot be

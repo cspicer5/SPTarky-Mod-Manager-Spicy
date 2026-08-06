@@ -360,6 +360,8 @@ export interface DllModMetadata {
   author?: string;
   version?: string;
   sptVersion?: string;
+  /** The assembly's own version — a last resort, never a substitute for a declared one. */
+  assemblyVersion?: string;
 }
 
 const DLL_VERSION_RE = /^\d+\.\d+(\.\d+)?(\.\d+)?$/;
@@ -509,7 +511,8 @@ export function readDllModMetadata(dllPath: string): DllModMetadata {
         name: parsed.name,
         author: parsed.author,
         version: parsed.version,
-        sptVersion: parsed.sptVersion
+        sptVersion: parsed.sptVersion,
+        assemblyVersion: parsed.assemblyVersion
       };
     }
 
@@ -533,6 +536,7 @@ export function readDllModMetadata(dllPath: string): DllModMetadata {
 
 function readModMetadata(modPath: string): {
   version?: string;
+  assemblyVersion?: string;
   author?: string;
   guid?: string;
   declaredName?: string;
@@ -545,7 +549,14 @@ function readModMetadata(modPath: string): {
     if (!fs.statSync(modPath).isDirectory()) {
       if (modPath.toLowerCase().endsWith(".dll")) {
         const meta = readDllModMetadata(modPath);
-        return { version: meta.version, author: meta.author, guid: meta.guid, declaredName: meta.name, sptVersion: meta.sptVersion };
+        return {
+          version: meta.version,
+          assemblyVersion: meta.assemblyVersion,
+          author: meta.author,
+          guid: meta.guid,
+          declaredName: meta.name,
+          sptVersion: meta.sptVersion
+        };
       }
       return {};
     }
@@ -564,7 +575,14 @@ function readModMetadata(modPath: string): {
     for (const dll of findFilesRecursive(modPath, ".dll")) {
       const meta = readDllModMetadata(dll);
       if (meta.version || meta.guid) {
-        return { version: meta.version, author: meta.author, guid: meta.guid, declaredName: meta.name, sptVersion: meta.sptVersion };
+        return {
+          version: meta.version,
+          assemblyVersion: meta.assemblyVersion,
+          author: meta.author,
+          guid: meta.guid,
+          declaredName: meta.name,
+          sptVersion: meta.sptVersion
+        };
       }
     }
     return {};
@@ -1028,6 +1046,9 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
       // when the app installed it (a trustworthy source — client mods, for instance, have
       // no author field in the DLL at all).
       version: metadata.version ?? registryEntry?.forgeVersion,
+      // Carried, not applied. The sibling and assembly fallbacks run after grouping, once
+      // package membership is known, and only fill mods still without a version.
+      assemblyVersion: metadata.assemblyVersion,
       author: metadata.author ?? registryEntry?.forgeAuthor,
       // The GUID Forge ITSELF gave us at install time comes first: it is Forge's own
       // identifier, and the one the API filters understand. The GUID read from the DLL
@@ -1245,8 +1266,24 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
     const donor = (membersByPackage.get(mod.packageId) ?? []).find((s) => s !== mod && s.version);
     if (donor) {
       mod.version = donor.version;
-      mod.versionFromSibling = true;
+      mod.versionSource = "sibling";
     }
+  }
+
+  /* --- Last resort: the assembly's own version ---------------------------------------
+   * Only for mods that declare nothing and have no sibling to borrow from. It is the
+   * weakest signal — an author who never bumps their assembly leaves it stale, and one mod
+   * checked earlier declared 0.0.1.0 while shipping as 2.0.0 — so it is used only when the
+   * alternative is no version at all, and is marked as such.
+   *
+   * On the reference install this covers the final four (Epic_Shaders, EpicsAIO,
+   * fika-server, WTT-CAG). Epic_Shaders' assembly version matches Forge exactly; EpicsAIO's
+   * correctly reveals a pending 4.0.7 -> 4.0.8 update that was previously invisible.
+   */
+  for (const mod of mods) {
+    if (mod.version || !mod.assemblyVersion) continue;
+    mod.version = mod.assemblyVersion;
+    mod.versionSource = "assembly";
   }
 
   return mods.sort((a, b) => a.loadOrder - b.loadOrder || a.name.localeCompare(b.name));

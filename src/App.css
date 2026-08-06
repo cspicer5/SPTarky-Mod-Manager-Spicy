@@ -222,6 +222,12 @@ header h1 {
   margin: 0 0 4px;
 }
 
+/* Holds a multi-word part of the title together when the header wraps, so the break
+   lands between "MANAGER" and "SPICY" rather than between "SPICY" and "EDITION". */
+.title-unit {
+  white-space: nowrap;
+}
+
 .instance-path {
   color: var(--text-faint);
   font-family: var(--font-mono);
