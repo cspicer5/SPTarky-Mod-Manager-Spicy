@@ -12,11 +12,11 @@ export interface ModInfo {
   author?: string;
   installedAt?: string;
   manifestOnly?: boolean;
-  sptVersion?: string; // restrição de versão do SPT declarada pelo mod (lida da DLL)
-  sptCompatibility?: "compatible" | "incompatible" | "unknown"; // declarada x versão da instância
-  packageId?: string; // partes instaladas do mesmo arquivo compartilham esse id
-  packageSiblings?: { id: string; type: ModType }[]; // outras partes, quando o pacote é inferido
-  guid?: string; // GUID declarado pelo mod (SPT 4.0) — casamento exato com a Forge
+  sptVersion?: string; // SPT version constraint declared by the mod (read from the DLL)
+  sptCompatibility?: "compatible" | "incompatible" | "unknown"; // declared constraint vs. this instance's version
+  packageId?: string; // parts installed from the same archive share this id
+  packageSiblings?: { id: string; type: ModType }[]; // the other parts, when the package is inferred
+  guid?: string; // GUID declared by the mod (SPT 4.0) — exact match against Forge
   linkedModName?: string;
 }
 
