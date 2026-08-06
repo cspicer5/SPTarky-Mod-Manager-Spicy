@@ -710,18 +710,18 @@ export function setModAlias(sptPath: string, modId: string, alias: string): { su
   if (trimmed.length === 0) {
     delete aliases[modId];
     saveAliases(sptPath, aliases);
-    return { success: true, message: "Nome restaurado pro original." };
+    return { success: true, message: "Name restored to original." };
   }
   aliases[modId] = trimmed;
   saveAliases(sptPath, aliases);
-  return { success: true, message: "Nome atualizado." };
+  return { success: true, message: "Name updated." };
 }
 
-// --- Manifesto de arquivos "órfãos" (mods hybrid instalados via merge sem pasta nomeada) ---
-// Quando um zip/7z/rar traz user/ e/ou BepInEx/ mas os arquivos não caem em nenhuma pasta
-// reconhecível (user/mods/<nome> ou BepInEx/plugins/<nome>), a gente rastreia individualmente
-// cada arquivo que entrou, pra esse "mod" pelo menos aparecer como uma linha removível na lista
-// em vez de virar um registro fantasma que ninguém consegue gerenciar.
+// --- Manifest of "orphan" files (hybrid mods installed via merge with no named folder) ---
+// When a zip/7z/rar ships user/ and/or BepInEx/ but the files do not land in any
+// recognisable folder (user/mods/<name> or BepInEx/plugins/<name>), we track each file
+// that was written individually, so that "mod" at least shows up as a removable row in
+// the list instead of becoming a ghost entry nobody can manage.
 function getManifestPath(sptPath: string): string {
   return path.join(sptPath, ".spt-mod-manager-manifest.json");
 }
@@ -752,7 +752,7 @@ function removeManifestEntry(sptPath: string, id: string) {
   saveManifest(sptPath, manifest);
 }
 
-/** Lista todo arquivo (recursivo) dentro de baseDir, com caminho relativo usando "/" sempre. */
+/** Lists every file (recursively) under baseDir, with relative paths always using "/". */
 function listFilesRelative(baseDir: string, currentDir: string = baseDir): string[] {
   let results: string[] = [];
   for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
@@ -766,7 +766,7 @@ function listFilesRelative(baseDir: string, currentDir: string = baseDir): strin
   return results;
 }
 
-// --- Load order (server mods carregam em ordem alfabética; prefixamos com número) ---
+// --- Load order (server mods load alphabetically; we prefix with a number) ---
 function stripLoadOrderPrefix(name: string): { order: number; cleanName: string } {
   const match = name.match(/^(\d{2})_(.+)$/);
   if (match) {
@@ -775,10 +775,10 @@ function stripLoadOrderPrefix(name: string): { order: number; cleanName: string 
   return { order: 99, cleanName: name };
 }
 
-// --- Escanear mods instalados ---
+// --- Scanning installed mods ---
 /**
- * Monta os dados de export da lista de mods atual — reaproveita o scanMods, então
- * reflete exatamente o que a UI mostra (nome original, tipo, status, versão/autor quando há).
+ * Builds the export payload for the current mod list — reuses scanMods, so it reflects
+ * exactly what the UI shows (original name, type, status, version/author where present).
  */
 export function exportModListData(clientRoot: string, serverRoot: string) {
   const mods = scanMods(clientRoot, serverRoot);
@@ -790,18 +790,18 @@ export function exportModListData(clientRoot: string, serverRoot: string) {
       enabled: m.enabled,
       version: m.version,
       author: m.author,
-      // O GUID é o que permite restaurar a lista por identificador exato depois, em vez
-      // de tentar adivinhar pelo nome da pasta (que quase nunca é igual ao nome na Forge).
+      // The GUID is what lets the list be restored later by exact identifier, instead of
+      // guessing from the folder name (which almost never matches the name on Forge).
       guid: m.guid
     }))
   };
 }
 
 /**
- * Compara uma lista de nomes de mods importada (de um export anterior, seu ou de outra
- * pessoa) contra o que está instalado agora. Não instala nada automaticamente — a gente
- * não guarda os arquivos originais dos mods, então o mais honesto é mostrar a diferença
- * pra você decidir o que reinstalar manualmente.
+ * Compares an imported list of mod names (from an earlier export, yours or someone
+ * else's) against what is installed now. Installs nothing automatically — we do not keep
+ * the mods' original archives, so the honest thing is to show the difference and let you
+ * decide what to reinstall.
  */
 export function compareModList(clientRoot: string, serverRoot: string, importedNames: string[]): ModListComparison {
   const currentNames = scanMods(clientRoot, serverRoot).map((m) => m.originalName);
@@ -820,26 +820,30 @@ export interface ConflictReport {
 }
 
 /**
- * Checagem de conflitos best-effort, no nível de arquivo — não é (e não tenta ser) uma análise
- * semântica de "esses dois mods mexem no mesmo item do jogo". O que dá pra detectar com segurança
- * a partir do sistema de arquivos:
+ * Best-effort conflict checking at the file level — this is not (and does not try to be) a
+ * semantic analysis of "these two mods touch the same game item". What can be detected
+ * safely from the filesystem:
  *
- * 1) DLLs com o mesmo nome vindas de mods client DIFERENTES — o BepInEx carrega toda DLL que
- *    achar recursivamente em BepInEx/plugins/, então duas cópias de uma mesma dependência (ou
- *    duas dlls homônimas de mods diferentes) podem colidir em tempo de execução.
- * 2) Mods server com o mesmo "name" declarado no package.json, mas em pastas diferentes — sinal
- *    clássico de "instalei o mesmo mod duas vezes sem perceber" (ex: atualizaram e a pasta antiga
- *    não foi removida).
+ * 1) DLLs with the same name coming from DIFFERENT client mods — BepInEx loads every DLL
+ *    it finds recursively under BepInEx/plugins/, so two copies of the same dependency (or
+ *    two same-named dlls from different mods) can collide at runtime.
+ * 2) Server mods declaring the same "name" in package.json but sitting in different
+ *    folders — the classic sign of "I installed the same mod twice without noticing"
+ *    (e.g. it was updated and the old folder was never removed).
  */
 /**
- * Compara a restrição de versão do SPT declarada pelo mod com a versão da instância.
+ * Compares the SPT version constraint declared by the mod against the instance's version.
  *
- * Isso é 100% LOCAL: a informação vem da DLL do próprio mod ("~4.0.0", "4.0.13", "~4.0"),
- * então funciona sem consultar API nenhuma — o que importa muito agora que a Forge vai
- * sair do ar. É a parte mais útil do que a checagem online entregava.
+ * This is 100% LOCAL: the information comes from the mod's own DLL ("~4.0.0", "4.0.13",
+ * "~4.0"), so it works without querying any API at all, and keeps working when the
+ * network or Forge is unavailable.
  *
- * Retorna "unknown" quando o mod não declara nada (mods 3.x, ou 4.0 que omitem o campo):
- * nesse caso não dá pra afirmar nada, e afirmar seria pior que ficar calado.
+ * (The original note here claimed this mattered "now that Forge is going offline". That
+ * has not happened — the Forge API is alive and is what the update check uses. The local
+ * check is still worth having as an offline-capable fallback, which is why it stays.)
+ *
+ * Returns "unknown" when the mod declares nothing (3.x mods, or 4.0 mods that omit the
+ * field): in that case nothing can be asserted, and asserting would be worse than silence.
  */
 export function checkSptCompatibility(
   modConstraint: string | undefined,
@@ -868,7 +872,7 @@ export function checkSptCompatibility(
         ? "atLeast"
         : "exact";
 
-  // "^4.0" aceita qualquer 4.x; "~4.0.0" aceita qualquer 4.0.x; ">=4.0" aceita daí pra cima.
+  // "^4.0" accepts any 4.x; "~4.0.0" accepts any 4.0.x; ">=4.0" accepts that and above.
   if (operator === "atLeast") {
     for (let i = 0; i < Math.max(wanted.length, actual.length); i++) {
       const a = actual[i] ?? 0;
@@ -901,7 +905,7 @@ export function detectConflicts(clientRoot: string, serverRoot: string): Conflic
         }
       } else if (entry.name.toLowerCase().endsWith(".dll")) {
         if (!dllOwners.has(entry.name)) dllOwners.set(entry.name, new Set());
-        dllOwners.get(entry.name)!.add("(solto em BepInEx/plugins)");
+        dllOwners.get(entry.name)!.add("(loose in BepInEx/plugins)");
       }
     }
   }
@@ -915,12 +919,12 @@ export function detectConflicts(clientRoot: string, serverRoot: string): Conflic
   if (fs.existsSync(serverDir)) {
     for (const entry of fs.readdirSync(serverDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      // Identifica o mod pelo GUID declarado (lido da DLL no SPT 4.0) e, na falta dele,
-      // pelo "name" do package.json (mods 3.x).
+      // Identifies the mod by its declared GUID (read from the DLL on SPT 4.0) and, absent
+      // that, by the "name" in package.json (3.x mods).
       //
-      // Antes isso olhava só o package.json — que mods 4.0 não trazem mais, já que os
-      // metadados migraram pra dentro do assembly. Ou seja, a checagem não detectava
-      // duplicata nenhuma numa instalação 4.0.
+      // This previously looked only at package.json — which 4.0 mods no longer ship, since
+      // the metadata moved inside the assembly. In other words, the check detected no
+      // duplicates whatsoever on a 4.0 installation.
       const metadata = readModMetadata(path.join(serverDir, entry.name));
       const identity = metadata.guid ?? metadata.declaredName;
       if (!identity) continue;
@@ -932,9 +936,9 @@ export function detectConflicts(clientRoot: string, serverRoot: string): Conflic
     if (owners.size > 1) duplicateServerNames.push({ declaredName, mods: [...owners] });
   }
 
-  // Duplicata de CLIENT mod: o mesmo mod instalado em duas pastas diferentes.
-  // Detectado pelo GUID do BepInPlugin — nome de pasta não serve, já que a graça é
-  // justamente serem nomes diferentes ("SAIN" e "SAIN.4.4.3", por exemplo).
+  // Duplicate CLIENT mod: the same mod installed in two different folders. Detected via
+  // the BepInPlugin GUID — the folder name is useless here, since the whole point is that
+  // the names differ ("SAIN" and "SAIN.4.4.3", for example).
   const duplicateClientMods: { declaredName: string; mods: string[] }[] = [];
   const clientGuidOwners = new Map<string, Set<string>>();
   if (fs.existsSync(clientDir)) {
@@ -953,11 +957,11 @@ export function detectConflicts(clientRoot: string, serverRoot: string): Conflic
   return { clientFileConflicts, duplicateServerNames, duplicateClientMods };
 }
 
-// Resolve o caminho real de um arquivo rastreado por manifesto: tudo que começa com
-// "user/" pertence ao lado do servidor (serverRoot); o resto (BepInEx/, ou qualquer
-// arquivo solto que sobrou na raiz do mod) pertence ao lado do client (clientRoot).
-// Nas instalações não-divididas (o caso comum) clientRoot === serverRoot, então isso
-// não muda nada — só importa quando as duas pastas são diferentes de verdade.
+// Resolves the real path of a manifest-tracked file: anything starting with "user/"
+// belongs to the server side (serverRoot); everything else (BepInEx/, or any loose file
+// left at the mod's root) belongs to the client side (clientRoot). On non-split installs
+// (the common case) clientRoot === serverRoot, so this changes nothing — it only matters
+// when the two folders genuinely differ.
 function resolveManifestFilePath(clientRoot: string, serverRoot: string, relPath: string): string {
   const base = relPath.toLowerCase().startsWith("user/") ? serverRoot : clientRoot;
   return path.join(base, relPath);
@@ -969,9 +973,9 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
   const aliases = loadAliases(clientRoot);
   const mods: ModInfo[] = [];
 
-  // Resolve o nome de exibição de um mod "ligado" (ex: arquivo solto do mesmo install) —
-  // usado tanto pra mostrar um indicativo na lista quanto pro diálogo de confirmação antes
-  // de remover avisar que o outro também vai junto.
+  // Resolves the display name of a "linked" mod (e.g. a loose file from the same install)
+  // — used both to show a hint in the list and so the confirmation dialog before removal
+  // can warn that the other one goes too.
   function resolveLinkedName(linkedModId: string | undefined): string | undefined {
     if (!linkedModId) return undefined;
     const linkedEntry = registry.find((r) => r.id === linkedModId);
@@ -981,8 +985,8 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
 
   function pushMod(id: string, cleanName: string, type: ModType, enabled: boolean, loadOrder: number, modPath?: string) {
     const metadata = modPath ? readModMetadata(modPath) : {};
-    // Busca por id + tipo: com Wedge servidor e Wedge cliente no registro, procurar só
-    // pelo id devolveria a entrada errada pra uma das duas linhas.
+    // Look up by id + type: with Wedge-server and Wedge-client both in the registry,
+    // searching by id alone would return the wrong entry for one of the two rows.
     const registryEntry = registry.find((r) => r.id === id && r.type === type);
     mods.push({
       id,
@@ -992,15 +996,15 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
       enabled,
       installedManually: !registryIds.has(id),
       loadOrder,
-      // Prioridade: o que o próprio mod declara localmente; se faltar, o que a
-      // Forge informou quando o mod foi instalado pelo app (fonte confiável —
-      // client mods, por exemplo, não têm campo de autor nenhum na DLL).
+      // Priority: whatever the mod declares locally; failing that, whatever Forge told us
+      // when the app installed it (a trustworthy source — client mods, for instance, have
+      // no author field in the DLL at all).
       version: metadata.version ?? registryEntry?.forgeVersion,
       author: metadata.author ?? registryEntry?.forgeAuthor,
-      // O GUID que a PRÓPRIA Forge nos deu na instalação vem primeiro: é o identificador
-      // dela, e é o que os filtros da API entendem. O GUID lido da DLL (BepInPlugin) é
-      // do runtime do mod e nem sempre é o mesmo — serve de plano B pra quem foi
-      // instalado por fora do app.
+      // The GUID Forge ITSELF gave us at install time comes first: it is Forge's own
+      // identifier, and the one the API filters understand. The GUID read from the DLL
+      // (BepInPlugin) belongs to the mod's runtime and is not always the same — it serves
+      // as plan B for mods installed outside the app.
       guid: registryEntry?.forgeGuid ?? metadata.guid,
       sptVersion: metadata.sptVersion,
       packageId: registryEntry?.packageId,
@@ -1009,7 +1013,7 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
     });
   }
 
-  // Server mods (ativos)
+  // Server mods (enabled)
   const serverDir = p(serverRoot, SERVER_MODS_DIR);
   if (fs.existsSync(serverDir)) {
     for (const entry of fs.readdirSync(serverDir, { withFileTypes: true })) {
@@ -1019,7 +1023,7 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
     }
   }
 
-  // Server mods (desabilitados)
+  // Server mods (disabled)
   const serverDisabledDir = p(serverRoot, SERVER_MODS_DISABLED_DIR);
   if (fs.existsSync(serverDisabledDir)) {
     for (const entry of fs.readdirSync(serverDisabledDir, { withFileTypes: true })) {
@@ -1029,13 +1033,13 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
     }
   }
 
-  // Client mods (ativos) — plugins soltos (.dll) ou em subpastas
+  // Client mods (enabled) — loose plugins (.dll) or ones in subfolders
   const clientDir = p(clientRoot, CLIENT_PLUGINS_DIR);
   if (fs.existsSync(clientDir)) {
     const companions = listCompanionFolderNames(clientDir);
     for (const entry of fs.readdirSync(clientDir, { withFileTypes: true })) {
-      if (isProtectedClientEntry(entry.name)) continue; // core da própria SPT — nunca é um mod
-      // pasta de dados de um .dll solto de mesmo nome: pertence a ele, não é mod à parte
+      if (isProtectedClientEntry(entry.name)) continue; // SPT's own core — never a mod
+      // data folder belonging to a loose .dll of the same name: part of it, not a separate mod
       if (entry.isDirectory() && companions.has(entry.name.toLowerCase())) continue;
       if (entry.name.endsWith(".dll") || entry.isDirectory()) {
         pushMod(entry.name, entry.name.replace(/\.dll$/i, ""), "client", true, 0, path.join(clientDir, entry.name));
@@ -1048,8 +1052,8 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
   if (fs.existsSync(clientDisabledDir)) {
     const companions = listCompanionFolderNames(clientDisabledDir);
     for (const entry of fs.readdirSync(clientDisabledDir, { withFileTypes: true })) {
-      if (isProtectedClientEntry(entry.name)) continue; // core da própria SPT — nunca é um mod
-      // pasta de dados de um .dll solto de mesmo nome: pertence a ele, não é mod à parte
+      if (isProtectedClientEntry(entry.name)) continue; // SPT's own core — never a mod
+      // data folder belonging to a loose .dll of the same name: part of it, not a separate mod
       if (entry.isDirectory() && companions.has(entry.name.toLowerCase())) continue;
       if (entry.name.endsWith(".dll") || entry.isDirectory()) {
         pushMod(entry.name, entry.name.replace(/\.dll$/i, ""), "client", false, 0, path.join(clientDisabledDir, entry.name));
