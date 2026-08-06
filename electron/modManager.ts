@@ -685,7 +685,7 @@ function removeFromRegistry(sptPath: string, id: string, type?: ModType) {
   );
 }
 
-// --- Aliases (nome de exibição customizado, não mexe em arquivo nenhum) ---
+// --- Aliases (custom display name; touches no files at all) ---
 function getAliasesPath(sptPath: string): string {
   return path.join(sptPath, ".spt-mod-manager-aliases.json");
 }
@@ -1278,58 +1278,58 @@ export async function installModFromArchive(
 }
 
 /**
- * Copia o conteúdo de `mergeRoot` (uma pasta que já tem "user/" e/ou "BepInEx/" dentro,
- * seja porque foi auto-detectada, seja porque o usuário confirmou uma estrutura incomum)
- * pra dentro da instância SPT, registra cada mod encontrado individualmente, e rastreia
- * qualquer arquivo "solto" por manifesto. Compartilhada entre o fluxo normal de
- * instalação e a confirmação manual de estrutura incomum.
+ * Copies the contents of `mergeRoot` (a folder that already has "user/" and/or "BepInEx/"
+ * inside it, whether auto-detected or confirmed by the user for an unusual structure) into
+ * the SPT instance, registers each mod found individually, and tracks any "loose" file via
+ * the manifest. Shared between the normal install flow and manual confirmation of an
+ * unusual structure.
  *
- * Quando a instância é "dividida" (clientRoot !== serverRoot), a cópia é dividida também:
- * tudo que está dentro de "user/" vai pro serverRoot, e o resto (BepInEx/ e qualquer
- * arquivo solto na raiz do mod) vai pro clientRoot. Em instâncias normais (a grande
- * maioria) clientRoot e serverRoot são a mesma pasta, então isso não muda nada na prática.
+ * When the instance is "split" (clientRoot !== serverRoot), the copy is split too:
+ * everything under "user/" goes to serverRoot, and the rest (BepInEx/ and any loose file
+ * at the mod's root) goes to clientRoot. On normal instances (the vast majority)
+ * clientRoot and serverRoot are the same folder, so this changes nothing in practice.
  */
 /**
- * Alguns mods empacotam a parte de servidor dentro de uma pasta-embrulho (quase sempre
- * chamada "SPT"), lado a lado com o BepInEx solto na raiz:
+ * Some mods package the server part inside a wrapper folder (almost always called "SPT"),
+ * side by side with a loose BepInEx at the root:
  *
- *   BepInEx/plugins/FooClient/     <- direto na raiz
- *   SPT/user/mods/Foo/             <- embrulhado
+ *   BepInEx/plugins/FooClient/     <- straight at the root
+ *   SPT/user/mods/Foo/             <- wrapped
  *
- * Como existe "BepInEx" na raiz, findMergeRoot para ali e nunca entra no embrulho —
- * então a parte de servidor não era reconhecida (ficava sem registro, aparecendo como
- * "instalado manualmente") e, numa instalação não-dividida, ainda era copiada pro lugar
- * errado (<raiz>/SPT/user/mods em vez de <raiz>/user/mods).
+ * Because "BepInEx" exists at the root, findMergeRoot stops there and never descends into
+ * the wrapper — so the server part went unrecognised (no registry entry, showing up as
+ * "installed manually") and, on a non-split install, was also copied to the wrong place
+ * (<root>/SPT/user/mods instead of <root>/user/mods).
  *
- * Aqui a gente achata esses embrulhos ANTES da mesclagem, movendo "user"/"BepInEx" de
- * dentro deles pra raiz da extração. Assim o resto da lógica funciona sem saber que o
- * embrulho existiu. É tudo dentro da pasta temporária, então mover é barato.
+ * Here we flatten those wrappers BEFORE merging, moving "user"/"BepInEx" out of them and
+ * up to the extraction root. The rest of the logic then works without knowing the wrapper
+ * ever existed. This all happens inside the temp folder, so moving is cheap.
  */
 function flattenWrapperDirs(mergeRoot: string): void {
   for (const entry of fs.readdirSync(mergeRoot, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const lower = entry.name.toLowerCase();
-    if (lower === "user" || lower === "bepinex") continue; // já está no lugar certo
+    if (lower === "user" || lower === "bepinex") continue; // already in the right place
 
     const wrapperPath = path.join(mergeRoot, entry.name);
     const inner = fs.readdirSync(wrapperPath, { withFileTypes: true });
     const relevant = inner.filter(
       (e) => e.isDirectory() && (e.name.toLowerCase() === "user" || e.name.toLowerCase() === "bepinex")
     );
-    if (relevant.length === 0) continue; // não é embrulho, é conteúdo do mod mesmo
+    if (relevant.length === 0) continue; // not a wrapper — this is the mod's own content
 
     for (const folder of relevant) {
       const from = path.join(wrapperPath, folder.name);
       const to = path.join(mergeRoot, folder.name);
       if (fs.existsSync(to)) {
-        // Já existe na raiz (ex: BepInEx nos dois lugares) — funde em vez de sobrescrever.
+        // Already exists at the root (e.g. BepInEx in both places) — merge, don't overwrite.
         copyRecursive(from, to);
         fs.rmSync(from, { recursive: true, force: true });
       } else {
         fs.renameSync(from, to);
       }
     }
-    // Remove o embrulho se não sobrou nada dentro dele.
+    // Drop the wrapper if nothing is left inside it.
     if (fs.readdirSync(wrapperPath).length === 0) {
       fs.rmSync(wrapperPath, { recursive: true, force: true });
     }
@@ -1350,9 +1350,9 @@ function performMerge(
   const hasUserFolder = mergeEntries.some((e) => e.isDirectory() && e.name.toLowerCase() === "user");
   const hasBepInExFolder = mergeEntries.some((e) => e.isDirectory() && e.name.toLowerCase() === "bepinex");
 
-  // Antes de copiar/limpar, anota os nomes das pastas de mod reais que estão vindo
-  // (ex: "EpicsAIO" dentro de "user/mods/"), pra registrar cada uma individualmente
-  // depois — em vez de perder essa informação assim que a pasta temporária for apagada.
+  // Before copying/cleaning up, record the names of the real mod folders coming in (e.g.
+  // "EpicsAIO" inside "user/mods/"), so each can be registered individually afterwards —
+  // rather than losing that information the moment the temp folder is deleted.
   const serverModNames: string[] = [];
   const clientModNames: string[] = [];
   if (hasUserFolder) {
@@ -1367,15 +1367,15 @@ function performMerge(
     const srcPluginsDir = path.join(mergeRoot, "BepInEx", "plugins");
     if (fs.existsSync(srcPluginsDir)) {
       for (const entry of fs.readdirSync(srcPluginsDir, { withFileTypes: true })) {
-        if (isProtectedClientEntry(entry.name)) continue; // nunca registra o core da própria SPT como mod
+        if (isProtectedClientEntry(entry.name)) continue; // never register SPT's own core as a mod
         if (entry.isDirectory() || entry.name.endsWith(".dll")) clientModNames.push(entry.name);
       }
     }
   }
 
-  // Qualquer arquivo que não caia dentro de uma dessas pastas nomeadas é "órfão" —
-  // ex: algo solto direto em user/ ou BepInEx/ fora de mods/plugins. Rastreamos esses
-  // caminhos num manifesto antes de apagar a pasta temporária, pra não perder o rastro.
+  // Any file that does not land inside one of those named folders is an "orphan" — e.g.
+  // something loose directly in user/ or BepInEx/ outside mods/plugins. We track those
+  // paths in a manifest before deleting the temp folder, so the trail is not lost.
   const allCopiedFiles = listFilesRelative(mergeRoot);
   const attributedPrefixes = [
     ...serverModNames.map((name) => `user/mods/${name}/`),
@@ -1386,26 +1386,26 @@ function performMerge(
     (f) =>
       !attributedExactFiles.has(f) &&
       !attributedPrefixes.some((prefix) => f.startsWith(prefix)) &&
-      // Nunca rastrear o core da SPT: além de não ser copiado, se entrasse no manifesto
-      // remover o mod apagaria o núcleo do client.
+      // Never track SPT's core: besides not being copied, if it entered the manifest then
+      // removing the mod would delete the client's core.
       !isProtectedInstancePath(f)
   );
 
-  // Cópia dividida: "user/" vai pro serverRoot, o resto (BepInEx/ e qualquer arquivo
-  // solto na raiz) vai pro clientRoot. Quando as duas raízes são a mesma pasta, dá
-  // exatamente no mesmo resultado de sempre.
+  // Split copy: "user/" goes to serverRoot, everything else (BepInEx/ and any loose file
+  // at the root) goes to clientRoot. When both roots are the same folder, the result is
+  // exactly what it always was.
   const userSrc = path.join(mergeRoot, "user");
   if (hasUserFolder) {
     copyRecursive(userSrc, path.join(serverRoot, "user"));
     const verification = verifyCopyRecursive(userSrc, path.join(serverRoot, "user"));
     if (!verification.ok) {
       cleanup(tmpExtractDir);
-      return { success: false, message: `Instalação incompleta: arquivo não confirmado no destino (${verification.missing}).` };
+      return { success: false, message: `Incomplete installation: file not confirmed at the destination (${verification.missing}).` };
     }
   }
   const skippedCoreFiles: string[] = [];
   for (const entry of mergeEntries) {
-    if (entry.name.toLowerCase() === "user") continue; // já tratado acima
+    if (entry.name.toLowerCase() === "user") continue; // handled above
     const srcPath = path.join(mergeRoot, entry.name);
     const destPath = path.join(clientRoot, entry.name);
     if (entry.isDirectory()) {
@@ -1426,20 +1426,21 @@ function performMerge(
   cleanup(tmpExtractDir);
   const mergedType: ModType = hasUserFolder && hasBepInExFolder ? "hybrid" : hasUserFolder ? "server" : hasBepInExFolder ? "client" : "unknown";
 
-  // Se der pra saber com certeza que o(s) arquivo(s) solto(s) pertencem a um único mod
-  // nomeado desse mesmo install (o caso comum: um .cfg avulso ao lado da pasta real do
-  // plugin), a gente liga os dois — remover um remove o outro, pra nunca sobrar lixo nem
-  // "quebrar" o mod por remover só a metade. Se tiver mais de um mod nomeado no mesmo
-  // install, não dá pra saber a qual pertence, então não liga nenhum.
+  // Where it can be established with certainty that the loose file(s) belong to a single
+  // named mod from this same install (the common case: a stray .cfg beside the plugin's
+  // real folder), we link the two — removing one removes the other, so nothing is left
+  // behind and the mod is never "broken" by removing only half of it. If there is more
+  // than one named mod in the same install, there is no way to tell which it belongs to,
+  // so nothing is linked.
   const orphanId = orphanFiles.length > 0 ? "hybrid-manifest-" + Date.now() : undefined;
-  // Os arquivos soltos pertencem ao PACOTE, não a um mod específico — um arquivo pode
-  // instalar a parte de servidor e a de cliente ao mesmo tempo (ex: mpstark-dynamicmaps
-  // + DynamicMaps) e o config solto é dos dois. Por isso todo mod nomeado desse mesmo
-  // arquivo aponta pros arquivos soltos, e eles só somem quando o ÚLTIMO deles sai.
+  // Loose files belong to the PACKAGE, not to one specific mod — a single archive can
+  // install both the server and client parts (e.g. mpstark-dynamicmaps + DynamicMaps) and
+  // the loose config belongs to both. So every named mod from this same archive points at
+  // the loose files, and they only disappear when the LAST of them is removed.
   const allNamedModIds = [...serverModNames, ...clientModNames];
 
-  // Todas as partes vindas deste mesmo arquivo compartilham um id de pacote — é o que
-  // permite tratar "Wedge servidor" e "Wedge cliente" como um mod só depois.
+  // All parts coming from this same archive share a package id — that is what allows
+  // "Wedge server" and "Wedge client" to be treated as a single mod later on.
   const packageId = `pkg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   for (const name of serverModNames) {
@@ -1465,9 +1466,9 @@ function performMerge(
     });
   }
   if (orphanId) {
-    // Reinstalar o mesmo mod não pode empilhar entradas: o id do órfão é baseado em
-    // timestamp, então cada instalação criava mais uma. Remove as anteriores do mesmo
-    // pacote antes de registrar a nova.
+    // Reinstalling the same mod must not stack up entries: the orphan's id is timestamp
+    // based, so every install created another one. Remove earlier ones from the same
+    // package before registering the new one.
     const orphanDisplayName = preferredDisplayName ?? path.parse(archivePath).name;
     for (const previous of loadRegistry(clientRoot)) {
       const isSamePackageOrphan =
@@ -1478,8 +1479,8 @@ function performMerge(
       }
     }
 
-    // Registra como um mod "órfão" rastreado por manifesto — não tem pasta própria pra
-    // habilitar/desabilitar, mas pelo menos aparece na lista e pode ser removido de forma limpa.
+    // Register as an "orphan" mod tracked by manifest — it has no folder of its own to
+    // enable/disable, but at least it shows up in the list and can be removed cleanly.
     addManifestEntry(clientRoot, orphanId, orphanFiles);
     addToRegistry(clientRoot, {
       id: orphanId,
@@ -1493,17 +1494,17 @@ function performMerge(
   if (skippedCoreFiles.length > 0) {
     return {
       success: true,
-      message: `Mod instalado. ${skippedCoreFiles.length} arquivo(s) do núcleo do SPT vieram no pacote e foram ignorados, pra não quebrar a instalação.`
+      message: `Mod installed. ${skippedCoreFiles.length} SPT core file(s) shipped inside the package were skipped, to avoid breaking the installation.`
     };
   }
-  return { success: true, message: "Mod instalado e verificado (estrutura completa detectada)." };
+  return { success: true, message: "Mod installed and verified (full structure detected)." };
 }
 
 /**
- * Só aceita operar em pastas que o próprio Manager criou pra extração temporária desta
- * instância — nunca um caminho arbitrário vindo do processo renderer, que não é
- * totalmente confiável pra apagar ou mesclar coisas direto na instância SPT. As pastas
- * temporárias são sempre criadas dentro de clientRoot (ver installModFromArchive acima).
+ * Only accepts folders the Manager itself created for temporary extraction in this
+ * instance — never an arbitrary path from the renderer process, which is not trusted
+ * enough to delete or merge things directly into the SPT instance. Temp folders are always
+ * created inside clientRoot (see installModFromArchive above).
  */
 function isOwnTempExtractDir(clientRoot: string, tmpDir: string): boolean {
   const resolved = path.resolve(tmpDir);
@@ -1511,9 +1512,9 @@ function isOwnTempExtractDir(clientRoot: string, tmpDir: string): boolean {
   return path.dirname(resolved) === expectedParent && path.basename(resolved).startsWith(".tmp-mod-extract-");
 }
 
-// Usada quando o usuário revisa uma estrutura de arquivo incomum e escolhe "Continuar
-// mesmo assim" — reaproveita a extração já feita (sem baixar/extrair de novo) e força a
-// mesclagem direto na instância SPT.
+// Used when the user reviews an unusual file structure and chooses "Continue anyway" —
+// reuses the extraction already performed (no re-download, no re-extract) and forces the
+// merge straight into the SPT instance.
 export function finalizeUnrecognizedInstall(
   clientRoot: string,
   serverRoot: string,
@@ -1522,27 +1523,27 @@ export function finalizeUnrecognizedInstall(
   preferredDisplayName?: string
 ): InstallResult {
   if (!isOwnTempExtractDir(clientRoot, tmpDir)) {
-    return { success: false, message: "Caminho temporário inválido." };
+    return { success: false, message: "Invalid temporary path." };
   }
   if (!fs.existsSync(tmpDir)) {
-    return { success: false, message: "A extração temporária não existe mais — tente instalar o arquivo de novo." };
+    return { success: false, message: "The temporary extraction no longer exists — try installing the file again." };
   }
   return performMerge(clientRoot, serverRoot, tmpDir, archivePath, tmpDir, preferredDisplayName);
 }
 
-// Usada quando o usuário aborta depois de revisar uma estrutura de arquivo incomum.
+// Used when the user aborts after reviewing an unusual file structure.
 export function discardPendingInstall(clientRoot: string, tmpDir: string): { success: boolean; message: string } {
   if (!isOwnTempExtractDir(clientRoot, tmpDir)) {
-    return { success: false, message: "Caminho temporário inválido." };
+    return { success: false, message: "Invalid temporary path." };
   }
   cleanup(tmpDir);
-  return { success: true, message: "Instalação cancelada." };
+  return { success: true, message: "Installation cancelled." };
 }
 
-// --- Habilitar/desabilitar (move entre pasta ativa e .disabled) ---
+// --- Enable/disable (moves between the active folder and .disabled) ---
 /**
- * Move a pasta de um mod entre a pasta ativa e a .disabled. Devolve false quando não há
- * o que mover (não existe na origem, ou o destino já está ocupado).
+ * Moves a mod's folder between the active folder and .disabled. Returns false when there
+ * is nothing to move (absent at the source, or the destination is already occupied).
  */
 function moveModEntry(clientRoot: string, serverRoot: string, id: string, type: ModType, enable: boolean): boolean {
   const isServer = type === "server";
@@ -1557,7 +1558,7 @@ function moveModEntry(clientRoot: string, serverRoot: string, id: string, type: 
   return true;
 }
 
-/** As outras partes do mesmo pacote (ex: a metade servidor de um mod client+server). */
+/** The other parts of the same package (e.g. the server half of a client+server mod). */
 function findPackageSiblings(clientRoot: string, modId: string, modType: ModType): RegistryEntry[] {
   const registry = loadRegistry(clientRoot);
   const own = registry.find((r) => r.id === modId && r.type === modType);
