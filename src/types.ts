@@ -15,6 +15,7 @@ export interface ModInfo {
   sptVersion?: string; // SPT version constraint declared by the mod (read from the DLL)
   sptCompatibility?: "compatible" | "incompatible" | "unknown"; // declared constraint vs. this instance's version
   packageId?: string; // parts installed from the same archive share this id
+  packageInferred?: boolean; // joined its package by name similarity, not by an install record
   packageSiblings?: { id: string; type: ModType }[]; // the other parts, when the package is inferred
   guid?: string; // GUID declared by the mod (SPT 4.0) — exact match against Forge
   linkedModName?: string;

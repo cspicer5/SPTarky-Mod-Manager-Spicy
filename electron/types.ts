@@ -19,6 +19,9 @@ export interface ModInfo {
   sptVersion?: string;
   sptCompatibility?: "compatible" | "incompatible" | "unknown"; // SPT version declared by the mod vs. this instance
   packageId?: string; // parts installed from the same archive share this id
+  // true = this mod joined its package by folder-name similarity rather than by an install
+  // record, so the grouping is a reasonable guess rather than evidence
+  packageInferred?: boolean;
   packageSiblings?: { id: string; type: ModType }[];
 }
 

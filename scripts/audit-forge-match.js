@@ -78,11 +78,7 @@ function main() {
 
   const started = Date.now();
   backend
-    .matchForgeMods(
-      mods.map((m) => ({ folderName: m.originalName, guid: m.guid })),
-      onProgress,
-      write ? clientRoot : undefined
-    )
+    .matchForgeMods(backend.buildForgeMatchInput(mods), onProgress, write ? clientRoot : undefined)
     .then((matches) => {
       const elapsed = ((Date.now() - started) / 1000).toFixed(1);
       process.stdout.write(" ".repeat(40) + "\r");
