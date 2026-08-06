@@ -1828,11 +1828,11 @@ function cleanup(tmpDir: string) {
 }
 
 /**
- * Alguns mods vêm com uma pasta "embrulho" no topo do zip (ex: "SPT/user/mods/NomeDoMod"
- * em vez de "user/mods/NomeDoMod" direto na raiz — comum quando quem empacotou o mod
- * simplesmente zipou a pasta da própria instância). Isso procura recursivamente (até
- * alguns níveis de profundidade) por uma pasta que tenha "user" e/ou "BepInEx" como
- * filhos diretos, em vez de olhar só o nível mais raso do zip extraído.
+ * Some mods ship with a "wrapper" folder at the top of the zip (e.g. "SPT/user/mods/ModName"
+ * instead of "user/mods/ModName" at the root — common when whoever packaged the mod simply
+ * zipped their own instance folder). This searches recursively (down a few levels) for a
+ * folder that has "user" and/or "BepInEx" as direct children, rather than looking only at
+ * the shallowest level of the extracted zip.
  */
 function findMergeRoot(dir: string, depth = 0): string | null {
   if (depth > 5) return null;
@@ -1851,16 +1851,16 @@ function findMergeRoot(dir: string, depth = 0): string | null {
 }
 
 /**
- * Confere, arquivo por arquivo, que tudo que existia em src também existe em dest
- * (mesmo tamanho). Usado pra confirmar que uma instalação realmente terminou com sucesso,
- * em vez de assumir que copyRecursive não falhou silenciosamente.
+ * Checks, file by file, that everything present in src also exists in dest (same size).
+ * Used to confirm an installation genuinely finished, rather than assuming copyRecursive
+ * did not fail silently.
  */
 function verifyCopyRecursive(
   src: string,
   dest: string,
-  // Arquivos deliberadamente não copiados (núcleo da SPT que veio junto no pacote) —
-  // sem isso a verificação acusaria "instalação incompleta" por algo que a gente
-  // decidiu pular de propósito.
+  // Files deliberately not copied (SPT core that shipped inside the package) — without
+  // this, verification would report "incomplete installation" for something we chose to
+  // skip on purpose.
   intentionallySkipped: string[] = [],
   relPrefix = ""
 ): { ok: boolean; missing?: string } {
@@ -1884,11 +1884,12 @@ function verifyCopyRecursive(
 }
 
 /* ==========================================================================
- * Integração com a API da Forge (forge.sp-tarkov.com) — plataforma oficial
- * de mods do SPT. API pública, só leitura, sem chave necessária. Limite de
- * uso: 40 requisições/10s em rajada, 200/60s sustentado — por isso as
- * buscas de nome abaixo são feitas uma de cada vez com um intervalo entre
- * elas, em vez de disparar tudo de uma vez.
+ * Integration with the Forge API (forge.sp-tarkov.com) — SPT's official mod
+ * platform. Public, read-only, no key required; the API is documented as open
+ * and does not support authentication at all, so there is no "logged in" mode
+ * that would raise the limits. Documented limits: 40 requests/10s burst and
+ * 200/60s sustained — which is why the name lookups below run one at a time
+ * with an interval between them instead of firing all at once.
  * ========================================================================== */
 
 const FORGE_API_BASE = "https://forge.sp-tarkov.com/api/v0";
@@ -1898,7 +1899,7 @@ export interface ForgeUpdateItem {
   currentVersion?: string;
   recommendedVersion?: string;
   downloadLink?: string;
-  guid?: string; // identificador da Forge, gravado ao atualizar pelo app
+  guid?: string; // Forge identifier, recorded when the app performs an update
   reason?: string;
 }
 
@@ -1910,7 +1911,7 @@ export interface ForgeUpdateCheckResult {
   incompatible: ForgeUpdateItem[];
   infoOnly: ForgeUpdateItem[];
   unmatched: string[];
-  skippedByBudget?: string[]; // não consultados: o orçamento de requisições acabou antes
+  skippedByBudget?: string[]; // never queried: the request budget ran out first
 }
 
 export interface ForgeSptVersion {
@@ -1918,14 +1919,16 @@ export interface ForgeSptVersion {
   modCount: number;
 }
 
-// Lista de versões do SPT que a própria Forge conhece — usada pra montar um
-// seletor em vez de depender de digitação livre (evita erro de digitação e
-// versão inválida).
+// The list of SPT versions Forge itself knows about — used to build a picker instead of
+// relying on free-text entry (avoids typos and invalid versions).
 export async function getForgeSptVersions(): Promise<ForgeSptVersion[]> {
-  // A API não aceita version_major/minor/patch como parâmetro de ORDENAÇÃO
-  // (só como campo de dado) — pediria "3.9.0" depois de "3.10.0" se a gente
-  // ordenasse pela string "version" (comparação alfabética, não numérica).
-  // Pede os números separados e ordena certinho aqui mesmo.
+  // The API does not accept version_major/minor/patch as a SORT parameter (only as data
+  // fields) — sorting by the "version" string would put "3.9.0" after "3.10.0"
+  // (alphabetical, not numeric). So we request the separate numbers and sort properly here.
+  //
+  // Endpoint path verified against the live API: /spt/versions returns 200 with real data.
+  // (The published docs list this as /spt-versions; that path does not answer. Trust this
+  // one — it is what actually works.)
   const url = `${FORGE_API_BASE}/spt/versions?per_page=50&fields=version,mod_count,version_major,version_minor,version_patch`;
   try {
     const res = await fetch(url, { headers: { Accept: "application/json" } });
