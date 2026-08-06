@@ -268,9 +268,9 @@ ipcMain.handle("install-mod", async () => {
 
   const result = await dialog.showOpenDialog({
     properties: ["openFile"],
-    filters: [{ name: "Arquivo de mod", extensions: ["zip", "7z", "rar"] }]
+    filters: [{ name: "Mod archive", extensions: ["zip", "7z", "rar"] }]
   });
-  if (result.canceled || result.filePaths.length === 0) return { success: false, message: "Cancelado." };
+  if (result.canceled || result.filePaths.length === 0) return { success: false, message: "Cancelled." };
 
   return installModFromArchive(sptPath, getServerRoot()!, result.filePaths[0]);
 });
@@ -330,7 +330,7 @@ ipcMain.handle("open-mod-folder", (_event, mod: ModInfo) => {
   } else {
     shell.showItemInFolder(target);
   }
-  return { success: true, message: "Pasta aberta." };
+  return { success: true, message: "Folder opened." };
 });
 
 ipcMain.handle("export-mod-list", async () => {
@@ -342,10 +342,10 @@ ipcMain.handle("export-mod-list", async () => {
     defaultPath: "spt-modlist.json",
     filters: [{ name: "JSON", extensions: ["json"] }]
   });
-  if (result.canceled || !result.filePath) return { success: false, message: "Cancelado." };
+  if (result.canceled || !result.filePath) return { success: false, message: "Cancelled." };
 
   fs.writeFileSync(result.filePath, JSON.stringify(data, null, 2), "utf-8");
-  return { success: true, message: `Lista exportada com ${data.mods.length} mod(s) para ${path.basename(result.filePath)}.` };
+  return { success: true, message: `Exported list with ${data.mods.length} mod(s) to ${path.basename(result.filePath)}.` };
 });
 
 ipcMain.handle("import-mod-list", async () => {
@@ -356,7 +356,7 @@ ipcMain.handle("import-mod-list", async () => {
     properties: ["openFile"],
     filters: [{ name: "JSON", extensions: ["json"] }]
   });
-  if (result.canceled || result.filePaths.length === 0) return { success: false, message: "Cancelado." };
+  if (result.canceled || result.filePaths.length === 0) return { success: false, message: "Cancelled." };
 
   try {
     const raw = fs.readFileSync(result.filePaths[0], "utf-8");
@@ -378,11 +378,11 @@ ipcMain.handle("import-mod-list", async () => {
     const comparison = compareModList(sptPath, getServerRoot()!, names);
     return {
       success: true,
-      message: `Comparado com ${names.length} mod(s) da lista importada.`,
+      message: `Compared against ${names.length} mod(s) from the imported list.`,
       comparison,
       guidByName
     };
   } catch (err) {
-    return { success: false, message: "Erro ao ler o arquivo: " + (err as Error).message };
+    return { success: false, message: "Error reading the file: " + (err as Error).message };
   }
 });

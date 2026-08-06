@@ -114,8 +114,8 @@ export default function App() {
   }
   const [downloadQueue, setDownloadQueue] = useState<QueueItem[]>([]);
 
-  // Checagem de atualização do próprio app — roda uma vez na abertura. Só notifica;
-  // baixar/instalar continua sendo decisão (e ação) da pessoa, no navegador.
+  // Update check for the app itself — runs once at startup. Notifies only; downloading
+  // and installing remain the person's decision (and action), in their browser.
   const [forgeProgress, setForgeProgress] = useState<{ done: number; total: number } | null>(null);
   const [lookupInProgress, setLookupInProgress] = useState(false);
   const [installProgress, setInstallProgress] = useState<{ done: number; total: number } | null>(null);
@@ -147,8 +147,8 @@ export default function App() {
   }
   function markQueueDone(id: string, success: boolean, message?: string) {
     setDownloadQueue((prev) => prev.map((q) => (q.id === id ? { ...q, status: success ? "done" : "error", message } : q)));
-    // Some da lista sozinho depois de um tempo, sem precisar de ação manual — erro fica
-    // visível um pouco mais que sucesso, já que é mais provável que a pessoa queira ler.
+    // Removes itself from the list after a while, with no manual action needed — errors
+    // stay visible a little longer than successes, being more likely worth reading.
     setTimeout(
       () => {
         setDownloadQueue((prev) => prev.filter((q) => q.id !== id));
@@ -177,7 +177,7 @@ export default function App() {
     return list;
   }, []);
 
-  // Fecha o menu de ações aberto ao clicar fora dele.
+  // Closes the open actions menu when clicking outside it.
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       const target = e.target as HTMLElement;
@@ -207,23 +207,22 @@ export default function App() {
       return true;
     });
 
-    // Comparação natural: "Mod 10" depois de "Mod 2" (e não antes, como daria a
-    // comparação de texto pura), e sem diferenciar maiúscula de minúscula — senão
-    // "Zebra" vinha antes de "apple".
+    // Natural comparison: "Mod 10" after "Mod 2" (not before, as plain text comparison
+    // would give), and case-insensitive — otherwise "Zebra" sorted ahead of "apple".
     const byName = (a: ModInfo, b: ModInfo) =>
       a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
 
-    // Quem precisa de ação primeiro: atualização disponível > bloqueada >
-    // incompatível > só informativo > sem status conhecido.
+    // Whatever needs action first: update available > blocked > incompatible >
+    // informational only > no known status.
     const forgeRank = (mod: ModInfo) => {
       const status = forgeStatusByName.get(mod.name)?.status;
       return status === "update" ? 0 : status === "blocked" ? 1 : status === "incompatible" ? 2 : status === "info" ? 3 : 4;
     };
 
     const sorted = [...filtered].sort((a, b) => {
-      // Mods sem data de instalação (os instalados por fora do app) não têm onde
-      // se encaixar numa ordem cronológica — vão sempre pro fim, nos dois sentidos,
-      // em vez de fingir que são os "mais antigos".
+      // Mods with no install date (those installed outside the app) have nowhere to sit in
+      // a chronological order — they always go to the end, in both directions, rather than
+      // pretending to be the "oldest".
       if (sortField === "installedAt") {
         const da = a.installedAt ?? "";
         const db = b.installedAt ?? "";
@@ -309,10 +308,10 @@ export default function App() {
         const override = await window.modManagerAPI.getSptVersionOverride();
         setSptVersionInput(override || "");
       }
-      // Sem isso, o dropdown de versão do SPT ficava só com o placeholder na primeira
-      // vez que alguém selecionava a pasta — só populava depois de fechar e reabrir o
-      // app (quando o efeito de inicialização, que já buscava isso, finalmente rodava
-      // com um sptPath salvo).
+      // Without this, the SPT version dropdown showed only the placeholder the first time
+      // someone selected the folder — it only populated after closing and reopening the
+      // app (when the startup effect, which already fetched this, finally ran with a saved
+      // sptPath).
       window.modManagerAPI.getForgeSptVersions().then(setForgeSptVersions);
     } else {
       pushToast(tMsg(result.message) || t("toast.folderSelectFailed"), false);
@@ -326,9 +325,9 @@ export default function App() {
   const confirmResolverRef = useRef<((result: InstallResult) => void) | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<{ tmpDir: string; archivePath: string; rootEntries: string[] } | null>(null);
 
-  // Ponto único por onde toda instalação passa. Se o backend responder pedindo
-  // confirmação (estrutura de arquivo incomum), abre o modal e "pausa" aqui até o
-  // usuário decidir — quem chamou só recebe o resultado final (instalado ou cancelado).
+  // The single point every installation passes through. If the backend replies asking for
+  // confirmation (unusual file structure), this opens the modal and "pauses" here until
+  // the user decides — the caller only ever sees the final result (installed or cancelled).
   async function installArchiveWithConfirmFlow(installCall: Promise<InstallResult>): Promise<InstallResult> {
     const result = await installCall;
     if (!result.needsConfirmation || !result.tmpDir) return result;
@@ -405,13 +404,13 @@ export default function App() {
     setLoading(true);
     const previousKeys = new Set(mods.map(selectionKey));
     let successCount = 0;
-    // Pré-popula a fila com todos os arquivos de uma vez, pra já mostrar o que vem a seguir
-    // — sem isso, um lote de vários arquivos processava em silêncio, um de cada vez.
+    // Pre-populates the queue with every file at once, so what is coming next is visible
+    // immediately — without this, a batch of several files processed silently, one at a time.
     const queueIds = archives.map((file) => pushQueueItem(file.name));
     for (let i = 0; i < archives.length; i++) {
       const file = archives[i];
       const queueId = queueIds[i];
-      // @ts-expect-error o Electron injeta `.path` no objeto File nativo, fora da tipagem padrão do DOM
+      // @ts-expect-error Electron injects `.path` onto the native File object, outside the standard DOM typings
       const filePath: string | undefined = file.path;
       if (!filePath) {
         markQueueDone(queueId, false, t("queue.noFilePath"));
@@ -435,11 +434,11 @@ export default function App() {
     const result = await window.modManagerAPI.toggleMod(mod);
     pushToast(tMsg(result.message), result.success);
     if (result.success) {
-      // Atualização local (sem re-escanear o disco inteiro) — bem mais rápido com muitos mods.
+      // Local update (no full disk re-scan) — much faster with many mods.
       //
-      // Inclui as OUTRAS PARTES do mesmo pacote: o backend alterna todas juntas, e sem
-      // isso a lista continuava mostrando a outra metade no estado antigo — parecia que
-      // a cascata não tinha funcionado.
+      // Includes the OTHER PARTS of the same package: the backend toggles them together,
+      // and without this the list kept showing the other half in its old state — which
+      // looked like the cascade had not worked.
       setMods((prev) =>
         prev.map((m) => {
           const isSame = m.id === mod.id && m.type === mod.type;
@@ -497,14 +496,14 @@ export default function App() {
       if (wantsDownload) {
         const previousKeys = new Set(mods.map(selectionKey));
 
-        // A lista exportada guarda o nome da pasta, e nomes podem repetir entre um mod
-        // de servidor e um de cliente (ex: "Wedge" nos dois lados). Sem remover as
-        // repetições, o mesmo mod era baixado duas vezes.
+        // The exported list stores folder names, and names can repeat between a server mod
+        // and a client mod (e.g. "Wedge" on both sides). Without removing duplicates, the
+        // same mod was downloaded twice.
         const targets = [...new Set(missing)];
 
-        // Fase 1: uma busca em lote pra todos, com um cartão de resumo só. Encher a fila
-        // com um item por mod parecia informativo, mas com 118 mods empurrava justamente
-        // a linha de progresso pra fora da área visível do painel.
+        // Phase 1: one batched lookup for everything, with a single summary card. Filling
+        // the queue with an item per mod seemed informative, but with 118 mods it pushed
+        // the progress line itself out of the panel's visible area.
         setLookupInProgress(true);
         const guidByName = result.guidByName ?? {};
         const found = await window.modManagerAPI.findForgeDownloadsForNames(
@@ -513,7 +512,7 @@ export default function App() {
         setLookupInProgress(false);
         setForgeProgress(null);
 
-        // Fase 2: instala só o que foi encontrado, um de cada vez, com contagem visível.
+        // Phase 2: install only what was found, one at a time, with a visible count.
         const installable = targets.filter((name) => found[name]);
         const notFound = targets.filter((name) => !found[name]);
         let installedCount = 0;
@@ -529,8 +528,8 @@ export default function App() {
             window.modManagerAPI.installForgeMod(queueId, lookup.downloadLink, lookup.forgeName ?? name, {
               name: lookup.forgeName,
               version: lookup.version,
-              // Grava o identificador da Forge: a partir daqui esse mod é reconhecido
-              // por ID exato, sem depender de casamento por nome.
+              // Records the Forge identifier: from here on this mod is recognised by exact
+              // ID, with no dependence on name matching.
               guid: lookup.guid
             })
           );
@@ -546,7 +545,7 @@ export default function App() {
             ? t("restore.allInstalled", { count: installedCount })
             : t("restore.partialInstalled", {
                 installed: installedCount,
-                // Numa lista grande, despejar 100+ nomes num toast não ajuda ninguém.
+                // On a large list, dumping 100+ names into a toast helps nobody.
                 notFound:
                   problems.slice(0, 5).join(", ") +
                   (problems.length > 5 ? t("restore.andMore", { count: problems.length - 5 }) : "")
@@ -629,10 +628,9 @@ export default function App() {
     pushToast(total === 0 ? t("toast.forgeAllUpToDate") : t("toast.forgeUpdatesAvailable", { count: total }), true);
   }
 
-  // Roda a checagem da Forge só pros mods que acabaram de entrar (comparando
-  // a lista antes/depois da instalação), sem re-consultar os outros já
-  // verificados. Silenciosamente não faz nada se não tiver uma versão do SPT
-  // informada ainda (não dá pra checar sem isso).
+  // Runs the Forge check only for mods that just arrived (by diffing the list before and
+  // after installation), without re-querying the ones already verified. Silently does
+  // nothing if no SPT version has been supplied yet (there is no way to check without it).
   async function checkForgeForNewMods(previousKeys: Set<string>, updatedMods: ModInfo[]) {
     if (!sptVersionInput.trim()) return;
     const newMods = updatedMods.filter((m) => !previousKeys.has(selectionKey(m)));
@@ -690,9 +688,9 @@ export default function App() {
 
   const [updatingModName, setUpdatingModName] = useState<string | null>(null);
 
-  // Atualiza sem sair do app: o link do resultado é o download direto da versão
-  // recomendada, então dá pra passar pelo mesmo instalador usado na busca da Forge —
-  // em vez de abrir o navegador e deixar o .zip no Downloads pra instalar na mão.
+  // Updates without leaving the app: the result's link is a direct download of the
+  // recommended version, so it can go through the same installer used by Forge search —
+  // instead of opening a browser and leaving a .zip in Downloads to install by hand.
   async function handleInstallUpdate(modName: string, downloadLink: string, version?: string, guid?: string) {
     setUpdatingModName(modName);
     const previousKeys = new Set(mods.map(selectionKey));
@@ -803,8 +801,8 @@ export default function App() {
     }
 
     pushToast(t("toast.bulkProcessed", { done: succeededKeys.size, total: selectedMods.length }), true);
-    // Em lote, um item de pacote arrasta as partes irmãs junto — a atualização local
-    // acima não sabe disso, então re-escaneia pra lista bater com o disco.
+    // In bulk, a package item drags its sibling parts along — the local update above does
+    // not know that, so re-scan to make the list agree with the disk.
     if (selectedMods.some((m) => m.packageId)) refreshMods();
     clearSelection();
     setMutating(false);
@@ -814,8 +812,8 @@ export default function App() {
     setSelectedKeys((prev) => new Set([...prev, ...keys]));
   }
 
-  // Quantas partes cada pacote tem instaladas. Serve pra avisar na linha do mod que ele
-  // faz parte de um conjunto — sem isso, ver a outra metade desabilitar junto parece bug.
+  // How many parts of each package are installed. Used to flag on the mod's row that it
+  // belongs to a set — without it, seeing the other half disable itself looks like a bug.
   const packagePartsById = useMemo(() => {
     const counts = new Map<string, ModInfo[]>();
     for (const m of mods) {
