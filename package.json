@@ -54,7 +54,8 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
-      "data/headless-rules.json"
+      "data/headless-rules.json",
+      "data/forge-directory.json"
     ],
     "asarUnpack": [
       "node_modules/7zip-bin/**/*"

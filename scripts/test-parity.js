@@ -69,6 +69,28 @@ check("headless-only leftover flagged", byKey["client:someoldplugin"]?.issue, "h
 check("menu-patching mod flagged even when matched", byKey["client:kaeno-traderscrolling"]?.issue, "unnecessary-menu-risk");
 check("cosmetic mod on both sides raises nothing", byKey["client:amandsgraphics"]?.issue ?? "none", "none");
 
+console.log("\nstructural beats manual");
+{
+  // An override is keyed by mod name, with no side. Marking the CLIENT half "required" must
+  // not re-label the SERVER half of the same name as required-and-missing — that invents a
+  // problem SPT cannot have, and the user is never offered the control for a server row.
+  const overridden = buildParityReport(mainMods, headlessMods, {
+    manual: { "acidphantasm-botplacementsystem": "required" }
+  });
+  const rows = Object.fromEntries(overridden.rows.map((r) => [r.key, r]));
+  check(
+    "override does not apply to the server half",
+    rows["server:acidphantasm-botplacementsystem"]?.verdict.klass,
+    "server-only"
+  );
+  check(
+    "override still applies to the client half",
+    rows["client:acidphantasm-botplacementsystem"]?.verdict.klass,
+    "required"
+  );
+  check("overriding a client half adds no phantom issue", overridden.counts.missingOnHeadless, 2);
+}
+
 console.log("\nserver/client name collision");
 check(
   "server half classified server-only",

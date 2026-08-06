@@ -257,26 +257,34 @@ export interface ForgeHint {
 /**
  * Decides whether a mod belongs on the headless client.
  *
- * Precedence: what the user said > what is structurally true > what Fika documents >
- * what the mod's category hints at > nothing. Anything below "rule" is explicitly a
- * suggestion to review, and says so in `why`.
+ * Precedence: what is structurally true > what the user said > what Fika documents > what
+ * the mod's category hints at > nothing. Anything below "rule" is explicitly a suggestion
+ * to review, and says so in `why`.
  */
 export function classifyForHeadless(
   mod: Pick<ModInfo, "id" | "originalName" | "guid" | "type">,
   opts: { manual?: HeadlessClass; forge?: ForgeHint; serverCounterparts?: Set<string> } = {}
 ): HeadlessVerdict {
-  if (opts.manual) {
-    return { klass: opts.manual, source: "manual", why: "Set by you." };
-  }
-
-  // Structural, and it outranks every rule below: a server mod in a headless folder is not
-  // a compatibility question at all. Nothing under user/mods is ever read by a client.
+  // Checked BEFORE the manual override, which is the one place user intent does not win:
+  // this is a fact about how SPT loads mods, not a preference. Nothing under user/mods is
+  // ever read by a client, so no setting can make a server mod load on a headless one.
+  //
+  // It also has to be first for a subtler reason. Overrides are keyed by mod name without a
+  // side, because "SAIN is required" is a statement about SAIN — but several mods ship a
+  // server half and a client half under ONE folder name. With the override checked first,
+  // marking such a client plugin "required" silently re-labelled its server twin as
+  // required-and-missing too, inventing a problem that cannot exist. The user is never
+  // offered that control for a server row; it leaked across from the client half.
   if (mod.type === "server") {
     return {
       klass: "server-only",
       source: "structural",
       why: "Server mod. A headless client only loads BepInEx/ — nothing in user/mods/ is ever read by it, so this belongs solely to the main install."
     };
+  }
+
+  if (opts.manual) {
+    return { klass: opts.manual, source: "manual", why: "Set by you." };
   }
 
   const rule = ruleFor(mod);
