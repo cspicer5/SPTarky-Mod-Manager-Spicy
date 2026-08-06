@@ -16,7 +16,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build && tsc -p electron/tsconfig.json",
     "electron:dev": "npm run build && electron .",
-    "electron:build": "npm run build && electron-builder"
+    "electron:build": "npm run build && electron-builder",
+    "audit:forge": "npm run build && node scripts/audit-forge-match.js"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
