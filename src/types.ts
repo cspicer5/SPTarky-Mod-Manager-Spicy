@@ -329,7 +329,43 @@ export interface Preset {
   updatedAt: string;
   sptVersion?: string;
   hasPayloads: boolean;
+  /** Present when this was imported from a shared store rather than captured here. */
+  origin?: { store: string; path: string; author?: string; importedAt: string };
   mods: PresetMod[];
+}
+
+/* --- the shared store ---------------------------------------------------- */
+
+/**
+ * Who may publish. A convention between clients, not a security control — it lives in a file
+ * anyone with write access to the folder can edit. The share's own permissions are the real
+ * enforcement, and the UI says so.
+ */
+export type WritePolicy = "curated" | "shared";
+
+export interface PresetStoreInfo {
+  schema: number;
+  name: string;
+  writePolicy: WritePolicy;
+  owner: string;
+  createdAt: string;
+}
+
+export interface StoreEntry {
+  preset: Preset;
+  file: string;
+  /** Other files claiming the same id — what a sync tool leaves behind after a conflict. */
+  conflictsWith?: string[];
+}
+
+export interface PresetStoreStatus {
+  path: string;
+  connected: boolean;
+  info?: PresetStoreInfo;
+  entries: StoreEntry[];
+  canPublish: boolean;
+  publishBlockedReason?: string;
+  message?: string;
 }
 
 export type PresetIssue = "missing" | "version-mismatch" | "state-mismatch" | "extra" | "unknown-version";
@@ -431,6 +467,53 @@ export interface ModManagerAPI {
   getPresetReport: (id: string) => Promise<{ success: boolean; report?: PresetReport; message?: string }>;
   /** Applies only what needs no download: enabling/disabling to match. Never removes mods. */
   applyPresetState: (id: string) => Promise<{ success: boolean; changed?: number; message: string }>;
+
+  // --- the shared preset store (phase 2: manifests only) ---
+  getPresetStoreStatus: () => Promise<PresetStoreStatus>;
+  getPresetIdentity: () => Promise<{ identity: string; explicit: boolean }>;
+  setPresetIdentity: (name: string) => Promise<{ success: boolean; identity?: string; message: string }>;
+  choosePresetStore: () => Promise<{ success: boolean; cancelled?: boolean; status?: PresetStoreStatus }>;
+  disconnectPresetStore: () => Promise<{ success: boolean; message: string }>;
+  createPresetStore: (
+    name: string,
+    writePolicy: WritePolicy
+  ) => Promise<{ success: boolean; message: string; status?: PresetStoreStatus }>;
+  setPresetStorePolicy: (
+    policy: WritePolicy
+  ) => Promise<{ success: boolean; message: string; status?: PresetStoreStatus }>;
+  /**
+   * `needsConfirmation` comes back when publishing would replace a preset somebody else
+   * published — ids are derived from names, so two people can collide by accident. Call
+   * again with overwrite to go ahead.
+   */
+  publishPreset: (
+    id: string,
+    overwrite?: boolean
+  ) => Promise<{ success: boolean; message: string; needsConfirmation?: boolean; status?: PresetStoreStatus }>;
+  unpublishPreset: (id: string) => Promise<{ success: boolean; message: string; status?: PresetStoreStatus }>;
+  importPreset: (
+    id: string,
+    overwrite?: boolean
+  ) => Promise<{ success: boolean; message: string; needsConfirmation?: boolean; preset?: Preset }>;
+  /** Compares a store preset against this install without importing a copy of it. */
+  getStorePresetReport: (id: string) => Promise<{ success: boolean; report?: PresetReport; message?: string }>;
+
+  // --- preset files: sharing with no store at all ---
+  exportPresetFile: (
+    id: string
+  ) => Promise<{ success: boolean; cancelled?: boolean; message?: string; path?: string }>;
+  importPresetFile: (
+    overwrite?: boolean,
+    knownPath?: string
+  ) => Promise<{
+    success: boolean;
+    cancelled?: boolean;
+    message?: string;
+    needsConfirmation?: boolean;
+    preset?: Preset;
+    /** Echoed back so confirming an overwrite reuses the file already chosen. */
+    path?: string;
+  }>;
 
   // --- headless sync (main -> headless only; the main install is the source of truth) ---
   syncModToHeadless: (mod: ModInfo) => Promise<{ success: boolean; message: string }>;

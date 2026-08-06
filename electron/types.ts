@@ -81,6 +81,13 @@ export interface InstanceConfig {
   sptVersionOverride: string | null;
   forgeStatusCache: { name: string; status: "update" | "blocked" | "incompatible" | "info"; version?: string }[] | null;
   forgeCheckedAt: string | null;
+  // Folder holding the shared preset store — a Windows share, a VPN-reachable path, or a
+  // sync folder. Like serverUrl this is deliberately not an InstanceId: a store holds
+  // manifests, not an install, and can never be scanned or toggled.
+  presetStorePath: string | null;
+  // The name this client publishes under. Presets are shared between people, so "who wrote
+  // this" has to be a name a human chose, not a machine account or a folder path.
+  presetIdentity: string | null;
 }
 
 /**

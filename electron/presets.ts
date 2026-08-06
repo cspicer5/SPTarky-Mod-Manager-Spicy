@@ -52,6 +52,18 @@ export interface Preset {
   sptVersion?: string;
   /** Phase 3 sets this true when the preset carries the mod files. */
   hasPayloads: boolean;
+  /**
+   * Where this came from, when it was imported from a shared store rather than captured
+   * here. Applying a preset copies somebody else's idea of a correct setup onto your
+   * machine, so the source stays visible afterwards rather than only at the moment you
+   * clicked import.
+   */
+  origin?: {
+    store: string;
+    path: string;
+    author?: string;
+    importedAt: string;
+  };
   mods: PresetMod[];
 }
 
@@ -111,7 +123,16 @@ export function readPreset(root: string, id: string): Preset | null {
   }
 }
 
-/** Written via a temp file and renamed, so an interrupted write cannot leave a half-preset. */
+/**
+ * Written via a temp file and renamed, so an interrupted write cannot leave a half-preset.
+ *
+ * Exported as `savePreset` for the store, which needs to write a preset it did not capture
+ * (an import) without going through `createPreset` and minting a new identity for it.
+ */
+export function savePreset(root: string, preset: Preset): void {
+  writePreset(root, preset);
+}
+
 function writePreset(root: string, preset: Preset): void {
   const dir = presetsDir(root);
   fs.mkdirSync(dir, { recursive: true });

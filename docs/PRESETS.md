@@ -187,8 +187,20 @@ Applying and then re-reconciling should come back clean. Worth having as its own
 reconciliation report, verify. No store, no sharing. Immediately useful and needs no
 decisions from anyone else.
 
-**Phase 2 — folder store, manifests only.** `store.json`, publish and browse, write policy,
-apply from a shared manifest. Small files, quick to get right.
+**Phase 2 — folder store, manifests only. DONE.** `store.json`, publish and browse, write
+policy, compare against a shared manifest without importing it, and **preset files** — export
+one to send a friend, import one they sent. The file is the same format the store holds, so a
+file can be dropped straight into a store's `presets/` folder and vice versa; there is no
+export-only variant to drift out of step.
+
+Two things learned building it:
+
+- **The store may be an unreachable network path.** All store I/O is therefore async. Phase
+  1's synchronous `fs` was safe only because presets lived in the app's own data directory; a
+  sync read against a dead share blocks the main process and freezes the whole window.
+- **A sync tool resolves a conflict by keeping BOTH files.** Two files then claim one preset
+  id. The newest wins for display and the losers are named, because silently picking one is
+  how somebody applies a preset they did not write.
 
 **Phase 3 — payloads.** The deduped `mods/` store, copy-on-publish, apply-from-payload,
 progress reporting for multi-GB copies, resume/verify on interrupted copies. This is the part

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from "electron";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import Store from "electron-store";
 import {
   resolveSptInstance,
@@ -56,6 +57,19 @@ import {
   buildPresetReport
 } from "./presets";
 import {
+  getStoreStatus,
+  initStore,
+  setWritePolicy,
+  publishPreset,
+  unpublishPreset,
+  importPreset,
+  readStorePreset,
+  exportPresetToFile,
+  importPresetFromFile,
+  presetFileName,
+  WritePolicy
+} from "./presetStore";
+import {
   backupConfigs,
   restoreConfigs,
   collectConfigPaths,
@@ -77,7 +91,9 @@ const store = new Store<InstanceConfig>({
     serverUrl: null,
     sptVersionOverride: null,
     forgeStatusCache: null,
-    forgeCheckedAt: null
+    forgeCheckedAt: null,
+    presetStorePath: null,
+    presetIdentity: null
   }
 });
 
@@ -601,6 +617,147 @@ ipcMain.handle("apply-preset-state", (_event, id: string) => {
       `Switched ${changed.length} mod(s) to match the preset.` +
       (failed.length ? ` ${failed.length} could not be changed.` : "")
   };
+});
+
+/* --- IPC: the shared preset store (phase 2: manifests only) -----------------
+ *
+ * The store is a folder someone else can also reach — a Windows share, a VPN path, a synced
+ * directory. Access control belongs to the share; the write policy in store.json is a
+ * convention between clients, and the UI says so rather than implying otherwise.
+ *
+ * Note the store is NOT an instance. It holds manifests, never an install, so none of the
+ * scan/toggle/install paths can be pointed at it.
+ */
+function presetIdentity(): string {
+  // Defaulting to the OS username makes publishing work without a setup step, but it is only
+  // a default: this name goes in front of other people, so the user can change it.
+  return (store.get("presetIdentity") ?? os.userInfo().username ?? "").trim();
+}
+
+ipcMain.handle("get-preset-store-status", async () =>
+  getStoreStatus(store.get("presetStorePath"), presetIdentity())
+);
+
+ipcMain.handle("get-preset-identity", () => ({
+  identity: presetIdentity(),
+  explicit: !!store.get("presetIdentity")
+}));
+
+ipcMain.handle("set-preset-identity", (_event, name: string) => {
+  const trimmed = (name ?? "").trim();
+  if (!trimmed) return { success: false, message: "Pick a name others will recognise." };
+  store.set("presetIdentity", trimmed);
+  return { success: true, identity: trimmed, message: `Publishing as ${trimmed}.` };
+});
+
+ipcMain.handle("choose-preset-store", async () => {
+  const result = await dialog.showOpenDialog({
+    title: "Choose a preset store folder",
+    properties: ["openDirectory", "createDirectory"]
+  });
+  if (result.canceled || !result.filePaths[0]) return { success: false, cancelled: true };
+  const dir = result.filePaths[0];
+  const status = await getStoreStatus(dir, presetIdentity());
+  // Connecting to a folder that is not a store yet is not a failure — the panel offers to
+  // create one there. The path is remembered either way so the offer has something to act on.
+  store.set("presetStorePath", dir);
+  return { success: true, status };
+});
+
+ipcMain.handle("disconnect-preset-store", () => {
+  store.set("presetStorePath", null);
+  return { success: true, message: "Disconnected from the store. Nothing was deleted." };
+});
+
+ipcMain.handle("create-preset-store", async (_event, name: string, writePolicy: WritePolicy) => {
+  const dir = store.get("presetStorePath");
+  if (!dir) return { success: false, message: "Choose a folder first." };
+  const identity = presetIdentity();
+  const result = await initStore(dir, { name, owner: identity, writePolicy });
+  return { ...result, status: await getStoreStatus(dir, identity) };
+});
+
+ipcMain.handle("set-preset-store-policy", async (_event, policy: WritePolicy) => {
+  const dir = store.get("presetStorePath");
+  if (!dir) return { success: false, message: "No store connected." };
+  const identity = presetIdentity();
+  const result = await setWritePolicy(dir, identity, policy);
+  return { ...result, status: await getStoreStatus(dir, identity) };
+});
+
+ipcMain.handle("publish-preset", async (_event, id: string, overwrite?: boolean) => {
+  const dir = store.get("presetStorePath");
+  if (!dir) return { success: false, message: "No store connected." };
+  const preset = readPreset(presetRoot(), id);
+  if (!preset) return { success: false, message: "That preset no longer exists." };
+  const identity = presetIdentity();
+  const result = await publishPreset(dir, preset, identity, { overwrite });
+  return { ...result, status: await getStoreStatus(dir, identity) };
+});
+
+ipcMain.handle("unpublish-preset", async (_event, id: string) => {
+  const dir = store.get("presetStorePath");
+  if (!dir) return { success: false, message: "No store connected." };
+  const identity = presetIdentity();
+  const result = await unpublishPreset(dir, id, identity);
+  return { ...result, status: await getStoreStatus(dir, identity) };
+});
+
+ipcMain.handle("import-preset", async (_event, id: string, overwrite?: boolean) => {
+  const dir = store.get("presetStorePath");
+  if (!dir) return { success: false, message: "No store connected." };
+  return importPreset(presetRoot(), dir, id, { overwrite });
+});
+
+/**
+ * Compares a store preset against this install WITHOUT importing it.
+ *
+ * "Are we running the same thing?" is the question people actually ask before a session, and
+ * making them import a copy of someone else's preset just to ask it would leave a trail of
+ * stale presets behind.
+ */
+ipcMain.handle("get-store-preset-report", async (_event, id: string) => {
+  const dir = store.get("presetStorePath");
+  if (!dir) return { success: false, message: "No store connected." };
+  if (!store.get("sptPath")) return { success: false, message: "No SPT instance configured." };
+  const preset = await readStorePreset(dir, id);
+  if (!preset) return { success: false, message: "That preset is not in this store." };
+  return { success: true, report: buildPresetReport(preset, scanInstance("main"), localSptVersion()) };
+});
+
+/* --- IPC: preset files -------------------------------------------------------
+ * Sharing with no store at all. A manifest is ~40 KB, so sending someone the file is the
+ * lowest-effort transport there is, and it needs nothing set up on either end. Same format
+ * the store holds, so a file can be dropped into a store's presets/ folder and vice versa.
+ */
+ipcMain.handle("export-preset-file", async (_event, id: string) => {
+  const preset = readPreset(presetRoot(), id);
+  if (!preset) return { success: false, message: "That preset no longer exists." };
+
+  const result = await dialog.showSaveDialog({
+    title: "Export preset",
+    defaultPath: presetFileName(preset),
+    filters: [{ name: "Mod preset", extensions: ["json"] }]
+  });
+  if (result.canceled || !result.filePath) return { success: false, cancelled: true };
+  return exportPresetToFile(preset, result.filePath);
+});
+
+ipcMain.handle("import-preset-file", async (_event, overwrite?: boolean, knownPath?: string) => {
+  // The second call (after the user confirms an overwrite) reuses the path already chosen,
+  // rather than making them find the same file in the dialog a second time.
+  let filePath = knownPath;
+  if (!filePath) {
+    const result = await dialog.showOpenDialog({
+      title: "Import a preset file",
+      properties: ["openFile"],
+      filters: [{ name: "Mod preset", extensions: ["json"] }]
+    });
+    if (result.canceled || !result.filePaths[0]) return { success: false, cancelled: true };
+    filePath = result.filePaths[0];
+  }
+  const imported = await importPresetFromFile(presetRoot(), filePath, { overwrite });
+  return { ...imported, path: filePath };
 });
 
 /* --- IPC: syncing the headless client from the main install -----------------

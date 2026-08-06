@@ -315,3 +315,216 @@
 .preset-state.off {
   color: var(--text-faint);
 }
+
+/* --- the shared store (phase 2) -------------------------------------------
+   Collapsed by default. Someone playing alone never needs a store, and the panel's first
+   job is still "compare this install against a preset" — putting a sharing setup in front
+   of that would make the common case look harder than it is.
+
+   Class names are all prefixed `preset-store-`: a bare name like `.store-list` would be one
+   more chance to collide with an existing rule, which is exactly how `.bulk-bar` once
+   squashed the selection bar to a 4px sliver. */
+.preset-store {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+  background: var(--bg-panel);
+}
+
+.preset-store-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.preset-store-summary {
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-store-body {
+  padding: 0 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* Sending a file needs no store at all, so it reads as its own thing rather than as a
+   footnote to the folder setup. */
+.preset-store-files {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px;
+  margin-top: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-panel-raised);
+}
+
+.preset-store-files-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.preset-store-files-text strong {
+  font-size: 12px;
+}
+
+.preset-store-files-text span {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.preset-store-files button {
+  flex-shrink: 0;
+}
+
+.preset-store-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.preset-store-identity input {
+  flex: 1;
+  min-width: 0;
+}
+
+.preset-store-label {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.preset-store-help,
+.preset-store-note {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin: 0;
+  line-height: 1.45;
+}
+
+.preset-store-path {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+.preset-store-warn {
+  font-size: 11px;
+  color: var(--accent-strong);
+  margin: 0;
+}
+
+.preset-store-create,
+.preset-store-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.preset-store-create input {
+  flex: 1;
+  min-width: 120px;
+}
+
+.preset-store-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.preset-store-head > div {
+  min-width: 0;
+}
+
+.preset-store-policy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  font-size: 11px;
+}
+
+.preset-store-policy button {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.preset-store-publish {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preset-store-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.preset-store-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-panel-raised);
+}
+
+.preset-store-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.preset-store-item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* A sync tool kept two copies. The newest is shown, but silently picking one is how
+   somebody ends up applying a preset they did not write. */
+.preset-store-conflict {
+  font-size: 10px;
+  color: var(--accent-strong);
+}
+
+/* Where an imported preset came from, kept visible after the import rather than only at the
+   moment it happened. */
+.preset-item-origin {
+  font-size: 10px;
+  color: var(--text-faint);
+  font-style: italic;
+}

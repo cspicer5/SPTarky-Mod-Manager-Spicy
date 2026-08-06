@@ -18,6 +18,8 @@ import {
   ServerSyncRow,
   Preset,
   PresetReport,
+  PresetStoreStatus,
+  WritePolicy,
   BulkReinstallProgress,
   BulkReinstallOutcome
 } from "./types";
@@ -487,7 +489,7 @@ export default function App() {
 
   async function openPresets() {
     setPresetsOpen(true);
-    await refreshPresets();
+    await Promise.all([refreshPresets(), refreshStore()]);
   }
 
   async function handleSelectPreset(id: string) {
@@ -547,6 +549,135 @@ export default function App() {
     } finally {
       setPresetBusy(false);
     }
+  }
+
+  /* --- the shared preset store (phase 2) ------------------------------------
+   * A folder other people can also reach. Everything here is one round trip that returns a
+   * fresh status, so the panel never has to guess whether the store changed underneath it —
+   * it is a shared folder, so it genuinely might have.
+   */
+  const [storeStatus, setStoreStatus] = useState<PresetStoreStatus | null>(null);
+  const [presetIdentity, setPresetIdentity] = useState<string>("");
+
+  const refreshStore = useCallback(async () => {
+    const [status, identity] = await Promise.all([
+      window.modManagerAPI.getPresetStoreStatus(),
+      window.modManagerAPI.getPresetIdentity()
+    ]);
+    setStoreStatus(status);
+    setPresetIdentity(identity.identity);
+  }, []);
+
+  async function withStoreBusy<T>(fn: () => Promise<T>): Promise<T> {
+    setPresetBusy(true);
+    try {
+      return await fn();
+    } finally {
+      setPresetBusy(false);
+    }
+  }
+
+  async function handleChooseStore() {
+    await withStoreBusy(async () => {
+      const result = await window.modManagerAPI.choosePresetStore();
+      if (result.cancelled) return;
+      if (result.status) setStoreStatus(result.status);
+      // Connecting to a folder that is not a store yet is not an error; the panel then
+      // offers to create one there.
+      if (result.status && !result.status.connected && result.status.message) {
+        pushToast(result.status.message, false);
+      }
+    });
+  }
+
+  async function handleCreateStore(name: string, writePolicy: WritePolicy) {
+    await withStoreBusy(async () => {
+      const result = await window.modManagerAPI.createPresetStore(name, writePolicy);
+      pushToast(result.message, result.success);
+      if (result.status) setStoreStatus(result.status);
+    });
+  }
+
+  async function handleDisconnectStore() {
+    const result = await window.modManagerAPI.disconnectPresetStore();
+    pushToast(result.message, result.success);
+    await refreshStore();
+  }
+
+  async function handleSetIdentity(name: string) {
+    const result = await window.modManagerAPI.setPresetIdentity(name);
+    pushToast(result.message, result.success);
+    if (result.success) await refreshStore();
+  }
+
+  async function handleSetStorePolicy(policy: WritePolicy) {
+    await withStoreBusy(async () => {
+      const result = await window.modManagerAPI.setPresetStorePolicy(policy);
+      pushToast(result.message, result.success);
+      if (result.status) setStoreStatus(result.status);
+    });
+  }
+
+  async function handlePublishPreset(id: string) {
+    await withStoreBusy(async () => {
+      let result = await window.modManagerAPI.publishPreset(id);
+      // Publishing over someone ELSE's preset is the only thing that asks. Ids come from the
+      // preset's name, so two people can collide entirely by accident.
+      if (result.needsConfirmation) {
+        if (!window.confirm(`${result.message}\n\nPublish anyway?`)) return;
+        result = await window.modManagerAPI.publishPreset(id, true);
+      }
+      pushToast(result.message, result.success);
+      if (result.status) setStoreStatus(result.status);
+    });
+  }
+
+  async function handleUnpublishPreset(id: string) {
+    const entry = storeStatus?.entries.find((e) => e.preset.id === id);
+    if (!window.confirm(`Remove "${entry?.preset.name ?? id}" from the shared store?\n\nYour local copy is kept.`)) return;
+    await withStoreBusy(async () => {
+      const result = await window.modManagerAPI.unpublishPreset(id);
+      pushToast(result.message, result.success);
+      if (result.status) setStoreStatus(result.status);
+    });
+  }
+
+  async function handleImportFromStore(id: string) {
+    await withStoreBusy(async () => {
+      let result = await window.modManagerAPI.importPreset(id);
+      if (result.needsConfirmation) {
+        if (!window.confirm(`${result.message}\n\nImport anyway?`)) return;
+        result = await window.modManagerAPI.importPreset(id, true);
+      }
+      pushToast(result.message ?? "Imported.", result.success);
+      if (result.success && result.preset) {
+        await refreshPresets();
+        await handleSelectPreset(result.preset.id);
+      }
+    });
+  }
+
+  async function handleExportPresetFile(id: string) {
+    const result = await window.modManagerAPI.exportPresetFile(id);
+    if (result.cancelled) return;
+    pushToast(result.message ?? (result.success ? "Exported." : "Couldn't export."), result.success);
+  }
+
+  async function handleImportPresetFile() {
+    await withStoreBusy(async () => {
+      let result = await window.modManagerAPI.importPresetFile();
+      if (result.cancelled) return;
+      if (result.needsConfirmation) {
+        if (!window.confirm(`${result.message}\n\nImport anyway?`)) return;
+        // Reuses the file already chosen rather than making them find it a second time.
+        result = await window.modManagerAPI.importPresetFile(true, result.path);
+      }
+      pushToast(result.message ?? (result.success ? "Imported." : "Couldn't import."), result.success);
+      if (result.success && result.preset) {
+        await refreshPresets();
+        await handleSelectPreset(result.preset.id);
+      }
+    });
   }
 
   /**
@@ -1949,11 +2080,23 @@ export default function App() {
               selectedId={selectedPresetId}
               report={presetReport}
               busy={presetBusy}
+              storeStatus={storeStatus}
+              identity={presetIdentity}
               onSelect={handleSelectPreset}
               onSaveCurrent={handleSavePreset}
               onRecapture={handleRecapturePreset}
               onDelete={handleDeletePreset}
               onApplyState={handleApplyPresetState}
+              onChooseStore={handleChooseStore}
+              onCreateStore={handleCreateStore}
+              onDisconnectStore={handleDisconnectStore}
+              onSetIdentity={handleSetIdentity}
+              onSetStorePolicy={handleSetStorePolicy}
+              onPublish={handlePublishPreset}
+              onUnpublish={handleUnpublishPreset}
+              onImportFromStore={handleImportFromStore}
+              onExportFile={handleExportPresetFile}
+              onImportFile={handleImportPresetFile}
               onClose={() => setPresetsOpen(false)}
             />
           )}

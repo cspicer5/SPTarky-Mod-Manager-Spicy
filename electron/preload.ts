@@ -54,6 +54,29 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   getPresetReport: (id: string) => ipcRenderer.invoke("get-preset-report", id),
   applyPresetState: (id: string) => ipcRenderer.invoke("apply-preset-state", id),
 
+  // --- the shared preset store (a folder: LAN share, VPN path, or synced directory) ---
+  getPresetStoreStatus: () => ipcRenderer.invoke("get-preset-store-status"),
+  getPresetIdentity: () => ipcRenderer.invoke("get-preset-identity"),
+  setPresetIdentity: (name: string) => ipcRenderer.invoke("set-preset-identity", name),
+  choosePresetStore: () => ipcRenderer.invoke("choose-preset-store"),
+  disconnectPresetStore: () => ipcRenderer.invoke("disconnect-preset-store"),
+  createPresetStore: (name: string, writePolicy: "curated" | "shared") =>
+    ipcRenderer.invoke("create-preset-store", name, writePolicy),
+  setPresetStorePolicy: (policy: "curated" | "shared") => ipcRenderer.invoke("set-preset-store-policy", policy),
+  // overwrite is the user's answer to "this would replace someone else's preset", so it is
+  // always an explicit second call, never a default.
+  publishPreset: (id: string, overwrite?: boolean) => ipcRenderer.invoke("publish-preset", id, overwrite),
+  unpublishPreset: (id: string) => ipcRenderer.invoke("unpublish-preset", id),
+  importPreset: (id: string, overwrite?: boolean) => ipcRenderer.invoke("import-preset", id, overwrite),
+  getStorePresetReport: (id: string) => ipcRenderer.invoke("get-store-preset-report", id),
+
+  // --- preset files: sharing with no store at all ---
+  exportPresetFile: (id: string) => ipcRenderer.invoke("export-preset-file", id),
+  // knownPath is the file already chosen on the first call, so confirming an overwrite does
+  // not make the user find it in the dialog a second time.
+  importPresetFile: (overwrite?: boolean, knownPath?: string) =>
+    ipcRenderer.invoke("import-preset-file", overwrite, knownPath),
+
   // --- headless sync (main -> headless only) ---
   syncModToHeadless: (mod: ModInfo) => ipcRenderer.invoke("sync-mod-to-headless", mod),
   removeModFromHeadless: (mod: ModInfo) => ipcRenderer.invoke("remove-mod-from-headless", mod),

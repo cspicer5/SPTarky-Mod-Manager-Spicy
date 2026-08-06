@@ -10,7 +10,7 @@
  * is not installed. That needs payloads (phase 3) or Forge.
  */
 import { useState } from "react";
-import { Preset, PresetReport, PresetRow } from "./types";
+import { Preset, PresetReport, PresetRow, PresetStoreStatus, WritePolicy } from "./types";
 import "./presets.css";
 
 const ISSUE_LABEL: Record<string, string> = {
@@ -75,27 +75,314 @@ function PresetRowItem({ row }: { row: PresetRow }) {
   );
 }
 
+/**
+ * The shared store: connect to a folder, see what is in it, publish and import.
+ *
+ * Kept collapsed until opened. Someone playing alone never needs a store, and the panel's
+ * first job is still "compare this install against a preset" — pushing a sharing setup in
+ * front of that would make the common case look harder than it is.
+ */
+function StoreSection({
+  status,
+  identity,
+  busy,
+  selectedPresetName,
+  canPublishSelected,
+  onChoose,
+  onCreate,
+  onDisconnect,
+  onSetIdentity,
+  onSetPolicy,
+  onPublish,
+  onUnpublish,
+  onImport,
+  onImportFile
+}: {
+  status: PresetStoreStatus | null;
+  identity: string;
+  busy: boolean;
+  selectedPresetName: string | null;
+  canPublishSelected: boolean;
+  onChoose: () => void;
+  onCreate: (name: string, policy: WritePolicy) => void;
+  onDisconnect: () => void;
+  onSetIdentity: (name: string) => void;
+  onSetPolicy: (policy: WritePolicy) => void;
+  onPublish: () => void;
+  onUnpublish: (id: string) => void;
+  onImport: (id: string) => void;
+  onImportFile: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [storeName, setStoreName] = useState("");
+  const [policy, setPolicy] = useState<WritePolicy>("shared");
+  const [identityDraft, setIdentityDraft] = useState(identity);
+  const [editingIdentity, setEditingIdentity] = useState(false);
+
+  const connected = status?.connected === true;
+  const chosen = !!status?.path;
+
+  return (
+    <div className="preset-store">
+      <button className="preset-store-toggle" onClick={() => setOpen(!open)}>
+        <span>{open ? "▾" : "▸"} Sharing</span>
+        <span className="preset-store-summary">
+          {connected
+            ? `${status?.info?.name} · ${status?.entries.length ?? 0} shared`
+            : chosen
+              ? "folder chosen, no store yet"
+              : "not connected"}
+        </span>
+      </button>
+
+      {open && (
+        <div className="preset-store-body">
+          {/* Sending someone the file needs no store at all, so it comes first: it is the
+              lowest-effort way to share and the one most people will actually use. */}
+          <div className="preset-store-files">
+            <div className="preset-store-files-text">
+              <strong>Send a file</strong>
+              <span>A preset is a small file. Export one to send a friend, or import one they sent you.</span>
+            </div>
+            <button onClick={onImportFile} disabled={busy}>
+              Import a preset file…
+            </button>
+          </div>
+
+          <div className="preset-store-identity">
+            <span className="preset-store-label">Publishing as</span>
+            {editingIdentity ? (
+              <>
+                <input
+                  type="text"
+                  value={identityDraft}
+                  autoFocus
+                  onChange={(e) => setIdentityDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && identityDraft.trim()) {
+                      onSetIdentity(identityDraft.trim());
+                      setEditingIdentity(false);
+                    }
+                    if (e.key === "Escape") setEditingIdentity(false);
+                  }}
+                />
+                <button
+                  disabled={!identityDraft.trim()}
+                  onClick={() => {
+                    onSetIdentity(identityDraft.trim());
+                    setEditingIdentity(false);
+                  }}
+                >
+                  Save
+                </button>
+              </>
+            ) : (
+              <>
+                <strong>{identity || "not set"}</strong>
+                <button
+                  onClick={() => {
+                    setIdentityDraft(identity);
+                    setEditingIdentity(true);
+                  }}
+                  title="The name your published presets carry"
+                >
+                  Change
+                </button>
+              </>
+            )}
+          </div>
+
+          {!connected ? (
+            <div className="preset-store-connect">
+              <p className="preset-store-help">
+                A store is just a folder everyone can reach — a network share, a VPN path, or a synced folder. Presets
+                published there show up for anyone pointed at it.
+              </p>
+              <div className="preset-store-actions">
+                <button onClick={onChoose} disabled={busy}>
+                  {chosen ? "Choose a different folder…" : "Choose a folder…"}
+                </button>
+              </div>
+              {chosen && (
+                <>
+                  <p className="preset-store-path" title={status?.path}>
+                    {status?.path}
+                  </p>
+                  {status?.message && <p className="preset-store-warn">{status.message}</p>}
+                  <div className="preset-store-create">
+                    <input
+                      type="text"
+                      placeholder="Name this store…"
+                      value={storeName}
+                      onChange={(e) => setStoreName(e.target.value)}
+                    />
+                    <select value={policy} onChange={(e) => setPolicy(e.target.value as WritePolicy)}>
+                      <option value="shared">Anyone can publish</option>
+                      <option value="curated">Only I can publish</option>
+                    </select>
+                    <button
+                      className="primary"
+                      disabled={!storeName.trim() || busy}
+                      onClick={() => onCreate(storeName.trim(), policy)}
+                    >
+                      Create store here
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="preset-store-connected">
+              <div className="preset-store-head">
+                <div>
+                  <strong>{status?.info?.name}</strong>
+                  <span className="preset-store-path" title={status?.path}>
+                    {status?.path}
+                  </span>
+                </div>
+                <button onClick={onDisconnect} disabled={busy} title="Stop using this store. Nothing is deleted.">
+                  Disconnect
+                </button>
+              </div>
+
+              <div className="preset-store-policy">
+                <span>
+                  {status?.info?.writePolicy === "curated"
+                    ? `Curated by ${status?.info?.owner || "the owner"}`
+                    : "Anyone with access can publish"}
+                </span>
+                {/* Said out loud rather than implied: this is an agreement between clients,
+                    not a lock. Whoever can write to the folder can change it. */}
+                <span className="preset-store-note">
+                  A convention between clients, not a permission — the folder's own access controls it.
+                </span>
+                {status?.info?.owner?.toLowerCase() === identity.toLowerCase() && (
+                  <button
+                    disabled={busy}
+                    onClick={() => onSetPolicy(status?.info?.writePolicy === "curated" ? "shared" : "curated")}
+                  >
+                    {status?.info?.writePolicy === "curated" ? "Let anyone publish" : "Make it curated"}
+                  </button>
+                )}
+              </div>
+
+              <div className="preset-store-publish">
+                <button
+                  className={canPublishSelected ? "primary" : ""}
+                  disabled={busy || !canPublishSelected}
+                  onClick={onPublish}
+                  title={
+                    !selectedPresetName
+                      ? "Pick one of your presets first"
+                      : status?.canPublish
+                        ? `Publish "${selectedPresetName}" to ${status?.info?.name}`
+                        : status?.publishBlockedReason
+                  }
+                >
+                  {selectedPresetName ? `Publish "${selectedPresetName}"` : "Publish a preset"}
+                </button>
+                {!status?.canPublish && status?.publishBlockedReason && (
+                  <span className="preset-store-warn">{status.publishBlockedReason}</span>
+                )}
+              </div>
+
+              {(status?.entries.length ?? 0) === 0 ? (
+                <p className="empty-list">Nothing published here yet.</p>
+              ) : (
+                <ul className="preset-store-list">
+                  {status?.entries.map((entry) => (
+                    <li key={entry.preset.id}>
+                      <div className="preset-store-item">
+                        <div className="preset-store-item-main">
+                          <span className="preset-item-name">{entry.preset.name}</span>
+                          <span className="preset-item-meta">
+                            {entry.preset.mods.length} mods
+                            {entry.preset.author ? ` · by ${entry.preset.author}` : ""}
+                            {entry.preset.sptVersion ? ` · SPT ${entry.preset.sptVersion}` : ""}
+                          </span>
+                          {entry.preset.description && (
+                            <span className="preset-item-desc">{entry.preset.description}</span>
+                          )}
+                          {/* A sync tool kept two copies of this preset. The newest is shown,
+                              but silently picking one is how somebody ends up applying a
+                              preset they did not write. */}
+                          {entry.conflictsWith && (
+                            <span className="preset-store-conflict">
+                              {entry.conflictsWith.length} conflicting copy(ies) in the folder — showing the newest.
+                            </span>
+                          )}
+                        </div>
+                        <div className="preset-store-item-actions">
+                          <button disabled={busy} onClick={() => onImport(entry.preset.id)}>
+                            Import
+                          </button>
+                          <button
+                            disabled={busy}
+                            className="preset-danger"
+                            onClick={() => onUnpublish(entry.preset.id)}
+                            title="Remove it from the shared folder. Your local copy is kept."
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PresetsPanel({
   presets,
   selectedId,
   report,
   busy,
+  storeStatus,
+  identity,
   onSelect,
   onSaveCurrent,
   onRecapture,
   onDelete,
   onApplyState,
+  onChooseStore,
+  onCreateStore,
+  onDisconnectStore,
+  onSetIdentity,
+  onSetStorePolicy,
+  onPublish,
+  onUnpublish,
+  onImportFromStore,
+  onExportFile,
+  onImportFile,
   onClose
 }: {
   presets: Preset[];
   selectedId: string | null;
   report: PresetReport | null;
   busy: boolean;
+  storeStatus: PresetStoreStatus | null;
+  identity: string;
   onSelect: (id: string) => void;
   onSaveCurrent: (name: string, description: string) => void;
   onRecapture: (id: string) => void;
   onDelete: (id: string) => void;
   onApplyState: (id: string) => void;
+  onChooseStore: () => void;
+  onCreateStore: (name: string, policy: WritePolicy) => void;
+  onDisconnectStore: () => void;
+  onSetIdentity: (name: string) => void;
+  onSetStorePolicy: (policy: WritePolicy) => void;
+  onPublish: (id: string) => void;
+  onUnpublish: (id: string) => void;
+  onImportFromStore: (id: string) => void;
+  onExportFile: (id: string) => void;
+  onImportFile: () => void;
   onClose: () => void;
 }) {
   const [newName, setNewName] = useState("");
@@ -112,7 +399,7 @@ export default function PresetsPanel({
         <div>
           <strong>Mod presets</strong>
           <span className="preset-header-note">
-            A named snapshot of a working setup. Saved on this machine — sharing comes next.
+            A named snapshot of a working setup — save one, compare against it, or share it.
           </span>
         </div>
         <button onClick={onClose}>Close</button>
@@ -153,8 +440,25 @@ export default function PresetsPanel({
             </button>
           </div>
 
+          <StoreSection
+            status={storeStatus}
+            identity={identity}
+            busy={busy}
+            selectedPresetName={selected?.name ?? null}
+            canPublishSelected={!!selected && storeStatus?.canPublish === true}
+            onChoose={onChooseStore}
+            onCreate={onCreateStore}
+            onDisconnect={onDisconnectStore}
+            onSetIdentity={onSetIdentity}
+            onSetPolicy={onSetStorePolicy}
+            onPublish={() => selected && onPublish(selected.id)}
+            onUnpublish={onUnpublish}
+            onImport={onImportFromStore}
+            onImportFile={onImportFile}
+          />
+
           {presets.length === 0 ? (
-            <p className="empty-list">No presets yet. Save your current setup to make one.</p>
+            <p className="empty-list">No presets yet. Save your current setup, or import one a friend sent.</p>
           ) : (
             <ul className="preset-list">
               {presets.map((p) => (
@@ -173,6 +477,14 @@ export default function PresetsPanel({
                       {p.sptVersion ? ` · SPT ${p.sptVersion}` : ""}
                     </span>
                     {p.description && <span className="preset-item-desc">{p.description}</span>}
+                    {/* Where an imported preset came from stays visible. Applying one copies
+                        somebody else's idea of a correct setup onto this machine. */}
+                    {p.origin && (
+                      <span className="preset-item-origin" title={p.origin.path}>
+                        from {p.origin.store}
+                        {p.origin.author ? ` · ${p.origin.author}` : ""}
+                      </span>
+                    )}
                   </button>
                 </li>
               ))}
@@ -220,6 +532,13 @@ export default function PresetsPanel({
                 </button>
                 <button onClick={() => onRecapture(selected.id)} disabled={busy} title="Overwrite this preset with the current install">
                   Update from install
+                </button>
+                <button
+                  onClick={() => onExportFile(selected.id)}
+                  disabled={busy}
+                  title="Save this preset as a file you can send someone"
+                >
+                  Export file…
                 </button>
                 <button onClick={() => onDelete(selected.id)} disabled={busy} className="preset-danger">
                   Delete
