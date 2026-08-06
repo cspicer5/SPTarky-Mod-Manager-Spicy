@@ -12,13 +12,11 @@ Styled with its own "tactical manifest" look — condensed headers, monospace te
 
 ## Credits — with thanks to TioEmir
 
-This is a fork of **[SPT Mod Manager](https://github.com/Nevek20/SPT_Mod_Manager)** by **Matheus Guida (TioEmir)**, released under the MIT licence.
+This is a fork of **[SPT Mod Manager](https://github.com/Nevek20/SPT_Mod_Manager)** by **Matheus Guida (TioEmir)**, released under the MIT licence. Thanks to him for building it and for putting it out under a licence that made this possible.
 
-The original is not a starting point that got replaced — it *is* this application. The installer and its structure detection, the package handling that keeps a mod's client and server halves together, the orphan-file manifest, the conflict detection, the zip-slip hardening, the whole interface and its look: all of that is his work, still here, still doing the heavy lifting. This fork changes how mods are matched against Forge and little else. Every hour spent on it was spent standing on a codebase that already worked.
+Most of the application is his: the installer, package handling, conflict detection, archive hardening and the interface. This fork changes how mods are matched against Forge.
 
-It is also unusually well documented internally. The original carries dense comments explaining not just what the code does but *why* — which real installation broke it, which assumption turned out false, what was tried and abandoned. Those notes made this work possible: several fixes here exist only because a comment recorded a measurement someone had already taken the trouble to make. That is rare, and it deserves saying.
-
-**If you want the original, get it from [Nevek20/SPT_Mod_Manager](https://github.com/Nevek20/SPT_Mod_Manager).** It is actively maintained; this fork is not a replacement for it and does not track its releases. Bugs here are this fork's — please do not report them upstream.
+**If you want the original, get it from [Nevek20/SPT_Mod_Manager](https://github.com/Nevek20/SPT_Mod_Manager).** It is actively maintained; this fork does not track its releases. Bugs here are this fork's — please do not report them upstream.
 
 ---
 
