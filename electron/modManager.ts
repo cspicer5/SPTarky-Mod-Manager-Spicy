@@ -2056,7 +2056,7 @@ function stripFolderNameNoise(name: string): string[] {
     current = withoutTag;
   }
 
-  // sufixo de versão: "-2.0.4", ".4.4.3", "_1.2"
+  // version suffix: "-2.0.4", ".4.4.3", "_1.2"
   const withoutVersion = current.replace(/[-._]v?\d+(\.\d+){1,3}$/i, "").trim();
   if (withoutVersion && withoutVersion !== current) {
     variants.add(withoutVersion);
@@ -2161,7 +2161,7 @@ function startsWithAtWordBoundary(fullValue: string, prefix: string): boolean {
   for (const char of fullValue) {
     const isAlphaNum = /[a-zA-Z0-9]/.test(char);
     if (isAlphaNum) {
-      if (matchedChars >= normalizedPrefix.length) return false; // ainda em palavra -> não é limite
+      if (matchedChars >= normalizedPrefix.length) return false; // still inside a word -> not a boundary
       if (char.toLowerCase() !== normalizedPrefix[matchedChars]) return false;
       matchedChars++;
     } else if (matchedChars >= normalizedPrefix.length) {
@@ -2174,43 +2174,43 @@ function startsWithAtWordBoundary(fullValue: string, prefix: string): boolean {
 }
 
 /**
- * COMO o casamento foi feito. Isso não é telemetria: um casamento ERRADO é pior que
- * nenhum, porque o restaurador de modlist baixa e instala usando esse mesmo mapeamento
- * — casar errado instala o mod errado por cima.
+ * HOW the match was made. This is not telemetry: a WRONG match is worse than none at all,
+ * because the modlist restorer downloads and installs using this same mapping — matching
+ * wrong installs the wrong mod over the top of yours.
  *
- * Conferido numa instalação real de 53 mods, no cache gerado pela versão anterior:
- *   "Fika"                -> "Fika Headless Launcher"      (é outro mod, de outro autor)
- *   "fika-server"         -> "Server Value Modifier [SVM]" (o guid do SVM é
- *                            "fika.ghostfenixx.svm" — começa com "fika", e a busca
- *                            por nome mordeu a isca)
- *   "WTT-ContentBackport" -> "Content Backport - Prestiges" (mod parecido, outro autor)
- * Nenhum desses aparecia como suspeito na tela: um chute ruim era indistinguível de um
- * acerto. Guardar o método é o que permite a UI dizer "confirme isso" em vez de mentir.
+ * Verified against a real 53-mod installation, in the cache the previous version produced:
+ *   "Fika"                -> "Fika Headless Launcher"      (a different mod, different author)
+ *   "fika-server"         -> "Server Value Modifier [SVM]" (SVM's guid is
+ *                            "fika.ghostfenixx.svm" — it starts with "fika", and the name
+ *                            search took the bait)
+ *   "WTT-ContentBackport" -> "Content Backport - Prestiges" (similar mod, different author)
+ * None of these looked suspicious on screen: a bad guess was indistinguishable from a hit.
+ * Recording the method is what lets the UI say "confirm this" instead of lying.
  */
 type ForgeMatchMethod =
-  | "manual" // o usuário ligou esse mod a um id da Forge na mão — nunca sobrescrever
-  | "guid" // GUID declarado pelo mod == guid publicado. Sem ambiguidade possível.
-  | "cached-id" // id numérico de uma checagem anterior, revalidado agora
-  | "name" // nome publicado idêntico ao que procuramos
-  | "fuzzy"; // busca textual + plausibilidade — É CHUTE, pode estar errado
+  | "manual" // the user pinned this mod to a Forge id by hand — never overwrite
+  | "guid" // GUID declared by the mod == published guid. No ambiguity possible.
+  | "cached-id" // numeric id from an earlier check, re-validated now
+  | "name" // published name identical to what we searched for
+  | "fuzzy"; // full-text search + plausibility — THIS IS A GUESS and may be wrong
 
-/** Só "fuzzy" precisa de confirmação humana; o resto é verificável. */
+/** Only "fuzzy" needs human confirmation; everything else is verifiable. */
 function methodNeedsConfirmation(method: ForgeMatchMethod): boolean {
   return method === "fuzzy";
 }
 
 interface ForgeMatch {
   identifier: string;
-  modId: number; // id numérico da Forge — sempre existe, mesmo quando guid é null
+  modId: number; // Forge's numeric id — always present, even when guid is null
   latestVersion?: string;
   latestVersionLink?: string;
   forgeName?: string;
-  /** Mantido por compatibilidade com o resto do código/UI que já lê esse campo. */
+  /** Kept for compatibility with the rest of the code/UI that already reads this field. */
   confidence: "exact" | "derived";
   method: ForgeMatchMethod;
-  /** true = mostrar como "precisa confirmar" em vez de afirmar que casou. */
+  /** true = show as "needs confirmation" rather than asserting a match. */
   needsConfirmation: boolean;
-  /** guid publicado na Forge, quando existe — usado pra confirmar o casamento. */
+  /** The guid published on Forge, when present — used to confirm the match. */
   forgeGuid?: string;
 }
 
@@ -2230,10 +2230,12 @@ function toForgeMatch(entry: any, method: ForgeMatchMethod): ForgeMatch {
   };
 }
 
-/* Limites documentados da API da Forge: 40 req/10s (burst) e 200 req/60s (sustentado).
- * 40/10s = 1 requisição a cada 250ms no melhor caso; usamos 320ms de folga pra não
- * encostar no limite (era 120ms antes, que dava ~83 req/10s — o dobro do permitido, e
- * por isso a checagem entrava num ciclo de 429 -> espera -> 429 que parecia travada). */
+/* Documented Forge API limits: 40 req/10s (burst) and 200 req/60s (sustained).
+ * 40/10s = one request every 250ms at best; we use 320ms of headroom to stay off the
+ * limit (it was 120ms before, giving ~83 req/10s — double what is allowed, which is why
+ * the check fell into a 429 -> wait -> 429 loop that looked like a hang).
+ * These limits are real: probing the API hard enough during development earned a
+ * Cloudflare 403 for the whole IP, not just a 429. */
 const FORGE_MIN_REQUEST_INTERVAL_MS = 320;
 let lastForgeRequestAt = 0;
 
@@ -2245,8 +2247,8 @@ async function forgeRateLimitGate(): Promise<void> {
   lastForgeRequestAt = Date.now();
 }
 
-// Estado por execução de checagem: teto de requisições e contagem de 429, pra garantir
-// que a operação SEMPRE termina em tempo previsível em vez de ficar tentando pra sempre.
+// Per-run state: a request ceiling and a 429 counter, to guarantee the operation ALWAYS
+// finishes in predictable time instead of retrying forever.
 interface ForgeBudget {
   remaining: number;
   rateLimitHits: number;
@@ -2254,19 +2256,21 @@ interface ForgeBudget {
 }
 
 function newForgeBudget(modCount: number): ForgeBudget {
-  // ~4 tentativas por mod (uma por estratégia), com piso e teto. O teto antigo de 160
-  // truncava em silêncio quem tem instalação grande: com 118 mods, a busca parava na
-  // metade e o resto era reportado como "não encontrado" sem nunca ter sido consultado.
-  // Até 5 requisições por mod (3 nomes + nome sem autor + busca textual). A folga
-  // importa: com o orçamento exatamente no limite, um mod que usa todas as tentativas
-  // empurra outro pra fora, e o que fica de fora aparece como "não encontrado" sem
-  // nunca ter sido consultado.
+  // Roughly a handful of attempts per mod, with a floor and a ceiling. The old ceiling of
+  // 160 silently truncated large installations: with 118 mods the search stopped halfway
+  // and the rest were reported as "not found" without ever having been queried.
+  // The headroom matters: with the budget exactly at the limit, a mod that uses every
+  // attempt pushes another out, and the one pushed out shows as "not found" despite never
+  // having been looked up.
+  //
+  // Since the include_legacy fix (see below) most mods resolve in the batched guid/id
+  // queries — one request per 25 mods — so this ceiling is now rarely approached at all.
   return { remaining: Math.min(Math.max(modCount * 7, 30), 1400), rateLimitHits: 0, aborted: false };
 }
 
 /**
- * Requisição à Forge respeitando rate limit, orçamento e 429 (com Retry-After).
- * Devolve null em qualquer falha — o chamador segue sem quebrar a checagem inteira.
+ * A Forge request respecting the rate limit, the budget, and 429 (with Retry-After).
+ * Returns null on any failure — the caller carries on without breaking the whole check.
  */
 async function forgeFetchJson(url: string, budget: ForgeBudget, retriedAfter429 = false): Promise<any | null> {
   if (budget.aborted || budget.remaining <= 0) return null;
@@ -2278,9 +2282,9 @@ async function forgeFetchJson(url: string, budget: ForgeBudget, retriedAfter429 
     });
     if (res.status === 429) {
       budget.rateLimitHits++;
-      // Se continuar batendo no limite, desistir é melhor que insistir: a doc trata
-      // burlar o limite como hostilidade, e o usuário prefere um resultado parcial
-      // rápido a uma tela "Consultando..." parada por minutos.
+      // If we keep hitting the limit, giving up beats insisting: the docs treat evading
+      // the limit as hostile behaviour, and users prefer a quick partial result over a
+      // "Checking..." screen frozen for minutes.
       if (budget.rateLimitHits >= 3 || retriedAfter429) {
         budget.aborted = true;
         return null;
