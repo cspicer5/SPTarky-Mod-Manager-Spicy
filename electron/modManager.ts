@@ -1678,11 +1678,11 @@ export function uninstallMod(clientRoot: string, serverRoot: string, mod: ModInf
     const manifest = loadManifest(clientRoot);
     const files = manifest[mod.id];
     if (!files || files.length === 0) {
-      // Registro já estava vazio/inconsistente — ainda assim limpa a entrada
-      // da lista pra não deixar um fantasma que ninguém consegue remover.
+      // The record was already empty/inconsistent — clear the list entry anyway, so no
+      // ghost is left that nobody can remove.
       removeManifestEntry(clientRoot, mod.id);
       removeFromRegistry(clientRoot, mod.id, mod.type);
-      return { success: true, message: "Entrada removida da lista (nenhum arquivo rastreado)." };
+      return { success: true, message: "Entry removed from the list (no tracked files)." };
     }
     let removedCount = 0;
     for (const relPath of files) {
@@ -1694,7 +1694,7 @@ export function uninstallMod(clientRoot: string, serverRoot: string, mod: ModInf
     }
     removeManifestEntry(clientRoot, mod.id);
     removeFromRegistry(clientRoot, mod.id);
-    return { success: true, message: `${removedCount} arquivo(s) órfão(s) removido(s).` };
+    return { success: true, message: `${removedCount} orphan file(s) removed.` };
   }
 
   const isServer = mod.type === "server";
@@ -1702,24 +1702,24 @@ export function uninstallMod(clientRoot: string, serverRoot: string, mod: ModInf
   const dir = p(base, mod.enabled ? (isServer ? SERVER_MODS_DIR : CLIENT_PLUGINS_DIR) : isServer ? SERVER_MODS_DISABLED_DIR : CLIENT_PLUGINS_DISABLED_DIR);
   const target = path.join(dir, mod.id);
   if (!fs.existsSync(target)) {
-    return { success: false, message: "Mod não encontrado: " + target };
+    return { success: false, message: "Mod not found: " + target };
   }
   fs.rmSync(target, { recursive: true, force: true });
 
-  // Prepatchers do mod saem junto na remoção — nas duas pastas, já que o mod pode estar
-  // desabilitado no momento em que é removido.
+  // The mod's prepatchers go too — from both folders, since the mod may be disabled at the
+  // moment it is removed.
   if (!isServer) {
     for (const patchersDir of [p(clientRoot, CLIENT_PATCHERS_DIR), p(clientRoot, CLIENT_PATCHERS_DISABLED_DIR)]) {
       for (const filePath of findRelatedPatcherFiles(patchersDir, mod.id)) {
-        // Pode ser arquivo OU pasta: alguns mods põem os patchers numa subpasta
-        // (BepInEx/patchers/Wedge/), então a remoção precisa ser recursiva.
+        // Can be a file OR a folder: some mods put their patchers in a subfolder
+        // (BepInEx/patchers/Wedge/), so removal has to be recursive.
         fs.rmSync(filePath, { recursive: true, force: true });
       }
     }
   }
 
-  // Client mod solto (.dll) costuma ter uma pasta de dados de mesmo nome ao lado —
-  // ela não é listada como mod (é dado dele), então precisa sair junto.
+  // A loose client mod (.dll) usually has a same-named data folder beside it — that folder
+  // is not listed as a mod (it is the mod's data), so it has to go too.
   if (!isServer && mod.id.toLowerCase().endsWith(".dll")) {
     const companion = path.join(dir, mod.id.slice(0, -4));
     if (fs.existsSync(companion) && fs.statSync(companion).isDirectory()) {
@@ -1727,20 +1727,20 @@ export function uninstallMod(clientRoot: string, serverRoot: string, mod: ModInf
     }
   }
 
-  // Remove também os arquivos soltos que vieram no mesmo arquivo desse mod. Eles
-  // não aparecem como item separado na lista (ver scanMods), então precisam sair
-  // junto — do contrário ficariam órfãos de verdade, sem dono e sem como remover.
+  // Also removes the loose files that came in this mod's own archive. They do not appear
+  // as a separate item in the list (see scanMods), so they have to go with it — otherwise
+  // they would become true orphans: unowned and impossible to remove.
   const registryAfter = loadRegistry(clientRoot);
   const registryEntry = registryAfter.find((r) => r.id === mod.id);
   let linkedFilesRemoved = 0;
-  // Só remove os arquivos do pacote quando nenhum outro mod do mesmo arquivo continua
-  // instalado — senão apagaria o config de um mod que ainda está lá.
+  // Only removes the package's files when no other mod from the same archive is still
+  // installed — otherwise it would delete the config of a mod that is still there.
   const orphanEntry =
     (registryEntry?.linkedModId ? registryAfter.find((r) => r.id === registryEntry.linkedModId) : undefined) ??
-    // Vínculo implícito (ver scanMods): órfão com o mesmo nome de exibição desse mod.
+    // Implicit link (see scanMods): an orphan sharing this mod's display name.
     registryAfter.find((r) => r.id.startsWith("hybrid-manifest-") && r.displayName === mod.id);
-  // Um "irmão" pode ser de outro tipo (o pacote instala server e client), e pode estar
-  // habilitado ou desabilitado — por isso checamos as quatro combinações.
+  // A "sibling" can be of another type (the package installs both server and client), and
+  // can be enabled or disabled — hence checking all four combinations.
   const siblingsStillInstalled = (orphanEntry?.linkedModIds ?? []).some((id) => {
     if (id === mod.id) return false;
     return (["server", "client"] as const).some((type) =>
@@ -1765,12 +1765,12 @@ export function uninstallMod(clientRoot: string, serverRoot: string, mod: ModInf
     success: true,
     message:
       linkedFilesRemoved > 0
-        ? `Mod removido (e ${linkedFilesRemoved} arquivo(s) que vieram junto).`
-        : "Mod removido."
+        ? `Mod removed (along with ${linkedFilesRemoved} file(s) that shipped with it).`
+        : "Mod removed."
   };
 }
 
-// --- Helpers de sistema de arquivos ---
+// --- Filesystem helpers ---
 function copyRecursive(src: string, dest: string) {
   ensureDir(dest);
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
@@ -1785,10 +1785,9 @@ function copyRecursive(src: string, dest: string) {
 }
 
 /**
- * Como copyRecursive, mas nunca escreve por cima do núcleo do client da SPT. `relPrefix`
- * é o caminho já percorrido a partir da raiz da instância, pra decidir a proteção pelo
- * caminho completo (e não só pelo nome do arquivo). Devolve o que foi pulado, pra poder
- * avisar quem instalou.
+ * Like copyRecursive, but never writes over SPT's client core. `relPrefix` is the path
+ * walked so far from the instance root, so protection is decided on the full path (not
+ * just the filename). Returns what was skipped, so the installer can say so.
  */
 function copyRecursiveProtected(src: string, dest: string, relPrefix = "", skipped: string[] = []): string[] {
   ensureDir(dest);
