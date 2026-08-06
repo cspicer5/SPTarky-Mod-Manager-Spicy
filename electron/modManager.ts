@@ -1132,9 +1132,17 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
       versionSource,
       versionOrigin: recordStillValid ? registryEntry?.versionOrigin : undefined,
       versionEvidence: recordStillValid ? registryEntry?.versionEvidence : undefined,
-      // Carried only when the two disagree — that is the case worth surfacing, and it is
-      // exactly how a mod that never updates its version string is spotted.
-      declaredVersion: recordStillValid && metadata.version && metadata.version !== recorded ? metadata.version : undefined,
+      // Carried only when the two genuinely disagree — that is the case worth surfacing, and
+      // it is how a mod that never updates its version string gets spotted (WTT-Artem ships
+      // 3.0.1 while declaring 3.0.0).
+      //
+      // Compared numerically, not as text: "5.3.11" and "5.3.11.0" are the same version
+      // written two ways, and flagging that as a disagreement is noise that trains people to
+      // ignore the marker that matters.
+      declaredVersion:
+        recordStillValid && metadata.version && recorded && compareVersions(metadata.version, recorded) !== 0
+          ? metadata.version
+          : undefined,
       // Carried, not applied. The sibling and assembly fallbacks run after grouping, once
       // package membership is known, and only fill mods still without a version.
       assemblyVersion: metadata.assemblyVersion,

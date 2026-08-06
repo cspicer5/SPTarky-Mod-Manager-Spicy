@@ -107,6 +107,21 @@ console.log("\nHYBRID archive (user/ + BepInEx/ together) — the path most real
   check("both carry a fingerprint", both.filter((e) => e.fingerprint?.files > 0).length, 2);
 }
 
+console.log("\nsame version written differently is NOT a disagreement");
+{
+  // "5.3.11" and "5.3.11.0" are the same version. Flagging that trains people to ignore the
+  // marker that matters, which is the one WTT-Artem earns by shipping 3.0.1 as 3.0.0.
+  const zip = new AdmZip();
+  zip.addFile("PaddedMod/package.json", Buffer.from(JSON.stringify({ name: "PaddedMod", version: "5.3.11.0" })));
+  zip.addFile("PaddedMod/mod.js", Buffer.from("//"));
+  const p = path.join(root, "PaddedMod-5.3.11.zip");
+  zip.writeZip(p);
+  await installModFromArchive(INSTALL, INSTALL, p);
+  const m = scanMods(INSTALL, INSTALL).find((x) => x.id === "PaddedMod");
+  check("records the archive version", m?.version, "5.3.11");
+  check("no phantom disagreement", m?.declaredVersion, undefined);
+}
+
 console.log("\na mod whose archive carries no version");
 const plain = makeArchive("SomeClientMod.zip", "SomeClientMod", "1.2.3");
 await installModFromArchive(INSTALL, INSTALL, plain);
