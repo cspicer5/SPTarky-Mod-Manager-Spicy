@@ -28,6 +28,26 @@ export interface AssemblyModMetadata {
   author?: string;
   version?: string;
   sptVersion?: string;
+  /**
+   * The assembly's own version, from AssemblyInformationalVersion (falling back to
+   * AssemblyFileVersion). This is a LAST RESORT and is returned separately from `version`
+   * on purpose — callers must decide whether to trust it.
+   *
+   * Why separate: the version compiled into an assembly is not always the version the
+   * author published. A mod checked during earlier work declared 0.0.1.0 while shipping as
+   * 2.0.0, because the author never bumped the assembly. Preferring it over a declared
+   * version would make good data worse.
+   *
+   * Why collect it at all: for mods that declare no version anywhere else it is the only
+   * signal that exists, and it is often right. Measured across the four mods on the
+   * reference install that declare nothing:
+   *   Epic_Shaders  1.0.1      == Forge's 1.0.1      (exact)
+   *   EpicsAIO      4.0.7      vs Forge's 4.0.8      (a genuine pending update)
+   *   WTT-CAG       1.0.0-pre1 vs Forge's 1.0.0+pre2 (one pre-release behind)
+   *   fika-server   2.0.9      vs Forge's 2.4.0      (behind, or simply unmaintained)
+   * Without it those four have no version at all and drop out of update checking.
+   */
+  assemblyVersion?: string;
 }
 
 /* --- PE structure ------------------------------------------------------------------ */
@@ -452,6 +472,54 @@ function readBepInPlugin(t: Tables): AssemblyModMetadata | null {
   return null;
 }
 
+/**
+ * Reads a single-string assembly-level attribute, e.g. [assembly: AssemblyInformationalVersion("1.0.1+sha")].
+ * Same CustomAttribute walk as the BepInPlugin reader, matching on the attribute type name.
+ */
+function readAssemblyAttributeString(t: Tables, attributeName: string): string | undefined {
+  const caCount = t.rowCounts[T.CustomAttribute];
+  if (!caCount) return undefined;
+
+  for (let i = 1; i <= caCount; i++) {
+    const row = readRow(t, T.CustomAttribute, i);
+    if (!row) continue;
+    const [, typeCoded, valueIdx] = row;
+    if ((typeCoded & 0x07) !== 3) continue; // MemberRef only — these attributes are referenced, not defined here
+    const mr = readRow(t, T.MemberRef, typeCoded >>> 3);
+    if (!mr) continue;
+    const [classCoded] = mr;
+    if ((classCoded & 0x07) !== 1) continue; // TypeRef
+    const tr = readRow(t, T.TypeRef, classCoded >>> 3);
+    if (!tr || readString(t, tr[1]) !== attributeName) continue;
+
+    const blob = blobAt(t, valueIdx);
+    if (!blob) continue;
+    const [value] = decodeStringArgs(blob, 1);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Prefers AssemblyInformationalVersion: it carries the real semver including pre-release
+ * tags ("1.0.0-pre1"), which AssemblyFileVersion cannot represent — it is limited to four
+ * numbers, so "1.0.0-pre1" would flatten to "1.0.0" and compare equal to the release.
+ *
+ * The "+buildmetadata" suffix is stripped: semver ignores it for precedence, and Forge
+ * publishes versions without it.
+ */
+function readAssemblyVersion(t: Tables): string | undefined {
+  const raw =
+    readAssemblyAttributeString(t, "AssemblyInformationalVersionAttribute") ??
+    readAssemblyAttributeString(t, "AssemblyFileVersionAttribute");
+  if (!raw) return undefined;
+  const trimmed = raw.split("+")[0].trim();
+  // A bare "1.0.0.0" is the compiler's default and means the author never set one, so it
+  // says nothing about what was published.
+  if (!trimmed || trimmed === "1.0.0.0" || trimmed === "0.0.0.0") return undefined;
+  return trimmed;
+}
+
 /* --- Server mods: AbstractModMetadata ----------------------------------------------- */
 
 /**
@@ -728,7 +796,11 @@ export function readAssemblyModMetadata(buf: Buffer): AssemblyModMetadata | null
     if (!image) return null;
     const tables = parseTables(image);
     if (!tables) return null;
-    return readAbstractModMetadata(tables) ?? readBepInPlugin(tables);
+    const declared = readAbstractModMetadata(tables) ?? readBepInPlugin(tables);
+    if (!declared) return null;
+    // Always attach the assembly version, but never let it stand in for a declared one —
+    // the caller decides whether to fall back to it.
+    return { ...declared, assemblyVersion: readAssemblyVersion(tables) };
   } catch {
     // A malformed or obfuscated assembly must never break a scan of the whole mod list.
     return null;

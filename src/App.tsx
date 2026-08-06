@@ -1024,7 +1024,14 @@ export default function App() {
 
       {!sptPath ? (
         <div className="empty-state">
-          <h1>SPTarky Mod Manager Spicy</h1>
+          {/* Display name only. Deliberately NOT the package name, productName, or the
+              executable filename - this is the title the app wears, not its identity.
+              "Spicy Edition" is kept unbreakable so the header wraps as
+              "SPTARKY MOD MANAGER / SPICY EDITION" rather than splitting the two words
+              across lines, which is what plain wrapping does at this width. */}
+          <h1>
+            SPTarky Mod Manager <span className="title-unit">Spicy Edition</span>
+          </h1>
           <p>{t("empty.selectFolder")}</p>
           <button onClick={handleSelectFolder}>{t("empty.selectFolderButton")}</button>
           <button onClick={handleOpenModHub}>{t("empty.downloadModsButton")}</button>
@@ -1044,7 +1051,14 @@ export default function App() {
           )}
           <header>
             <div>
-              <h1>SPTarky Mod Manager Spicy</h1>
+              {/* Display name only. Deliberately NOT the package name, productName, or the
+              executable filename - this is the title the app wears, not its identity.
+              "Spicy Edition" is kept unbreakable so the header wraps as
+              "SPTARKY MOD MANAGER / SPICY EDITION" rather than splitting the two words
+              across lines, which is what plain wrapping does at this width. */}
+          <h1>
+            SPTarky Mod Manager <span className="title-unit">Spicy Edition</span>
+          </h1>
               {isSplitInstance ? (
                 <span className="instance-path" title={`Client: ${sptPath}\nServer: ${serverRoot}`}>
                   {t("header.splitInstance", { client: sptPath ?? "", server: serverRoot ?? "" })}
