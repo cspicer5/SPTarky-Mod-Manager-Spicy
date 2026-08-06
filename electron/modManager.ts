@@ -5,6 +5,7 @@ import Seven from "node-7z";
 import { path7za } from "7zip-bin";
 import { createExtractorFromFile } from "node-unrar-js";
 import { ModInfo, ModType, RegistryEntry, ModListComparison } from "./types";
+import { readAssemblyModMetadata } from "./peMetadata";
 
 /**
  * Reads the SPT version from SPT_Data/Server/configs/core.json — the same file SPT's own
@@ -498,7 +499,33 @@ export function readDllModMetadata(dllPath: string): DllModMetadata {
   try {
     const buffer = fs.readFileSync(dllPath);
     if (buffer.length < 2 || buffer[0] !== 0x4d || buffer[1] !== 0x5a) return {}; // not a PE ("MZ")
-    return parseModMetadataFromStrings(extractUtf16Strings(buffer), extractAsciiStrings(buffer));
+
+    // Preferred: read the declared identity out of the CLI metadata tables. This is exact
+    // — an attribute argument or a property assignment, not a string that looked right.
+    const parsed = readAssemblyModMetadata(buffer);
+    if (parsed?.guid) {
+      return {
+        guid: parsed.guid,
+        name: parsed.name,
+        author: parsed.author,
+        version: parsed.version,
+        sptVersion: parsed.sptVersion
+      };
+    }
+
+    // Fallback: the original string-scanning heuristic. Deliberately kept rather than
+    // deleted — it still covers obfuscated assemblies, unusual build shapes, and any case
+    // the parser does not yet understand. Losing a result outright would be worse than an
+    // imprecise one, and the parser's output is preferred whenever it produces a GUID.
+    const scanned = parseModMetadataFromStrings(extractUtf16Strings(buffer), extractAsciiStrings(buffer));
+    // Merge: prefer anything the parser did establish, fill the rest from the scan.
+    return {
+      guid: parsed?.guid ?? scanned.guid,
+      name: parsed?.name ?? scanned.name,
+      author: parsed?.author ?? scanned.author,
+      version: parsed?.version ?? scanned.version,
+      sptVersion: parsed?.sptVersion ?? scanned.sptVersion
+    };
   } catch {
     return {};
   }
@@ -835,12 +862,13 @@ export interface ConflictReport {
  * Compares the SPT version constraint declared by the mod against the instance's version.
  *
  * This is 100% LOCAL: the information comes from the mod's own DLL ("~4.0.0", "4.0.13",
- * "~4.0"), so it works without querying any API at all, and keeps working when the
- * network or Forge is unavailable.
+ * "~4.0"), so it works without querying any API at all.
  *
- * (The original note here claimed this mattered "now that Forge is going offline". That
- * has not happened — the Forge API is alive and is what the update check uses. The local
- * check is still worth having as an offline-capable fallback, which is why it stays.)
+ * That property is about to matter a great deal. The original author noted this mattered
+ * "now that Forge is going offline" — SPT Forge is scheduled to shut down on 2026-08-12.
+ * When it does, every Forge-backed feature in this app stops working, and this local check
+ * becomes the ONLY compatibility information available. Treat it as load-bearing, not as a
+ * fallback. See docs/FORGE-SHUTDOWN.md.
  *
  * Returns "unknown" when the mod declares nothing (3.x mods, or 4.0 mods that omit the
  * field): in that case nothing can be asserted, and asserting would be worse than silence.
