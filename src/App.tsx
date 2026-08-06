@@ -48,6 +48,9 @@ export default function App() {
   // English-only fork: no picker, nothing to persist. Kept as a named constant rather
   // than inlined so every translate()/t()/tMsg() call site stays untouched.
   const lang: Lang = "en";
+  // Relink dialog state — see relinkForgeMatch for why this is not window.prompt().
+  const [relinkTarget, setRelinkTarget] = useState<{ originalName: string; displayName: string } | null>(null);
+  const [relinkInput, setRelinkInput] = useState("");
   function t(key: string, vars?: Record<string, string | number>): string {
     return translate(lang, key, vars);
   }
@@ -744,14 +747,23 @@ export default function App() {
   }
 
   /**
-   * Points a mod at a different Forge entry. Accepts either a bare numeric id or a Forge
-   * URL pasted straight from the browser, because that is what someone actually has to
-   * hand after looking the mod up.
+   * Opens the relink dialog. This is a real modal rather than window.prompt() because
+   * Electron does not implement prompt() at all — calling it throws
+   * "prompt() is and will not be supported." and the button silently does nothing.
+   * (window.confirm IS supported, which is why the removal dialogs elsewhere work.)
    */
-  async function relinkForgeMatch(originalName: string, displayName: string) {
-    const input = window.prompt(t("forge.relinkPrompt", { name: displayName }));
-    if (input === null) return;
-    const trimmed = input.trim();
+  function relinkForgeMatch(originalName: string, displayName: string) {
+    setRelinkTarget({ originalName, displayName });
+    setRelinkInput("");
+  }
+
+  /**
+   * Accepts either a bare numeric id or a Forge URL pasted straight from the browser,
+   * because a URL is what someone actually has to hand after looking a mod up.
+   */
+  async function submitRelink() {
+    if (!relinkTarget) return;
+    const trimmed = relinkInput.trim();
     if (!trimmed) return;
     // "https://forge.sp-tarkov.com/mod/791/sain" -> 791, and a bare "791" -> 791
     const fromUrl = /forge\.sp-tarkov\.com\/mod\/(\d+)/i.exec(trimmed);
@@ -760,7 +772,9 @@ export default function App() {
       pushToast(t("forge.relinkInvalid"), false);
       return;
     }
-    await confirmForgeMatch(originalName, modId, String(modId));
+    const target = relinkTarget;
+    setRelinkTarget(null);
+    await confirmForgeMatch(target.originalName, modId, String(modId));
   }
 
   // Updates without leaving the app: the result's link is a direct download of the
@@ -1545,6 +1559,40 @@ export default function App() {
             <div className="confirm-structure-actions">
               <button onClick={handleConfirmAbort}>{t("confirm.abort")}</button>
               <button onClick={handleConfirmProceed} className="primary">{t("confirm.proceed")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {relinkTarget && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setRelinkTarget(null);
+          }}
+        >
+          <div className="modal-box relink-modal">
+            <div className="modal-header">
+              <strong>{t("forge.relinkTitle", { name: relinkTarget.displayName })}</strong>
+              <button onClick={() => setRelinkTarget(null)} title={t("common.close")}>✕</button>
+            </div>
+            <p className="compare-note">{t("forge.relinkHelp")}</p>
+            <input
+              type="text"
+              autoFocus
+              value={relinkInput}
+              placeholder="https://forge.sp-tarkov.com/mod/791/sain    or    791"
+              onChange={(e) => setRelinkInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitRelink();
+                if (e.key === "Escape") setRelinkTarget(null);
+              }}
+            />
+            <div className="confirm-structure-actions">
+              <button onClick={() => setRelinkTarget(null)}>{t("common.cancel")}</button>
+              <button onClick={submitRelink} className="primary" disabled={!relinkInput.trim()}>
+                {t("forge.relinkSave")}
+              </button>
             </div>
           </div>
         </div>

@@ -1090,6 +1090,19 @@ h2 {
   font-size: 12px;
 }
 
+/* Relink dialog: replaces window.prompt(), which Electron does not implement. */
+.relink-modal {
+  max-width: 520px;
+  width: 100%;
+}
+
+.relink-modal input[type="text"] {
+  width: 100%;
+  margin: 10px 0 4px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
 /* A button that reads as a link: used for the Forge mod name, which opens its page so the
    suggested match can be eyeballed before accepting it. */
 .link-button {

@@ -136,8 +136,10 @@ const en: Dict = {
   "forge.unconfirmedConfirm": "That's correct",
   "forge.unconfirmedRelink": "Wrong — pick another",
   "forge.unconfirmedOpenTitle": "Open this mod's page on Forge to check",
-  "forge.relinkPrompt":
-    "Which Forge mod is \"{name}\"?\n\nPaste the Forge mod URL or enter its numeric ID.\nExample: https://forge.sp-tarkov.com/mod/791/sain   or just   791",
+  "forge.relinkTitle": "Which Forge mod is \"{name}\"?",
+  "forge.relinkHelp":
+    "Find the mod on Forge and paste its page URL here, or enter just the numeric ID. This choice is saved and overrides automatic matching from then on.",
+  "forge.relinkSave": "Link it",
   "forge.relinkInvalid": "That didn't look like a Forge mod URL or ID.",
   "forge.linkSaved": "Linked to {name}. This choice overrides automatic matching from now on.",
 
@@ -151,6 +153,7 @@ const en: Dict = {
   "noResults.clearFilters": "Clear filters",
 
   "common.close": "Close",
+  "common.cancel": "Cancel",
 
   "browse.title": "Search Forge mods",
   "browse.searchPlaceholder": "Search by name, slug, or description...",
