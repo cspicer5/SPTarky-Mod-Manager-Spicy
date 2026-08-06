@@ -41,6 +41,7 @@ import {
   normaliseModKey,
   HeadlessClass
 } from "./headless";
+import { fetchServerSnapshot, buildServerSyncReport, normaliseServerUrl } from "./sptServer";
 import { InstanceConfig, InstanceId, ModInfo } from "./types";
 
 const MOD_HUB_URL = "https://hub.sp-tarkov.com/";
@@ -51,6 +52,7 @@ const store = new Store<InstanceConfig>({
     serverRoot: null,
     headlessPath: null,
     headlessOverrides: null,
+    serverUrl: null,
     sptVersionOverride: null,
     forgeStatusCache: null,
     forgeCheckedAt: null
@@ -248,6 +250,47 @@ ipcMain.handle("get-headless-advice", () => {
       serverCounterparts
     })
   }));
+});
+
+/* --- IPC: live SPT server (remote, READ-ONLY) ------------------------------
+ * There are no write handlers here, by design. The user chose "read-only for remote": the
+ * app reports what differs from the server and never touches it. Writing into a running
+ * server's user/mods can break a raid in progress, and it is usually someone else's machine.
+ */
+ipcMain.handle("get-server-url", () => store.get("serverUrl"));
+
+ipcMain.handle("set-server-url", async (_event, url: string) => {
+  const parsed = normaliseServerUrl(url);
+  if (!parsed) return { success: false, message: "That doesn't look like an address. Try 192.168.1.78:6969." };
+
+  // Verified before saving, so a typo is caught here rather than showing up later as an
+  // empty pane the user has to diagnose.
+  const snapshot = await fetchServerSnapshot(parsed.origin);
+  if (!snapshot.reachable) return { success: false, message: snapshot.error ?? "Could not reach that server." };
+
+  store.set("serverUrl", parsed.origin);
+  return {
+    success: true,
+    url: parsed.origin,
+    message: `Connected to ${parsed.origin} — SPT ${snapshot.sptVersion ?? "?"}, ${snapshot.mods.length} server mod(s).`
+  };
+});
+
+ipcMain.handle("clear-server-url", () => {
+  store.set("serverUrl", null);
+  return { success: true };
+});
+
+ipcMain.handle("get-server-sync", async () => {
+  const serverUrl = store.get("serverUrl");
+  if (!serverUrl) return { configured: false };
+
+  const sptPath = store.get("sptPath");
+  const localMods = sptPath ? scanInstance("main") : [];
+  const localSpt = store.get("sptVersionOverride") ?? (sptPath ? detectSptSemver(sptPath) : undefined);
+
+  const snapshot = await fetchServerSnapshot(serverUrl);
+  return { configured: true, report: buildServerSyncReport(snapshot, localMods, localSpt ?? undefined) };
 });
 
 // The user's judgement outranks every rule — the same escape hatch the Forge matcher has.

@@ -1,19 +1,32 @@
 /**
- * The dual-instance view: the main SPT install on the left, the Fika headless client on the
- * right, and the reconciliation between them down the middle.
+ * The multi-instance view: the main install, a live SPT server, and a Fika headless client,
+ * side by side with the reconciliation between them.
  *
- * The asymmetry between the two panes is deliberate and load-bearing. A headless client is
- * a CLIENT — it loads BepInEx/ and nothing else — so the right-hand pane can never show
- * server mods. Rendering the two sides as mirror images would imply the ~26 server mods in a
- * typical install are "missing" from the headless side, when in fact they cannot exist
- * there. The gutter is where that distinction is made visible.
+ * The three panes are deliberately NOT symmetrical, and the asymmetry is the point:
+ *
+ *   main      a full SPT install — client plugins AND server mods. Read/write.
+ *   server    a running server somewhere on the network. It can only report the server mods
+ *             it has LOADED, so no client plugins appear here and nothing is writable.
+ *   headless  a Fika headless client. Being a client, it loads BepInEx/ only, so it can
+ *             never hold server mods. Read/write.
+ *
+ * Rendering them as mirror images would report every server mod as "missing" from the
+ * headless client and every client plugin as "missing" from the server, when in both cases
+ * the mod cannot exist there at all. Each pane states its own scope under its title.
  *
  * Strings are literal rather than routed through i18n: this fork is English-only by design,
- * so the i18n layer is a pass-through and keys would add indirection without adding a
- * language.
+ * so the i18n layer is a pass-through and keys would add indirection without a language.
  */
 import { useState } from "react";
-import { HeadlessClass, HeadlessVerdict, ModInfo, ParityReport, ParityRow } from "./types";
+import {
+  HeadlessClass,
+  HeadlessVerdict,
+  ModInfo,
+  ParityReport,
+  ParityRow,
+  ServerSyncReport,
+  ServerSyncRow
+} from "./types";
 import "./headless.css";
 
 /**
@@ -53,6 +66,14 @@ const ISSUE_LABEL: Record<string, string> = {
   "headless-only": "Only on headless"
 };
 
+const SERVER_ISSUE_LABEL: Record<string, string> = {
+  "missing-locally": "Install this",
+  "outdated-locally": "Update this",
+  "newer-locally": "Newer here",
+  "not-on-server": "Not on server",
+  "unknown-local-version": "Can't compare"
+};
+
 function VerdictBadge({ verdict }: { verdict: HeadlessVerdict }) {
   return (
     <span
@@ -90,6 +111,58 @@ function OverrideMenu({
   );
 }
 
+/** Chrome shared by every pane, so collapsing behaves identically across all three. */
+function PaneShell({
+  title,
+  subtitle,
+  location,
+  count,
+  collapsed,
+  onToggleCollapse,
+  headerExtra,
+  children
+}: {
+  title: string;
+  subtitle: string;
+  location: string | null;
+  count: number | string;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+  headerExtra?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  if (collapsed) {
+    return (
+      <button className="hl-pane hl-pane-collapsed" onClick={onToggleCollapse} title={`Expand ${title}`}>
+        <span className="hl-collapsed-title">{title}</span>
+        <span className="hl-collapsed-count">{count}</span>
+        <span className="hl-collapsed-hint">▸</span>
+      </button>
+    );
+  }
+  return (
+    <div className="hl-pane">
+      <div className="hl-pane-header">
+        <div>
+          <h2>
+            <button className="hl-collapse-btn" onClick={onToggleCollapse} title={`Collapse ${title}`}>
+              ▾
+            </button>
+            {title}
+          </h2>
+          <span className="hl-pane-sub">{subtitle}</span>
+        </div>
+        <span className="hl-pane-count">{count}</span>
+      </div>
+      <div className="hl-pane-path" title={location ?? ""}>
+        {location ?? "Not configured"}
+      </div>
+      {headerExtra}
+      {children}
+    </div>
+  );
+}
+
 function InstancePane({
   title,
   subtitle,
@@ -102,7 +175,10 @@ function InstancePane({
   onUninstall,
   onOpenFolder,
   emptyMessage,
-  showVerdicts
+  showVerdicts,
+  collapsed,
+  onToggleCollapse,
+  filtersActive
 }: {
   title: string;
   subtitle: string;
@@ -116,14 +192,12 @@ function InstancePane({
   onOpenFolder: (mod: ModInfo) => void;
   emptyMessage: string;
   showVerdicts: boolean;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+  filtersActive: boolean;
 }) {
-  const [query, setQuery] = useState("");
-  const visible = query
-    ? mods.filter((m) => m.name.toLowerCase().includes(query.toLowerCase()))
-    : mods;
-
-  const servers = visible.filter((m) => m.type === "server");
-  const clients = visible.filter((m) => m.type !== "server");
+  const servers = mods.filter((m) => m.type === "server");
+  const clients = mods.filter((m) => m.type !== "server");
 
   const renderRow = (mod: ModInfo) => {
     const row = rowsByKey.get(parityKey(mod));
@@ -169,28 +243,16 @@ function InstancePane({
   };
 
   return (
-    <div className="hl-pane">
-      <div className="hl-pane-header">
-        <div>
-          <h2>{title}</h2>
-          <span className="hl-pane-sub">{subtitle}</span>
-        </div>
-        <span className="hl-pane-count">{mods.length}</span>
-      </div>
-      <div className="hl-pane-path" title={path ?? ""}>
-        {path ?? "Not configured"}
-      </div>
-
-      <input
-        className="hl-search"
-        type="text"
-        placeholder="Filter…"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-      />
-
+    <PaneShell
+      title={title}
+      subtitle={subtitle}
+      location={path}
+      count={mods.length}
+      collapsed={collapsed}
+      onToggleCollapse={onToggleCollapse}
+    >
       {mods.length === 0 ? (
-        <p className="empty-list">{emptyMessage}</p>
+        <p className="empty-list">{filtersActive ? "Nothing here matches the current filters." : emptyMessage}</p>
       ) : (
         <div className="hl-pane-body">
           <h3 className="hl-group-title">
@@ -208,12 +270,188 @@ function InstancePane({
           )}
         </div>
       )}
-    </div>
+    </PaneShell>
   );
 }
 
-/** The break down the middle: what the two sides do and do not agree on. */
-function ParityGutter({ parity }: { parity: ParityReport }) {
+/**
+ * The live server. Read-only, and visibly so — no toggle, no remove, no override. What it
+ * shows is not "the server's mod folder" but "the mods the server has loaded", which is the
+ * only thing it can report about itself.
+ */
+function ServerPane({
+  report,
+  url,
+  collapsed,
+  onToggleCollapse,
+  onChangeServer,
+  onClearServer,
+  query
+}: {
+  report: ServerSyncReport | null;
+  url: string | null;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+  onChangeServer: () => void;
+  onClearServer: () => void;
+  query: string;
+}) {
+  if (!url) {
+    return (
+      <PaneShell
+        title="Server"
+        subtitle="Not connected"
+        location={null}
+        count="—"
+        collapsed={collapsed}
+        onToggleCollapse={onToggleCollapse}
+      >
+        <p className="empty-list">
+          Connect to a running SPT server to see which mods it loads and what you are missing.
+        </p>
+        <div className="hl-pane-actions">
+          <button onClick={onChangeServer} className="primary">
+            Connect to a server
+          </button>
+        </div>
+      </PaneShell>
+    );
+  }
+
+  if (report && !report.reachable) {
+    return (
+      <PaneShell
+        title="Server"
+        subtitle="Unreachable"
+        location={url}
+        count="—"
+        collapsed={collapsed}
+        onToggleCollapse={onToggleCollapse}
+      >
+        <p className="hl-server-error">{report.error}</p>
+        <div className="hl-pane-actions">
+          <button onClick={onChangeServer}>Change address</button>
+          <button onClick={onClearServer}>Disconnect</button>
+        </div>
+      </PaneShell>
+    );
+  }
+
+  const q = query.trim().toLowerCase();
+  const rows = (report?.rows ?? []).filter(
+    (r) => !q || r.name.toLowerCase().includes(q) || (r.serverName ?? "").toLowerCase().includes(q)
+  );
+
+  // The pane counts what the SERVER runs, not the number of rows. Rows also include local
+  // mods the server does not load ("not on server"), and folding those into the headline
+  // number made a 25-mod server read as 32.
+  const serverModCount = (report?.rows ?? []).filter((r) => r.issue !== "not-on-server").length;
+
+  const renderRow = (row: ServerSyncRow) => (
+    <li key={row.key} className={`hl-row ${row.issue ? `hl-issue-server-${row.issue}` : ""}`}>
+      <div className="hl-row-main">
+        <span className="hl-name" title={[row.guid && `GUID: ${row.guid}`, row.serverName && `Server calls it: ${row.serverName}`].filter(Boolean).join("\n")}>
+          {row.name}
+        </span>
+        <span className="hl-version">{row.serverVersion ?? "—"}</span>
+      </div>
+      <div className="hl-row-meta">
+        {row.issue && (
+          <span className={`hl-issue hl-issue-tag-server-${row.issue}`} title={row.detail ?? ""}>
+            {SERVER_ISSUE_LABEL[row.issue] ?? row.issue}
+          </span>
+        )}
+        {row.localVersion && row.serverVersion && row.localVersion !== row.serverVersion && (
+          <span className="hl-server-versions">
+            you {row.localVersion} → {row.serverVersion}
+          </span>
+        )}
+        {/* A name match is weaker than a GUID match and says so, rather than being
+            presented with the same confidence. */}
+        {row.matchedBy === "name" && (
+          <span className="hl-badge hl-unknown" title="Matched by name, not GUID — worth confirming.">
+            name match<em className="hl-guess">?</em>
+          </span>
+        )}
+        {row.url && (
+          <a className="hl-server-src" href={row.url} target="_blank" rel="noreferrer" title={row.url}>
+            source
+          </a>
+        )}
+      </div>
+    </li>
+  );
+
+  const counts = report?.counts;
+
+  return (
+    <PaneShell
+      title="Server"
+      subtitle="Loaded server mods — read only"
+      location={url}
+      count={report ? serverModCount : "…"}
+      collapsed={collapsed}
+      onToggleCollapse={onToggleCollapse}
+      headerExtra={
+        report ? (
+          <div className={`hl-server-status ${report.readyToPlay ? "ok" : "warn"}`}>
+            <strong>{report.readyToPlay ? "Ready to play" : "Not ready"}</strong>
+            <span>
+              SPT {report.sptVersion ?? "?"}
+              {report.sptMatches === false && <em className="hl-spt-mismatch"> ≠ yours ({report.localSptVersion})</em>}
+            </span>
+          </div>
+        ) : undefined
+      }
+    >
+      {counts && (
+        <ul className="hl-server-counts">
+          {counts.needInstalling > 0 && <li className="bad">{counts.needInstalling} to install</li>}
+          {counts.needUpdating > 0 && <li className="bad">{counts.needUpdating} to update</li>}
+          {counts.unknownVersion > 0 && <li>{counts.unknownVersion} can't compare</li>}
+          {counts.newerLocally > 0 && <li className="warn">{counts.newerLocally} newer here</li>}
+          {counts.notOnServer > 0 && <li className="warn">{counts.notOnServer} not on server</li>}
+          <li className="ok">{counts.inSync} in sync</li>
+        </ul>
+      )}
+
+      {rows.length === 0 ? (
+        <p className="empty-list">{query ? "Nothing here matches the search." : "No server mods reported."}</p>
+      ) : (
+        <div className="hl-pane-body">
+          <h3 className="hl-group-title">
+            Server mods <span>loaded</span> ({rows.length})
+          </h3>
+          <ul className="hl-list">{rows.map(renderRow)}</ul>
+        </div>
+      )}
+
+      {report && report.fikaRequired.length === 0 && (
+        <p className="hl-gutter-note">
+          This server declares no required client plugins, so client-side parity cannot be checked against it. The host
+          sets that in <code>fika.jsonc</code> under <code>client.mods.required</code>.
+        </p>
+      )}
+
+      <div className="hl-pane-actions">
+        <button onClick={onChangeServer}>Change address</button>
+        <button onClick={onClearServer}>Disconnect</button>
+      </div>
+    </PaneShell>
+  );
+}
+
+/** The break down the middle: what the two local instances do and do not agree on. */
+function ParityGutter({ parity }: { parity: ParityReport | null }) {
+  if (!parity) {
+    return (
+      <div className="hl-gutter">
+        <div className="hl-gutter-title">Parity</div>
+        <p className="hl-gutter-note">Link a headless client to compare it against the main install.</p>
+      </div>
+    );
+  }
+
   const { counts } = parity;
   const problems = parity.rows.filter((r) => r.issue && r.issue !== "headless-only");
 
@@ -234,7 +472,7 @@ function ParityGutter({ parity }: { parity: ParityReport }) {
         <li className={counts.headlessOnly ? "warn" : ""}>
           <strong>{counts.headlessOnly}</strong> extra
         </li>
-        <li className={counts.needsReview ? "" : ""}>
+        <li>
           <strong>{counts.needsReview}</strong> to review
         </li>
       </ul>
@@ -268,53 +506,82 @@ function ParityGutter({ parity }: { parity: ParityReport }) {
   );
 }
 
-export default function HeadlessView({
+export default function InstancesView({
   mainPath,
   headlessPath,
   mainMods,
   headlessMods,
   parity,
+  server,
+  serverUrl,
+  filtersActive,
   overrides,
   onOverride,
   onToggle,
   onUninstall,
   onOpenFolder,
   onChangeHeadless,
-  onDisableDualMode,
-  onRefresh
+  onChangeServer,
+  onClearServer,
+  onExitMultiMode,
+  onRefresh,
+  refreshing,
+  searchQuery
 }: {
   mainPath: string | null;
   headlessPath: string | null;
   mainMods: ModInfo[];
   headlessMods: ModInfo[];
-  parity: ParityReport;
+  parity: ParityReport | null;
+  server: ServerSyncReport | null;
+  serverUrl: string | null;
+  filtersActive: boolean;
   overrides: Record<string, HeadlessClass>;
   onOverride: (key: string, klass: HeadlessClass | null) => void;
   onToggle: (mod: ModInfo, target: "main" | "headless") => void;
   onUninstall: (mod: ModInfo, target: "main" | "headless") => void;
   onOpenFolder: (mod: ModInfo, target: "main" | "headless") => void;
   onChangeHeadless: () => void;
-  onDisableDualMode: () => void;
+  onChangeServer: () => void;
+  onClearServer: () => void;
+  onExitMultiMode: () => void;
   onRefresh: () => void;
+  refreshing: boolean;
+  /** The shared search box. Applied to the server pane too — it has its own row shape, so
+      it cannot go through applyFilterSort with the local panes. */
+  searchQuery: string;
 }) {
-  const rowsByKey = new Map(parity.rows.map((r) => [r.key, r]));
+  // Collapsed panes are remembered per session so a chosen comparison stays put across a
+  // rescan. Server starts collapsed when nothing is connected — an empty invitation should
+  // not cost a third of the width.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ server: !serverUrl });
+  const toggle = (k: string) => setCollapsed((prev) => ({ ...prev, [k]: !prev[k] }));
+
+  const rowsByKey = new Map((parity?.rows ?? []).map((r) => [r.key, r]));
+  const openCount = ["main", "server", "headless"].filter((k) => !collapsed[k]).length;
 
   return (
     <div className="hl-wrapper">
       <div className="hl-toolbar">
-        <strong>Dual instance</strong>
-        <span className="hl-toolbar-note">Main install and Fika headless client, side by side.</span>
+        <strong>Instances</strong>
+        <span className="hl-toolbar-note">
+          Main install{serverUrl ? ", live server" : ""}
+          {headlessPath ? ", Fika headless client" : ""} — filters and search above apply to every pane.
+        </span>
         <div className="hl-toolbar-actions">
-          <button onClick={onRefresh}>Rescan both</button>
-          <button onClick={onChangeHeadless}>Change headless folder</button>
-          <button onClick={onDisableDualMode}>Exit dual view</button>
+          <button onClick={onRefresh} disabled={refreshing}>
+            {refreshing ? "Rescanning…" : "Rescan all"}
+          </button>
+          <button onClick={onChangeServer}>{serverUrl ? "Change server" : "Add server"}</button>
+          <button onClick={onChangeHeadless}>{headlessPath ? "Change headless" : "Add headless"}</button>
+          <button onClick={onExitMultiMode}>Single view</button>
         </div>
       </div>
 
-      <div className="hl-split">
+      <div className={`hl-split hl-open-${openCount}`}>
         <InstancePane
           title="Main install"
-          subtitle="Client + server"
+          subtitle="Client + server — this machine"
           path={mainPath}
           mods={mainMods}
           rowsByKey={rowsByKey}
@@ -325,6 +592,19 @@ export default function HeadlessView({
           onOpenFolder={(m) => onOpenFolder(m, "main")}
           emptyMessage="No mods found in the main install."
           showVerdicts
+          collapsed={!!collapsed.main}
+          onToggleCollapse={() => toggle("main")}
+          filtersActive={filtersActive}
+        />
+
+        <ServerPane
+          report={server}
+          url={serverUrl}
+          collapsed={!!collapsed.server}
+          onToggleCollapse={() => toggle("server")}
+          onChangeServer={onChangeServer}
+          onClearServer={onClearServer}
+          query={searchQuery}
         />
 
         <ParityGutter parity={parity} />
@@ -342,6 +622,9 @@ export default function HeadlessView({
           onOpenFolder={(m) => onOpenFolder(m, "headless")}
           emptyMessage="No plugins installed on the headless client yet."
           showVerdicts={false}
+          collapsed={!!collapsed.headless}
+          onToggleCollapse={() => toggle("headless")}
+          filtersActive={filtersActive}
         />
       </div>
     </div>

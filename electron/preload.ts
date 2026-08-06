@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   getHeadlessAdvice: () => ipcRenderer.invoke("get-headless-advice"),
   setHeadlessOverride: (modKey: string, klass: string | null) =>
     ipcRenderer.invoke("set-headless-override", modKey, klass),
+
+  // --- live SPT server (remote, read-only: no write methods exposed) ---
+  getServerUrl: () => ipcRenderer.invoke("get-server-url"),
+  setServerUrl: (url: string) => ipcRenderer.invoke("set-server-url", url),
+  clearServerUrl: () => ipcRenderer.invoke("clear-server-url"),
+  getServerSync: () => ipcRenderer.invoke("get-server-sync"),
   exportModList: () => ipcRenderer.invoke("export-mod-list"),
   importModList: () => ipcRenderer.invoke("import-mod-list"),
   getSptVersion: () => ipcRenderer.invoke("get-spt-version"),

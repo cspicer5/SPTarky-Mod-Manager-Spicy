@@ -185,6 +185,55 @@ export interface ParityReport {
   };
 }
 
+/* --- live SPT server ------------------------------------------------------- */
+
+export type ServerSyncIssue =
+  | "missing-locally"
+  | "outdated-locally"
+  | "newer-locally"
+  | "not-on-server"
+  | "unknown-local-version";
+
+export interface ServerSyncRow {
+  key: string;
+  /** Local folder name when matched, otherwise whatever the server declares. */
+  name: string;
+  /** The server's own name, kept only when it differs (Fika's server half calls itself "server"). */
+  serverName?: string;
+  guid?: string;
+  author?: string;
+  serverVersion?: string;
+  localVersion?: string;
+  localModId?: string;
+  issue?: ServerSyncIssue;
+  /** GUID matches are exact; name matches are a weaker fallback and are shown as such. */
+  matchedBy?: "guid" | "name";
+  url?: string;
+  detail?: string;
+}
+
+export interface ServerSyncReport {
+  reachable: boolean;
+  url: string;
+  sptVersion?: string;
+  localSptVersion?: string;
+  sptMatches?: boolean;
+  error?: string;
+  fetchedAt: string;
+  fikaRequired: string[];
+  fikaOptional: string[];
+  rows: ServerSyncRow[];
+  counts: {
+    inSync: number;
+    needUpdating: number;
+    needInstalling: number;
+    newerLocally: number;
+    notOnServer: number;
+    unknownVersion: number;
+  };
+  readyToPlay: boolean;
+}
+
 export interface HeadlessView {
   configured: boolean;
   headlessPath?: string;
@@ -212,6 +261,12 @@ export interface ModManagerAPI {
   getHeadlessView: () => Promise<HeadlessView>;
   getHeadlessAdvice: () => Promise<{ id: string; verdict: HeadlessVerdict }[]>;
   setHeadlessOverride: (modKey: string, klass: HeadlessClass | null) => Promise<{ success: boolean; message?: string }>;
+
+  // --- live SPT server (remote, READ-ONLY — there is deliberately no write method) ---
+  getServerUrl: () => Promise<string | null>;
+  setServerUrl: (url: string) => Promise<{ success: boolean; url?: string; message?: string }>;
+  clearServerUrl: () => Promise<{ success: boolean }>;
+  getServerSync: () => Promise<{ configured: boolean; report?: ServerSyncReport }>;
   exportModList: () => Promise<{ success: boolean; message: string }>;
   importModList: () => Promise<{
     success: boolean;

@@ -42,11 +42,209 @@
 }
 
 /* minmax(0, 1fr) on the panes stops a long mod name forcing the grid wider than the
-   window, which would push the gutter off screen — the one element that must stay. */
+   window, which would push the gutter off screen — the one element that must stay.
+   Collapsed panes shrink to a fixed strip via the auto tracks, so the remaining panes take
+   the freed width instead of leaving a gap. */
+/* Flexbox, not grid, and for one specific reason: a collapsed pane has to give its width
+   BACK to the others. In grid the track stays 1fr however narrow the item inside it gets,
+   so collapsing a pane left a 235px hole and the remaining panes never grew — which defeats
+   the point of collapsing. With flex, `flex: 0 0 auto` on a collapsed pane hands the space
+   straight to the `flex: 1 1 0` siblings.
+   min-width: 0 is what allows a long mod name to be ellipsised rather than forcing the row
+   wider than its pane. */
 .hl-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 260px minmax(0, 1fr);
-  align-items: start;
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+}
+
+.hl-split > .hl-pane {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Three panes at 1100px is genuinely tight, so the layout leans on collapsing rather than
+   pretending otherwise: the fewer panes are open, the more room each one gets. */
+.hl-split > .hl-pane-collapsed {
+  flex: 0 0 auto;
+  width: 34px;
+}
+
+.hl-split > .hl-gutter {
+  flex: 0 0 210px;
+}
+
+.hl-pane-collapsed {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  color: var(--text-dim);
+  min-height: 220px;
+  font-family: var(--font-display);
+}
+
+.hl-pane-collapsed:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.hl-collapsed-title {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 11px;
+}
+
+.hl-collapsed-count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent-strong);
+}
+
+.hl-collapsed-hint {
+  margin-top: auto;
+  font-size: 10px;
+}
+
+.hl-collapse-btn {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  padding: 0 6px 0 0;
+  font-size: 11px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.hl-collapse-btn:hover {
+  color: var(--accent-strong);
+}
+
+.hl-pane-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.hl-pane-actions button {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+/* --- server pane --- */
+.hl-server-status {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+
+.hl-server-status.ok {
+  background: rgba(122, 148, 86, 0.14);
+  color: var(--ok-strong);
+}
+
+.hl-server-status.warn {
+  background: rgba(200, 117, 46, 0.14);
+  color: var(--accent-strong);
+}
+
+.hl-server-status span {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.hl-spt-mismatch {
+  color: var(--danger-strong);
+  font-style: normal;
+}
+
+.hl-server-error {
+  font-size: 11px;
+  color: var(--danger-strong);
+  line-height: 1.5;
+}
+
+.hl-server-counts {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 8px;
+  padding: 0;
+}
+
+.hl-server-counts li {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: var(--radius);
+  background: var(--bg-panel-raised);
+  color: var(--text-dim);
+}
+
+.hl-server-counts li.ok {
+  color: var(--ok-strong);
+}
+
+.hl-server-counts li.warn {
+  color: var(--accent-strong);
+}
+
+.hl-server-counts li.bad {
+  background: rgba(168, 73, 47, 0.18);
+  color: var(--danger-strong);
+}
+
+.hl-server-versions {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.hl-server-src {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-decoration: underline;
+}
+
+.hl-server-src:hover {
+  color: var(--accent-strong);
+}
+
+.hl-issue-tag-missing-locally,
+.hl-issue-tag-outdated-locally {
+  background: rgba(168, 73, 47, 0.18);
+  color: var(--danger-strong);
+}
+
+.hl-issue-tag-newer-locally,
+.hl-issue-tag-not-on-server,
+.hl-issue-tag-unknown-local-version {
+  background: rgba(200, 117, 46, 0.14);
+  color: var(--accent-strong);
+}
+
+.hl-row.hl-issue-server-missing-locally,
+.hl-row.hl-issue-server-outdated-locally {
+  border-left-color: var(--danger);
+}
+
+.hl-row.hl-issue-server-newer-locally,
+.hl-row.hl-issue-server-not-on-server {
+  border-left-color: var(--accent);
 }
 
 .hl-pane {
@@ -402,11 +600,19 @@
   margin-bottom: 0;
 }
 
-/* Below ~980px three columns stop being readable; stack them, keeping the gutter between
-   the two panes so it still reads as the relationship between them, not a footer. */
-@media (max-width: 980px) {
+/* The breakpoint sits BELOW the 1100px default window width on purpose. Set above it, the
+   panes would stack vertically out of the box and the side-by-side layout — the entire
+   point of the view — would only appear if the user happened to maximise the window.
+   Three panes at 1100px are tight; collapsing one is the intended relief. */
+@media (max-width: 900px) {
   .hl-split {
-    grid-template-columns: minmax(0, 1fr);
+    flex-direction: column;
+  }
+
+  .hl-split > .hl-pane,
+  .hl-split > .hl-gutter {
+    flex: 1 1 auto;
+    width: auto;
   }
 
   .hl-gutter {

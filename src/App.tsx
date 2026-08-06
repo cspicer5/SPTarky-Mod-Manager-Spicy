@@ -12,10 +12,11 @@ import {
   AppUpdateInfo,
   HeadlessClass,
   HeadlessView as HeadlessViewData,
-  InstanceId
+  InstanceId,
+  ServerSyncReport
 } from "./types";
 import { Lang, translate, translateBackendMessage } from "./i18n";
-import HeadlessView from "./HeadlessView";
+import InstancesView from "./HeadlessView";
 
 
 interface Toast {
@@ -184,18 +185,24 @@ export default function App() {
     return list;
   }, []);
 
-  /* --- Fika headless client ------------------------------------------------
-   * Dual mode is only ever entered deliberately, and only once a headless install has been
-   * located: an SPT setup without one is the normal case, and the split view would be a
-   * confusing empty half for everyone in it.
+  /* --- multi-instance: main + live server + Fika headless -------------------
+   * Entered deliberately, and only once there is a second instance to show. An SPT setup
+   * with neither a headless client nor a server is the normal case, and the split view
+   * would be a confusing empty half for everyone in it.
    */
   const [headlessPath, setHeadlessPath] = useState<string | null>(null);
-  const [dualMode, setDualMode] = useState(false);
+  const [multiMode, setMultiMode] = useState(false);
   const [headlessData, setHeadlessData] = useState<HeadlessViewData | null>(null);
   const [headlessOverrides, setHeadlessOverrides] = useState<Record<string, HeadlessClass>>({});
+  const [serverUrl, setServerUrl] = useState<string | null>(null);
+  const [serverSync, setServerSync] = useState<ServerSyncReport | null>(null);
+  const [serverPrompt, setServerPrompt] = useState(false);
+  const [serverInput, setServerInput] = useState("");
+  const [multiRefreshing, setMultiRefreshing] = useState(false);
 
   useEffect(() => {
     window.modManagerAPI.getHeadlessPath().then(setHeadlessPath);
+    window.modManagerAPI.getServerUrl().then(setServerUrl);
   }, []);
 
   const refreshHeadless = useCallback(async () => {
@@ -205,9 +212,25 @@ export default function App() {
     return view;
   }, []);
 
+  const refreshServer = useCallback(async () => {
+    const result = await window.modManagerAPI.getServerSync();
+    setServerSync(result.configured ? result.report ?? null : null);
+  }, []);
+
+  // Both sides refresh together so the panes can never show two different scans of the
+  // world — the same reason getHeadlessView returns both mod lists in one call.
+  const refreshMulti = useCallback(async () => {
+    setMultiRefreshing(true);
+    try {
+      await Promise.all([refreshHeadless(), refreshServer()]);
+    } finally {
+      setMultiRefreshing(false);
+    }
+  }, [refreshHeadless, refreshServer]);
+
   useEffect(() => {
-    if (dualMode) void refreshHeadless();
-  }, [dualMode, refreshHeadless]);
+    if (multiMode) void refreshMulti();
+  }, [multiMode, refreshMulti]);
 
   async function handleSelectHeadlessFolder() {
     const result = await window.modManagerAPI.selectHeadlessFolder();
@@ -216,24 +239,43 @@ export default function App() {
       return;
     }
     setHeadlessPath(result.path ?? null);
-    setDualMode(true);
-    await refreshHeadless();
+    setMultiMode(true);
+    await refreshMulti();
     pushToast(result.message ?? "Headless client linked.", true);
   }
 
-  // Entering dual mode without a configured headless install goes straight to the folder
-  // picker, rather than showing an empty right-hand pane and leaving the user to work out
-  // what to do with it.
-  async function handleToggleDualMode() {
-    if (dualMode) {
-      setDualMode(false);
+  async function submitServerUrl() {
+    const value = serverInput.trim();
+    if (!value) return;
+    const result = await window.modManagerAPI.setServerUrl(value);
+    pushToast(result.message ?? (result.success ? "Server linked." : "Couldn't reach that server."), result.success);
+    if (!result.success) return;
+    setServerUrl(result.url ?? value);
+    setServerPrompt(false);
+    setServerInput("");
+    setMultiMode(true);
+    await refreshMulti();
+  }
+
+  async function handleClearServer() {
+    await window.modManagerAPI.clearServerUrl();
+    setServerUrl(null);
+    setServerSync(null);
+    pushToast("Server disconnected.", true);
+  }
+
+  // Entering multi mode with nothing to compare against goes straight to the relevant
+  // picker, rather than showing an empty pane and leaving the user to work out what to do.
+  async function handleToggleMultiMode() {
+    if (multiMode) {
+      setMultiMode(false);
       return;
     }
-    if (!headlessPath) {
+    if (!headlessPath && !serverUrl) {
       await handleSelectHeadlessFolder();
       return;
     }
-    setDualMode(true);
+    setMultiMode(true);
   }
 
   async function handleHeadlessOverride(key: string, klass: HeadlessClass | null) {
@@ -263,6 +305,9 @@ export default function App() {
     if (target === "main") await refreshMods();
   }
 
+  // The server pane has no equivalent of these. It is remote and read-only by design, so
+  // there is no toggle, no removal and no install target — see electron/sptServer.ts.
+
   async function handleInstanceOpenFolder(mod: ModInfo, target: InstanceId) {
     const result = await window.modManagerAPI.openModFolder(mod, target);
     if (!result.success) pushToast(tMsg(result.message), false);
@@ -286,9 +331,12 @@ export default function App() {
     return { total: mods.length, server, client, active, disabled };
   }, [mods]);
 
-  const filteredMods = useMemo(() => {
+  // Extracted from the single-instance list so the multi-instance panes filter and sort by
+  // exactly the same rules. Searching for "SAIN" has to mean the same thing in every pane;
+  // two implementations would drift and the divergence would look like a scanning bug.
+  const applyFilterSort = useCallback((source: ModInfo[]) => {
     const q = searchQuery.trim().toLowerCase();
-    const filtered = mods.filter((m) => {
+    const filtered = source.filter((m) => {
       if (q && !m.name.toLowerCase().includes(q)) return false;
       if (typeFilter !== "all" && m.type !== typeFilter) return false;
       if (statusFilter === "enabled" && !m.enabled) return false;
@@ -343,7 +391,9 @@ export default function App() {
     });
 
     return sorted;
-  }, [mods, searchQuery, typeFilter, statusFilter, originFilter, sortField, sortDirection, forgeStatusByName]);
+  }, [searchQuery, typeFilter, statusFilter, originFilter, sortField, sortDirection, forgeStatusByName]);
+
+  const filteredMods = useMemo(() => applyFilterSort(mods), [applyFilterSort, mods]);
 
   const filtersActive = searchQuery.trim() !== "" || typeFilter !== "all" || statusFilter !== "all" || originFilter !== "all";
 
@@ -1175,15 +1225,15 @@ export default function App() {
               </button>
               <button onClick={handleOpenModHub} title={t("header.openHubTitle")}>{t("header.openHub")}</button>
               <button
-                onClick={handleToggleDualMode}
-                className={dualMode ? "primary" : ""}
+                onClick={handleToggleMultiMode}
+                className={multiMode ? "primary" : ""}
                 title={
-                  headlessPath
-                    ? "Show the main install and the Fika headless client side by side"
-                    : "Link a Fika headless client to manage it alongside this install"
+                  headlessPath || serverUrl
+                    ? "Compare this install against the server and the headless client"
+                    : "Link a Fika headless client or a live server to compare against"
                 }
               >
-                {dualMode ? "Single view" : headlessPath ? "Headless" : "Add headless"}
+                {multiMode ? "Single view" : headlessPath || serverUrl ? "Instances" : "Add instance"}
               </button>
               <button onClick={handleSelectFolder} title={t("header.changeInstanceTitle")}>{t("header.changeInstance")}</button>
               <button onClick={handleInstall} disabled={loading} className="primary" title={t("header.installButtonTitle")}>
@@ -1208,28 +1258,10 @@ export default function App() {
             <span className="summary-item summary-valid" title={t("summary.validInstanceTitle")}>✔ {t("summary.validInstance")}</span>
           </div>
 
-          {/* Dual mode replaces the single mod list wholesale rather than sitting alongside
-              it: the filters, sorting and bulk selection below all act on the main instance
-              alone, and leaving them on screen above a two-instance view would imply they
-              apply to both. */}
-          {dualMode && headlessData?.parity ? (
-            <HeadlessView
-              mainPath={sptPath}
-              headlessPath={headlessData.headlessPath ?? headlessPath}
-              mainMods={headlessData.mainMods ?? []}
-              headlessMods={headlessData.headlessMods ?? []}
-              parity={headlessData.parity}
-              overrides={headlessOverrides}
-              onOverride={handleHeadlessOverride}
-              onToggle={handleInstanceToggle}
-              onUninstall={handleInstanceUninstall}
-              onOpenFolder={handleInstanceOpenFolder}
-              onChangeHeadless={handleSelectHeadlessFolder}
-              onDisableDualMode={() => setDualMode(false)}
-              onRefresh={() => void refreshHeadless()}
-            />
-          ) : (
-          <>
+          {/* Search, filters, sorting and the Forge tools stay on screen in EVERY mode.
+              An earlier version swapped them out when the split view opened, on the theory
+              that they only applied to the main instance — which turned "show me both
+              installs" into "lose the ability to search". They now apply to every pane. */}
           <input
             className="search-bar"
             type="text"
@@ -1538,12 +1570,42 @@ export default function App() {
             </div>
           )}
 
-          <Section title="Server Mods" mods={filteredMods.filter((m) => m.type === "server")} {...listProps} />
-          <Section title="Client Mods" mods={filteredMods.filter((m) => m.type === "client")} {...listProps} />
-          {mods.some((m) => m.type === "hybrid" || m.type === "unknown") && (
-            <Section title="Hybrid / Unknown" mods={filteredMods.filter((m) => m.type === "hybrid" || m.type === "unknown")} {...listProps} />
-          )}
-          </>
+          {/* Only the mod LIST swaps between modes — everything above stays put. */}
+          {multiMode ? (
+            <InstancesView
+              mainPath={sptPath}
+              headlessPath={headlessData?.headlessPath ?? headlessPath}
+              mainMods={applyFilterSort(headlessData?.mainMods ?? mods)}
+              headlessMods={applyFilterSort(headlessData?.headlessMods ?? [])}
+              parity={headlessData?.parity ?? null}
+              server={serverSync}
+              serverUrl={serverUrl}
+              filtersActive={filtersActive}
+              overrides={headlessOverrides}
+              onOverride={handleHeadlessOverride}
+              onToggle={handleInstanceToggle}
+              onUninstall={handleInstanceUninstall}
+              onOpenFolder={handleInstanceOpenFolder}
+              onChangeHeadless={handleSelectHeadlessFolder}
+              onChangeServer={() => setServerPrompt(true)}
+              onClearServer={handleClearServer}
+              onExitMultiMode={() => setMultiMode(false)}
+              onRefresh={() => void refreshMulti()}
+              refreshing={multiRefreshing}
+              searchQuery={searchQuery}
+            />
+          ) : (
+            <>
+              <Section title="Server Mods" mods={filteredMods.filter((m) => m.type === "server")} {...listProps} />
+              <Section title="Client Mods" mods={filteredMods.filter((m) => m.type === "client")} {...listProps} />
+              {mods.some((m) => m.type === "hybrid" || m.type === "unknown") && (
+                <Section
+                  title="Hybrid / Unknown"
+                  mods={filteredMods.filter((m) => m.type === "hybrid" || m.type === "unknown")}
+                  {...listProps}
+                />
+              )}
+            </>
           )}
         </div>
       )}
@@ -1682,6 +1744,43 @@ export default function App() {
             <div className="confirm-structure-actions">
               <button onClick={handleConfirmAbort}>{t("confirm.abort")}</button>
               <button onClick={handleConfirmProceed} className="primary">{t("confirm.proceed")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {serverPrompt && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setServerPrompt(false);
+          }}
+        >
+          <div className="modal-box relink-modal">
+            <div className="modal-header">
+              <strong>Connect to an SPT server</strong>
+              <button onClick={() => setServerPrompt(false)} title={t("common.close")}>✕</button>
+            </div>
+            <p className="compare-note">
+              The address of a running SPT server. It is read only — the app compares your mods against it and never
+              writes to it. SPT 4.x uses HTTPS on port 6969, and its certificate is self-signed, which is expected.
+            </p>
+            <input
+              type="text"
+              autoFocus
+              value={serverInput}
+              placeholder="192.168.1.78:6969"
+              onChange={(e) => setServerInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void submitServerUrl();
+                if (e.key === "Escape") setServerPrompt(false);
+              }}
+            />
+            <div className="confirm-structure-actions">
+              <button onClick={() => setServerPrompt(false)}>{t("common.cancel")}</button>
+              <button onClick={() => void submitServerUrl()} className="primary" disabled={!serverInput.trim()}>
+                Connect
+              </button>
             </div>
           </div>
         </div>

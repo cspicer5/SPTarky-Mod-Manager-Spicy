@@ -3499,7 +3499,11 @@ export interface AppUpdateInfo {
 
 // Compares two semver versions numerically ("0.10.0" > "0.9.0", which a string comparison
 // would get wrong). Ignores a leading "v", common in git tags.
-function compareVersions(a: string, b: string): number {
+//
+// Exported so the remote-server comparison uses the SAME ordering as Forge update checking.
+// Two version comparators in one app would eventually disagree, and the disagreement would
+// surface as "the app says I need an update in one place and not in another".
+export function compareVersions(a: string, b: string): number {
   const parse = (v: string) =>
     v
       .trim()

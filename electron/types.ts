@@ -53,6 +53,11 @@ export interface InstanceConfig {
   // Manual headless classifications, keyed by normalised mod name. The user's judgement
   // outranks every rule, exactly as a manual Forge pin outranks every matching strategy.
   headlessOverrides: Record<string, string> | null;
+  // Address of a live SPT server to compare against, e.g. "192.168.1.78:6969". Deliberately
+  // NOT an InstanceId: a server is remote and read-only, so it can never be the target of a
+  // toggle, an install or a removal. Keeping it out of that union means the type system
+  // refuses to let it become one by accident.
+  serverUrl: string | null;
   sptVersionOverride: string | null;
   forgeStatusCache: { name: string; status: "update" | "blocked" | "incompatible" | "info"; version?: string }[] | null;
   forgeCheckedAt: string | null;

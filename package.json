@@ -22,6 +22,7 @@
     "electron:build": "npm run build && electron-builder",
     "audit:forge": "npm run build && node scripts/audit-forge-match.js",
     "audit:headless": "npm run build && node scripts/audit-headless.js",
+    "audit:server": "npm run build && node scripts/audit-server.js",
     "test:parity": "tsc -p electron/tsconfig.json && node scripts/test-parity.js"
   },
   "dependencies": {
