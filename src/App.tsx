@@ -596,7 +596,16 @@ export default function App() {
     }
     setCheckingForgeUpdates(true);
     setForgeError(null);
-    const payload = mods.map((m) => ({ name: m.name, originalName: m.originalName, version: m.version, guid: m.guid }));
+    const payload = mods.map((m) => ({
+      name: m.name,
+      originalName: m.originalName,
+      version: m.version,
+      guid: m.guid,
+      // Carried through so the backend can inherit a match across parts of one package.
+      // Dropping these leaves every mod in a group of one and quietly disables that.
+      packageId: m.packageId,
+      packageInferred: m.packageInferred
+    }));
     const response = await window.modManagerAPI.checkForgeUpdates(payload, sptVersionInput.trim());
     setCheckingForgeUpdates(false);
     setForgeProgress(null);
@@ -636,7 +645,16 @@ export default function App() {
     const newMods = updatedMods.filter((m) => !previousKeys.has(selectionKey(m)));
     if (newMods.length === 0) return;
 
-    const payload = newMods.map((m) => ({ name: m.name, originalName: m.originalName, version: m.version, guid: m.guid }));
+    const payload = newMods.map((m) => ({
+      name: m.name,
+      originalName: m.originalName,
+      version: m.version,
+      guid: m.guid,
+      // Carried through so the backend can inherit a match across parts of one package.
+      // Dropping these leaves every mod in a group of one and quietly disables that.
+      packageId: m.packageId,
+      packageInferred: m.packageInferred
+    }));
     const response = await window.modManagerAPI.checkForgeUpdates(payload, sptVersionInput.trim());
     if (!response.success || !response.result) return;
 
@@ -687,6 +705,40 @@ export default function App() {
   }
 
   const [updatingModName, setUpdatingModName] = useState<string | null>(null);
+
+  /**
+   * Accepts a guessed match. The pin outranks all automatic strategies from here on, so
+   * the same guess never has to be re-made or re-confirmed.
+   */
+  async function confirmForgeMatch(originalName: string, modId: number, label: string) {
+    const res = await window.modManagerAPI.setForgeMatch(originalName, modId);
+    pushToast(tMsg(res.message) || t("forge.linkSaved", { name: label }), res.success);
+    if (res.success) {
+      setForgeResult((prev) =>
+        prev ? { ...prev, unconfirmed: (prev.unconfirmed ?? []).filter((u) => u.originalName !== originalName) } : prev
+      );
+    }
+  }
+
+  /**
+   * Points a mod at a different Forge entry. Accepts either a bare numeric id or a Forge
+   * URL pasted straight from the browser, because that is what someone actually has to
+   * hand after looking the mod up.
+   */
+  async function relinkForgeMatch(originalName: string, displayName: string) {
+    const input = window.prompt(t("forge.relinkPrompt", { name: displayName }));
+    if (input === null) return;
+    const trimmed = input.trim();
+    if (!trimmed) return;
+    // "https://forge.sp-tarkov.com/mod/791/sain" -> 791, and a bare "791" -> 791
+    const fromUrl = /forge\.sp-tarkov\.com\/mod\/(\d+)/i.exec(trimmed);
+    const modId = Number(fromUrl ? fromUrl[1] : trimmed);
+    if (!Number.isFinite(modId) || modId <= 0) {
+      pushToast(t("forge.relinkInvalid"), false);
+      return;
+    }
+    await confirmForgeMatch(originalName, modId, String(modId));
+  }
 
   // Updates without leaving the app: the result's link is a direct download of the
   // recommended version, so it can go through the same installer used by Forge search —
@@ -1248,6 +1300,36 @@ export default function App() {
                 <p className="compare-note">
                   {t("forge.unmatchedPrefix")} {forgeResult.unmatched.join(", ")}
                 </p>
+              )}
+              {(forgeResult.unconfirmed?.length ?? 0) > 0 && (
+                <div className="unconfirmed-block">
+                  <p><strong>{t("forge.unconfirmedTitle")}</strong></p>
+                  <p className="compare-note">{t("forge.unconfirmedExplain")}</p>
+                  {forgeResult.unconfirmed!.map((u) => (
+                    <div className="unconfirmed-row" key={`unconfirmed-${u.originalName}`}>
+                      <div className="unconfirmed-info">
+                        <span className="unconfirmed-mod">{u.name}</span>
+                        <span className="unconfirmed-arrow">→</span>
+                        <button
+                          className="link-button"
+                          onClick={() => window.modManagerAPI.openReleasePage(u.detailUrl)}
+                          title={t("forge.unconfirmedOpenTitle")}
+                        >
+                          {u.forgeName ?? `#${u.modId}`}
+                        </button>
+                        <span className="package-chip">{u.method}</span>
+                      </div>
+                      <div className="unconfirmed-actions">
+                        <button onClick={() => confirmForgeMatch(u.originalName, u.modId, u.forgeName ?? String(u.modId))}>
+                          {t("forge.unconfirmedConfirm")}
+                        </button>
+                        <button onClick={() => relinkForgeMatch(u.originalName, u.name)}>
+                          {t("forge.unconfirmedRelink")}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
               <p className="compare-note">{t("forge.matchNote")}</p>
             </div>

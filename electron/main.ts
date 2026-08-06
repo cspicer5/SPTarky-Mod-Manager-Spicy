@@ -25,7 +25,9 @@ import {
   findForgeDownloadsForNames,
   checkAppUpdate,
   finalizeUnrecognizedInstall,
-  discardPendingInstall
+  discardPendingInstall,
+  setManualForgeMatch,
+  clearManualForgeMatch
 } from "./modManager";
 import { InstanceConfig, ModInfo } from "./types";
 
@@ -167,7 +169,7 @@ ipcMain.handle(
   }
 );
 
-ipcMain.handle("check-forge-updates", async (_event, mods: { name: string; originalName: string; version?: string; guid?: string }[], sptVersion: string) => {
+ipcMain.handle("check-forge-updates", async (_event, mods: { name: string; originalName: string; version?: string; guid?: string; packageId?: string; packageInferred?: boolean }[], sptVersion: string) => {
   try {
     const result = await checkForgeUpdates(
       mods,
@@ -200,15 +202,48 @@ ipcMain.handle(
 
 ipcMain.handle("get-forge-categories", () => getForgeCategories());
 
+// --- IPC: manual Forge match override ---
+// The escape hatch for everything automation cannot settle: a mod not published on Forge,
+// one whose identity is genuinely ambiguous, or a guess the user knows to be wrong. A pin
+// outranks every automatic strategy and is never overwritten by them.
+ipcMain.handle("set-forge-match", (_event, originalName: string, modId: number) => {
+  const sptPath = store.get("sptPath");
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
+  if (!originalName || !Number.isFinite(modId) || modId <= 0) {
+    return { success: false, message: "A valid Forge mod ID is required." };
+  }
+  try {
+    setManualForgeMatch(sptPath, originalName, modId);
+    return { success: true, message: `Linked "${originalName}" to Forge mod ${modId}.` };
+  } catch (err: any) {
+    return { success: false, message: err?.message || "Couldn't save the link." };
+  }
+});
+
+ipcMain.handle("clear-forge-match", (_event, originalName: string) => {
+  const sptPath = store.get("sptPath");
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
+  try {
+    clearManualForgeMatch(sptPath, originalName);
+    return { success: true, message: `Removed the manual link for "${originalName}".` };
+  } catch (err: any) {
+    return { success: false, message: err?.message || "Couldn't remove the link." };
+  }
+});
+
 ipcMain.handle("check-app-update", () => checkAppUpdate(app.getVersion()));
 
 ipcMain.handle("open-release-page", (_event, url: string) => {
-  // Only opens a Forge mod page or a release on our own repo — the URL comes from the
-  // renderer process, which is not trusted enough to tell the OS to open arbitrary
-  // things in a browser.
+  // Allowlist, because the URL arrives from the renderer process, which is not trusted
+  // enough to tell the OS to open arbitrary things in a browser.
+  //
+  // Permits any Forge mod page (needed by the "needs confirmation" flow, which links to
+  // the mod a guess resolved to so it can be eyeballed) plus this fork's own repository.
+  // The upstream repo is deliberately no longer allowed — see the note on the self-update
+  // check in modManager.ts.
   const allowed =
-    /^https:\/\/forge\.sp-tarkov\.com\/mod\/2851\//.test(url) ||
-    /^https:\/\/github\.com\/Nevek20\/SPT_Mod_Manager\//.test(url);
+    /^https:\/\/forge\.sp-tarkov\.com\/mod\/\d+/.test(url) ||
+    /^https:\/\/github\.com\/cspicer5\/SPTarky-Mod-Manager-Spicy(\/|$)/.test(url);
   if (allowed) {
     shell.openExternal(url);
     return { success: true };

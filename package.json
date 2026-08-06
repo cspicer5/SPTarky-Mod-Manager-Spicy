@@ -1,9 +1,12 @@
 {
-  "name": "spt-mod-manager",
-  "version": "0.4.5",
-  "description": "A Mod Manager for Single Player Tarkov (SPT)",
+  "name": "sptarky-mod-manager-spicy",
+  "version": "1.0.0",
+  "description": "A Mod Manager for Single Player Tarkov (SPT). Fork of SPT Mod Manager by Matheus Guida (TioEmir).",
   "license": "MIT",
-  "author": "TioEmir",
+  "author": "cspicer5",
+  "contributors": [
+    "Matheus Guida (TioEmir) — original SPT Mod Manager"
+  ],
   "keywords": [
     "spt",
     "single-player-tarkov",
@@ -45,7 +48,7 @@
   "build": {
     "appId": "com.emir.sptmodmanager",
     "productName": "SPT Mod Manager",
-    "copyright": "Copyright © 2026 TioEmir",
+    "copyright": "Copyright © 2026 cspicer5. Based on SPT Mod Manager © 2026 Matheus Guida (TioEmir), MIT.",
     "files": [
       "dist/**/*",
       "dist-electron/**/*"
