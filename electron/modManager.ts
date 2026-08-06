@@ -2397,39 +2397,40 @@ async function fetchForgeByGuids(guids: string[], budget: ForgeBudget): Promise<
 }
 
 /**
- * Resolve vários mods de uma vez. Retorna um mapa nome-da-pasta -> casamento.
- * Faz o grosso em poucas requisições em lote e só cai pra busca individual
- * (full-text) no que sobrar.
+ * Resolves many mods at once. Returns a map of folder-name -> match.
+ * Does the bulk in a few batched requests and only falls back to per-mod (full-text)
+ * lookups for whatever is left.
  */
 /**
- * Cache de casamento: nome-da-pasta -> GUID resolvido na Forge.
+ * Match cache: folder-name -> the Forge id it resolved to.
  *
- * Achar um mod que NÃO declara GUID custa até 4 consultas (slug, nome, sem prefixo,
- * busca textual), e o ritmo é limitado pela API — ~1,2s por mod. Guardando o GUID
- * descoberto, a checagem seguinte resolve esse mod junto com os outros na consulta em
- * lote por GUID, que é uma requisição pra cada 25 mods. Na prática: a primeira checagem
- * é lenta, as próximas são quase instantâneas.
+ * Finding a mod that does NOT declare a GUID costs several queries, and the pace is capped
+ * by the API — roughly a second per mod. Storing what was discovered means the next check
+ * resolves that mod alongside the others in the batched query, which is one request per 25
+ * mods. In practice: the first check is slow, subsequent ones are near-instant.
  */
 const FORGE_MATCH_CACHE_FILE = ".spt-mod-manager-forge-match.json";
 
 /**
- * IMPORTANTE: o cache guarda o ID NUMÉRICO da Forge, não o guid.
+ * The cache stores Forge's NUMERIC ID, not the guid, because the id always exists while
+ * the guid may be null.
  *
- * Conferido numa resposta real da API: de 11 mods retornados numa busca, 8 tinham
- * "guid": null — só o autor que registra um GUID na plataforma tem esse campo. O id
- * numérico existe sempre. Guardar guid aqui deixava o cache inútil justamente pros mods
- * que mais precisam dele (os que não têm guid e caem nas estratégias lentas por nome).
+ * Historical note: an earlier version of this comment reported that 8 of 11 mods in a
+ * sample had "guid": null. That is no longer representative — measured against the live
+ * API, 100% of the 150 most recently created mods and ~74% of the top 100 by downloads now
+ * publish a guid. GUID matching is therefore the primary path, not a lucky case. The id is
+ * still what gets cached, since it is the one identifier guaranteed to be present.
  */
 /**
- * Formato v2. O v1 era um mapa cru pasta -> id, sem registrar COMO aquilo foi
- * descoberto — então um chute ruim virava verdade permanente: uma vez gravado, todas as
- * checagens seguintes reusavam o id errado e nunca reconsideravam. Foi assim que
- * "fika-server" ficou preso em "Server Value Modifier [SVM]".
+ * Format v2. v1 was a raw folder -> id map with no record of HOW that was discovered — so
+ * a bad guess became permanent truth: once written, every later check reused the wrong id
+ * and never reconsidered. That is how "fika-server" got stuck on "Server Value Modifier
+ * [SVM]".
  *
- * No v2 cada entrada guarda o método. Entradas "fuzzy" (chute) são revalidadas; entradas
- * "manual" (o usuário confirmou na mão) são soberanas e nunca sobrescritas por
- * automação. Um cache v1 é DESCARTADO na leitura: não dá pra saber quais entradas dele
- * eram chute, e manter as boas não compensa manter as ruins.
+ * In v2 each entry stores its method. "fuzzy" entries (guesses) are re-validated; "manual"
+ * entries (confirmed by the user) are sovereign and never overwritten by automation. A v1
+ * cache is DISCARDED on read: there is no way to tell which of its entries were guesses,
+ * and keeping the good ones is not worth keeping the bad ones.
  */
 const FORGE_MATCH_CACHE_VERSION = 2;
 
@@ -2448,7 +2449,7 @@ function loadForgeMatchCache(root: string): ForgeMatchCache {
     if (!fs.existsSync(file)) return {};
     const parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
     if (!parsed || typeof parsed !== "object") return {};
-    // v1: mapa cru pasta -> "1234". Sem procedência, não dá pra confiar em nada dele.
+    // v1: raw folder -> "1234" map. With no provenance, none of it can be trusted.
     if (parsed.version !== FORGE_MATCH_CACHE_VERSION) return {};
     const entries = parsed.entries;
     if (!entries || typeof entries !== "object") return {};
@@ -2469,18 +2470,18 @@ function saveForgeMatchCache(root: string, cache: ForgeMatchCache): void {
     const payload = { version: FORGE_MATCH_CACHE_VERSION, entries: cache };
     fs.writeFileSync(path.join(root, FORGE_MATCH_CACHE_FILE), JSON.stringify(payload, null, 2), "utf-8");
   } catch {
-    // cache é otimização, não pode derrubar a checagem se falhar ao gravar
+    // the cache is an optimisation; a failed write must not bring the check down
   }
 }
 
-/** Ligação feita à mão pelo usuário — tem precedência sobre qualquer automação. */
+/** A link made by hand by the user — takes precedence over any automation. */
 export function setManualForgeMatch(root: string, folderName: string, modId: number | string): void {
   const cache = loadForgeMatchCache(root);
   cache[folderName] = { modId: String(modId), method: "manual", verifiedAt: new Date().toISOString() };
   saveForgeMatchCache(root, cache);
 }
 
-/** Desfaz a ligação manual, devolvendo o mod pro caminho automático. */
+/** Undoes the manual link, returning the mod to the automatic path. */
 export function clearManualForgeMatch(root: string, folderName: string): void {
   const cache = loadForgeMatchCache(root);
   if (cache[folderName]?.method === "manual") {
@@ -2511,14 +2512,14 @@ export async function matchForgeMods(
   const folderNames = entries.map((e) => e.folderName);
   const budget = newForgeBudget(folderNames.length);
   const matched = new Map<string, ForgeMatch>();
-  // Mods que o orçamento de requisições não alcançou — diferente de "procurado e não
-  // achado", e a UI precisa dizer isso com honestidade.
+  // Mods the request budget never reached — different from "searched and not found", and
+  // the UI needs to say so honestly.
   const notChecked = new Set<string>();
-  // O progresso conta MODS RESOLVIDOS, não tentativas. Contar tentativas dava um total
-  // de "mods x 4 estratégias" (552 pra 136 mods), que na tela parecia uma quantidade
-  // absurda de mods — e escondia o fato de que, com GUID, a maioria resolve de primeira,
-  // numa requisição em lote só. Um mod conta como pronto quando casa, ou quando esgota
-  // todas as estratégias.
+  // Progress counts RESOLVED MODS, not attempts. Counting attempts gave a total of
+  // "mods x 4 strategies" (552 for 136 mods), which looked on screen like an absurd number
+  // of mods — and hid the fact that, with GUIDs, most resolve on the first try in a single
+  // batched request. A mod counts as done when it matches, or when it exhausts every
+  // strategy.
   let exhausted = 0;
   const reportProgress = () =>
     onProgress?.(Math.min(matched.size + exhausted, folderNames.length), folderNames.length);
@@ -2528,10 +2529,10 @@ export async function matchForgeMods(
   }
 
   // --- Passo 0: GUID (exato e em lote de verdade) ---
-  // De longe o melhor caminho: filter[guid] aceita lista separada por vírgula e não é
-  // fuzzy, então dezenas de mods se resolvem numa requisição só, sem chute por nome.
-  // Só funciona pra mods que declaram GUID (SPT 4.0); o resto cai nos passos seguintes.
-  // Lote por ID numérico: cobre tudo que já foi resolvido antes, inclusive mods sem guid.
+  // By far the best path: filter[guid] accepts a comma-separated list and is not fuzzy, so
+  // dozens of mods resolve in a single request with no name guessing. Only works for mods
+  // that declare a GUID (SPT 4.0); the rest fall through to the steps below.
+  // Batch by numeric id: covers everything resolved previously, including mods with no guid.
   const cachedEntries = entries.filter((e) => e.cachedId);
   if (cachedEntries.length > 0) {
     const byId = new Map<string, any>();
@@ -2555,27 +2556,27 @@ export async function matchForgeMods(
       const hit = byGuid.get(String(entry.guid).toLowerCase());
       if (hit) matched.set(entry.folderName, toForgeMatch(hit, "guid"));
     }
-    reportProgress(); // com GUID, a maioria já fica pronta aqui
+    reportProgress(); // with GUIDs, most are already done at this point
   }
 
   // --- Busca por nome, mod a mod ---
   //
-  // São no MÁXIMO 2 requisições por mod: o filtro por nome e, se falhar, a busca textual.
+  // At MOST two requests per mod: the name filter and, failing that, the full-text search.
   //
-  // A estratégia por slug foi removida: o slug da Forge é derivado do nome PUBLICADO, que
-  // é justamente o que a gente não sabe. Conferido na API real — o slug do SAIN é
-  // "sain-solarints-ai-modifications-full-ai-combat-system-replacement", enquanto o do
-  // Wedge é só "wedge". Ou seja, o slug só acerta quando é igual ao nome, e nesse caso a
-  // busca por nome já acha. Em compensação ela custava até 2 requisições por mod.
+  // The slug strategy was removed: Forge's slug is derived from the PUBLISHED name, which
+  // is precisely what we do not know. Verified against the live API — SAIN's slug is
+  // "sain-solarints-ai-modifications-full-ai-combat-system-replacement", while Wedge's is
+  // just "wedge". In other words, the slug only hits when it equals the name, and in that
+  // case the name lookup already finds it. Meanwhile it cost up to 2 requests per mod.
   //
-  // Isso importa porque o orçamento é limitado pelo rate limit da Forge: com 6 requisições
-  // por mod, uma instalação de 136 mods estourava o orçamento na metade da lista, e os
-  // mods restantes eram reportados como "não encontrado" sem nunca terem sido consultados.
+  // This matters because the budget is bounded by Forge's rate limit: at 6 requests per
+  // mod, a 136-mod installation blew the budget halfway down the list, and the remaining
+  // mods were reported as "not found" without ever having been queried.
   for (const [folderName, cand] of candidatesByName) {
-    if (matched.has(folderName)) continue; // já resolvido pelos lotes de id/guid
+    if (matched.has(folderName)) continue; // already resolved by the id/guid batches
     if (budget.aborted) break;
 
-    // 1) filtro por nome (fuzzy — o resultado SEMPRE passa por verificação)
+    // 1) name filter (the result ALWAYS goes through verification)
     for (const name of cand.strictNames) {
       const hits = await fetchForgeByFuzzyFilter("name", name, budget);
       const exact = hits.find((entry) => normalizeForCompare(entry?.name ?? "") === normalizeForCompare(name));
@@ -2587,11 +2588,11 @@ export async function matchForgeMods(
       if (budget.aborted) break;
     }
 
-    // 2) nome sem o prefixo do autor ("Tyfon.UIFixes" -> "UI Fixes")
+    // 2) name with the author prefix stripped ("Tyfon.UIFixes" -> "UI Fixes")
     //
-    // Aqui a verificação é mais rígida: sem o autor, o nome vira genérico ("Pause",
-    // "Skipper") e um prefixo qualquer casaria com o mod errado. Só aceita se o nome
-    // publicado for igual, ou se o autor na Forge confirmar.
+    // Verification is stricter here: without the author, the name turns generic ("Pause",
+    // "Skipper") and any prefix would match the wrong mod. Only accepted if the published
+    // name is identical, or the Forge author confirms it.
     if (!matched.has(folderName) && !budget.aborted) {
       for (const name of cand.looseNames.slice(0, 1)) {
         const hits = await fetchForgeByFuzzyFilter("name", name, budget);
@@ -2638,24 +2639,24 @@ export async function matchForgeMods(
     }
 
     if (!matched.has(folderName)) {
-      // Só conta como "procurado e não achado" se realmente deu pra procurar. Se o
-      // orçamento acabou, esse mod não foi consultado — e dizer "não encontrado" nesse
-      // caso é mentira.
+      // Only counts as "searched and not found" if searching was actually possible. If the
+      // budget ran out, this mod was never queried — and saying "not found" in that case
+      // would be a lie.
       if (budget.aborted || budget.remaining <= 0) notChecked.add(folderName);
       else exhausted++;
     }
     reportProgress();
   }
 
-  // Mods que sobraram sem ser consultados (orçamento acabou antes de chegar neles).
+  // Mods left unqueried (the budget ran out before reaching them).
   for (const [folderName] of candidatesByName) {
     if (!matched.has(folderName) && !notChecked.has(folderName) && (budget.aborted || budget.remaining <= 0)) {
       notChecked.add(folderName);
     }
   }
 
-  // Fecha o progresso: se o orçamento foi interrompido, sobram mods que não foram nem
-  // casados nem esgotados — a operação acabou de qualquer forma.
+  // Close out progress: if the budget was interrupted, some mods were neither matched nor
+  // exhausted — the operation is over either way.
   exhausted = folderNames.length - matched.size;
   reportProgress();
 
@@ -2713,25 +2714,25 @@ async function findForgeModInfo(
   }
 }
 
-// Acha, pelo nome (o mesmo casamento exato usado na checagem de atualização), o link de
-// download da versão mais recente de um mod na Forge — usado pra "restaurar" uma modlist
-// importada baixando automaticamente o que estiver faltando.
+// Finds, by name (the same matching used by the update check), the download link for a
+// mod's latest version on Forge — used to "restore" an imported modlist
+// by automatically downloading whatever is missing.
 /**
- * Versão em LOTE da busca por link de download, usada pra restaurar uma modlist.
+ * BATCHED version of the download-link lookup, used when restoring a modlist.
  *
- * Antes o restaurador chamava findForgeDownloadForName uma vez por mod. Cada chamada
- * criava um orçamento NOVO, então a proteção de "desistir depois de 3 respostas 429"
- * reiniciava a cada mod: bastava a API começar a limitar pra que cada um dos 118 mods
- * esperasse o Retry-After (até 35s) por conta própria. Compartilhando um orçamento só,
- * a operação inteira desiste junto e termina em tempo previsível.
+ * Previously the restorer called findForgeDownloadForName once per mod. Each call created
+ * a NEW budget, so the "give up after 3 x 429" protection reset for every mod: once the
+ * API started limiting, each of 118 mods would wait out its own Retry-After (up to 35s).
+ * Sharing a single budget means the whole operation gives up together and finishes in
+ * predictable time.
  */
 export async function findForgeDownloadsForNames(
   entries: { name: string; guid?: string }[],
   onProgress?: (done: number, total: number) => void,
   cacheRoot?: string
 ): Promise<Record<string, { downloadLink: string; version?: string; forgeName?: string; guid?: string }>> {
-  // Quando a lista exportada traz o GUID, o casamento é exato e resolvido em lote —
-  // sem adivinhação por nome. Listas antigas (sem GUID) continuam funcionando pelo nome.
+  // When the exported list carries GUIDs, matching is exact and resolved in a batch — no
+  // name guessing. Older lists (without GUIDs) still work via the name path.
   const matches = await matchForgeMods(
     entries.map((e) => ({ folderName: e.name, guid: e.guid })),
     onProgress,
@@ -2753,9 +2754,9 @@ export async function findForgeDownloadsForNames(
       continue;
     }
 
-    // Casou com o mod na Forge, mas a resposta não trouxe o link de download. Em vez de
-    // desistir em silêncio (o sintoma era "importa, mostra a diferença e não baixa
-    // nada"), busca as versões desse mod diretamente pelo identificador.
+    // Matched the mod on Forge, but the response carried no download link. Rather than
+    // giving up silently (the symptom was "imports, shows the difference, downloads
+    // nothing"), fetch that mod's versions directly by identifier.
     const url = new URL(`${FORGE_API_BASE}/mods`);
     url.searchParams.set("filter[guid]", info.identifier);
     url.searchParams.set("per_page", "1");
@@ -2775,12 +2776,12 @@ export async function findForgeDownloadForName(
   name: string,
   sptVersion?: string
 ): Promise<{ found: boolean; downloadLink?: string; version?: string; forgeName?: string }> {
-  // Usa o mesmo matcher multi-estratégia da checagem de atualização, pra que
+  // Uses the same multi-strategy matcher as the update check, so that
   // restaurar uma modlist ache tanto quanto ela acha.
   const matches = await matchForgeMods([name]);
   const info = matches.get(name);
   if (!info || !info.latestVersionLink) {
-    // Fallback: casamento por nome exato com filtro de versão do SPT aplicado.
+    // Fallback: exact name match with the SPT version filter applied.
     const exact = await findForgeModInfo(name, sptVersion);
     if (!exact || !exact.latestVersionLink) return { found: false };
     return { found: true, downloadLink: exact.latestVersionLink, version: exact.latestVersion, forgeName: exact.forgeName };
