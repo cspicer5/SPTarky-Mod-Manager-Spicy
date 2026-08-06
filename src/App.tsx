@@ -2251,7 +2251,7 @@ export default function App() {
                               : "Starting…"}
                     </p>
                     {bulkProgress && bulkProgress.total > 0 && (
-                      <div className="bulk-bar">
+                      <div className="bulk-progress-bar">
                         <div style={{ width: `${Math.round((100 * bulkProgress.done) / bulkProgress.total)}%` }} />
                       </div>
                     )}

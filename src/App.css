@@ -1242,14 +1242,17 @@ button:hover > .btn-scope {
   margin: 8px 0;
 }
 
-.bulk-bar {
+/* Named for the reinstall specifically, NOT ".bulk-bar" — that already belongs to the
+   floating "N selected" action bar. The collision applied height:4px and overflow:hidden to
+   it, squashing it to a sliver with its buttons clipped out of sight. */
+.bulk-progress-bar {
   height: 4px;
   background: var(--bg);
   border-radius: var(--radius);
   overflow: hidden;
 }
 
-.bulk-bar > div {
+.bulk-progress-bar > div {
   height: 100%;
   background: var(--accent);
   transition: width 0.2s ease;

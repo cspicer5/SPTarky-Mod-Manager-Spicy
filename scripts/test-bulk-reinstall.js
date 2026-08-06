@@ -78,6 +78,32 @@ check("the new server package.json survived", read(path.join(SERVER, "user", "mo
 check("uninstalled mod's folder NOT recreated", fs.existsSync(path.join(CLIENT, "BepInEx", "plugins", "dvize.Donuts")), false);
 check("restored count excludes the vanished mod", restored, 4);
 
+console.log("\ndisabled mods must not come back as a second, enabled copy");
+{
+  // Reinstalling always writes to the ENABLED location. Without putting the mod back where
+  // it was, a disabled mod ends up installed twice — one disabled (the old one) and one
+  // enabled (the new one), which is what happened to LootingBots.
+  const { toggleMod, resolveModPath } = require(path.join(dist, "modManager.js"));
+  const inst = path.join(root, "inst2");
+  write(path.join(inst, "BepInEx", "plugins.disabled", "skwizzy.LootingBots.dll"), "OLD disabled copy");
+  // The reinstall lands here, enabled.
+  write(path.join(inst, "BepInEx", "plugins", "skwizzy.LootingBots.dll"), "NEW copy");
+
+  const mod = { id: "skwizzy.LootingBots.dll", name: "skwizzy.LootingBots", type: "client", enabled: true };
+  const stale = resolveModPath(inst, inst, { id: mod.id, type: mod.type, enabled: false });
+  if (fs.existsSync(stale)) fs.rmSync(stale, { recursive: true, force: true });
+  const res = toggleMod(inst, inst, mod);
+
+  check("toggle back to disabled succeeded", res.success, true);
+  check("no enabled copy left", fs.existsSync(path.join(inst, "BepInEx", "plugins", "skwizzy.LootingBots.dll")), false);
+  check("exactly one disabled copy", fs.existsSync(path.join(inst, "BepInEx", "plugins.disabled", "skwizzy.LootingBots.dll")), true);
+  check(
+    "and it is the NEW build, not the stale one",
+    fs.readFileSync(path.join(inst, "BepInEx", "plugins.disabled", "skwizzy.LootingBots.dll"), "utf-8"),
+    "NEW copy"
+  );
+}
+
 console.log("\neligibility");
 const mods = [
   { id: "Real", type: "client", manifestOnly: false },

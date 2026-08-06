@@ -445,12 +445,31 @@ ipcMain.handle("run-bulk-reinstall", async (_event, opts: { sptVersion?: string;
           report({ phase: "install", done: index, total: mods.length, current: mod.name, message: `${receivedBytes}/${totalBytes}` }),
         { name: hit.name, version: hit.version, guid: hit.guid, origin: hit.origin, sourceUrl: hit.sourceUrl }
       );
+      // A mod that was DISABLED must come back disabled.
+      //
+      // Installing always writes to the enabled location, so reinstalling a disabled mod
+      // produced a second, enabled copy sitting beside the old disabled one — which is how
+      // LootingBots ended up installed twice. Putting the new copy back where the old one
+      // was both restores the user's choice and consumes the stale copy, because moving it
+      // there overwrites what is already sitting in that slot.
+      let stateNote: string | undefined;
+      if (result.success && !mod.enabled) {
+        try {
+          const stale = resolveModPath(roots.clientRoot, roots.serverRoot, { id: mod.id, type: mod.type, enabled: false });
+          if (fs.existsSync(stale)) fs.rmSync(stale, { recursive: true, force: true });
+          const toggled = toggleMod(roots.clientRoot, roots.serverRoot, { ...mod, enabled: true });
+          stateNote = toggled.success ? undefined : "reinstalled, but could not be set back to disabled";
+        } catch (err: any) {
+          stateNote = `reinstalled, but could not be set back to disabled (${err?.message ?? err})`;
+        }
+      }
+
       outcomes.push({
         name: mod.name,
         status: result.success ? "reinstalled" : "failed",
         fromVersion: mod.version,
         toVersion: result.success ? hit.version : undefined,
-        detail: result.success ? undefined : result.message
+        detail: result.success ? stateNote : result.message
       });
     } catch (err: any) {
       outcomes.push({ name: mod.name, status: "failed", fromVersion: mod.version, detail: err?.message ?? String(err) });
