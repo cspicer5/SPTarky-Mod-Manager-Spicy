@@ -9,6 +9,10 @@ export interface ModInfo {
   installedManually: boolean;
   loadOrder: number;
   version?: string;
+  /** Where this mod's code lives — the route to update checks once Forge is gone. */
+  sourceUrl?: string;
+  /** "owner/repo" when the source is GitHub. */
+  sourceRepo?: string;
   /**
    * Where `version` came from. "recorded" is the strongest — what the app actually installed,
    * with the files unchanged since — and it outranks the mod's own declaration, because
@@ -265,6 +269,24 @@ export interface AppRelease {
   isCurrent: boolean;
 }
 
+/* --- GitHub as a mod source ------------------------------------------------- */
+
+export interface GithubAsset {
+  name: string;
+  url: string;
+  size: number;
+}
+
+export interface GithubReleaseDetail {
+  tag: string;
+  version: string;
+  name: string;
+  publishedAt?: string;
+  prerelease: boolean;
+  notes?: string;
+  assets: GithubAsset[];
+}
+
 /* --- bulk reinstall --------------------------------------------------------- */
 
 export interface BulkReinstallProgress {
@@ -366,16 +388,28 @@ export interface ModManagerAPI {
   getHeadlessAdvice: () => Promise<{ id: string; verdict: HeadlessVerdict }[]>;
   setHeadlessOverride: (modKey: string, klass: HeadlessClass | null) => Promise<{ success: boolean; message?: string }>;
 
+  // --- installing from GitHub (works after Forge shuts down) ---
+  githubListReleases: (repoOrUrl: string) => Promise<{ repo?: string; releases: GithubReleaseDetail[]; error?: string }>;
+  githubInstallRelease: (args: {
+    jobId: string;
+    assetUrl: string;
+    assetName: string;
+    repo: string;
+    version: string;
+    releaseUrl?: string;
+  }) => Promise<InstallResult>;
+
   // --- bulk reinstall (see electron/bulkReinstall.ts for the safeguards) ---
   previewBulkReinstall: () => Promise<{
     success: boolean;
     modCount?: number;
     withoutRecord?: number;
+    withRepo?: number;
     configDirs?: number;
     sptVersion?: string;
     message?: string;
   }>;
-  runBulkReinstall: (opts: { sptVersion?: string }) => Promise<{
+  runBulkReinstall: (opts: { sptVersion?: string; source?: "forge" | "github" }) => Promise<{
     success: boolean;
     message: string;
     backupDir?: string;

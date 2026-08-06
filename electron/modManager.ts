@@ -347,11 +347,20 @@ function ensureDir(dirPath: string) {
  * in the metadata class.
  * ------------------------------------------------------------------------ */
 
+/**
+ * What the place a mod came FROM said about it. Named for Forge because that was the only
+ * source when it was written; a GitHub release fills the same role and sets `origin`
+ * accordingly, which is what keeps the recorded version honest about where it came from.
+ */
 export interface ForgeInstallInfo {
   name?: string;
   author?: string;
   version?: string;
   guid?: string;
+  /** Defaults to "forge" when a version is supplied and this is not set. */
+  origin?: VersionOrigin;
+  /** The release or mod page, kept so the mod can be checked for updates later. */
+  sourceUrl?: string;
 }
 
 export interface DllModMetadata {
@@ -1430,8 +1439,13 @@ export async function installModFromArchive(
 
     if (forgeInfo?.version) {
       installedVersion = forgeInfo.version;
-      versionOrigin = "forge";
-      versionEvidence = forgeInfo.name ? `Forge: ${forgeInfo.name} ${forgeInfo.version}` : `Forge ${forgeInfo.version}`;
+      versionOrigin = forgeInfo.origin ?? "forge";
+      versionEvidence =
+        versionOrigin === "github"
+          ? `GitHub release ${forgeInfo.version}${forgeInfo.sourceUrl ? ` — ${forgeInfo.sourceUrl}` : ""}`
+          : forgeInfo.name
+            ? `Forge: ${forgeInfo.name} ${forgeInfo.version}`
+            : `Forge ${forgeInfo.version}`;
     } else {
       const fromName = versionFromArchiveName(archivePath);
       if (fromName) {

@@ -405,9 +405,11 @@ export default function App() {
   const [bulkPreview, setBulkPreview] = useState<{
     modCount?: number;
     withoutRecord?: number;
+    withRepo?: number;
     configDirs?: number;
     sptVersion?: string;
   } | null>(null);
+  const [bulkSource, setBulkSource] = useState<"forge" | "github">("forge");
   const [bulkRunning, setBulkRunning] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<BulkReinstallProgress | null>(null);
   const [bulkResult, setBulkResult] = useState<{
@@ -443,7 +445,10 @@ export default function App() {
     setBulkResult(null);
     setBulkProgress(null);
     try {
-      const result = await window.modManagerAPI.runBulkReinstall({ sptVersion: bulkPreview?.sptVersion });
+      const result = await window.modManagerAPI.runBulkReinstall({
+        sptVersion: bulkPreview?.sptVersion,
+        source: bulkSource
+      });
       setBulkResult({ message: result.message, outcomes: result.outcomes, counts: result.counts });
       pushToast(result.message, result.success);
       await refreshMods();
@@ -2178,6 +2183,39 @@ export default function App() {
                   This re-downloads and replaces <strong>all {bulkPreview.modCount} installed mods</strong> with the
                   latest version for SPT {bulkPreview.sptVersion ?? "?"}. It is the most destructive thing this app does.
                 </p>
+
+                {/* Forge dies on 2026-08-10; GitHub does not. Offering both is what keeps
+                    this feature working afterwards. */}
+                <div className="bulk-source">
+                  <label className={bulkSource === "forge" ? "active" : ""}>
+                    <input
+                      type="radio"
+                      checked={bulkSource === "forge"}
+                      onChange={() => setBulkSource("forge")}
+                      disabled={bulkRunning}
+                    />
+                    <span>
+                      <strong>Forge</strong>
+                      <em>Resolves all {bulkPreview.modCount} in one batched pass. Stops working after 10 August.</em>
+                    </span>
+                  </label>
+                  <label className={bulkSource === "github" ? "active" : ""}>
+                    <input
+                      type="radio"
+                      checked={bulkSource === "github"}
+                      onChange={() => setBulkSource("github")}
+                      disabled={bulkRunning}
+                    />
+                    <span>
+                      <strong>GitHub</strong>
+                      <em>
+                        {bulkPreview.withRepo ?? 0} of {bulkPreview.modCount} have a known repository. Keeps working
+                        after Forge closes, but GitHub allows only 60 requests an hour without a token — one run uses
+                        most of that.
+                      </em>
+                    </span>
+                  </label>
+                </div>
 
                 <ul className="bulk-facts">
                   <li>

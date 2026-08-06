@@ -23,6 +23,17 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   setHeadlessOverride: (modKey: string, klass: string | null) =>
     ipcRenderer.invoke("set-headless-override", modKey, klass),
 
+  // --- installing from GitHub (the route that outlives Forge) ---
+  githubListReleases: (repoOrUrl: string) => ipcRenderer.invoke("github-list-releases", repoOrUrl),
+  githubInstallRelease: (args: {
+    jobId: string;
+    assetUrl: string;
+    assetName: string;
+    repo: string;
+    version: string;
+    releaseUrl?: string;
+  }) => ipcRenderer.invoke("github-install-release", args),
+
   // --- bulk reinstall ---
   previewBulkReinstall: () => ipcRenderer.invoke("preview-bulk-reinstall"),
   runBulkReinstall: (opts: { sptVersion?: string }) => ipcRenderer.invoke("run-bulk-reinstall", opts),

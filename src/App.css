@@ -1313,3 +1313,48 @@ button:hover > .btn-scope {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Choosing where a bulk reinstall downloads from. Forge disappears on 2026-08-10; GitHub
+   does not, which is the whole reason this choice exists. */
+.bulk-source {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.bulk-source label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  background: var(--bg-panel-raised);
+}
+
+.bulk-source label.active {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.bulk-source input {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.bulk-source strong {
+  display: block;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.bulk-source em {
+  display: block;
+  font-style: normal;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  margin-top: 2px;
+}

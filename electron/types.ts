@@ -28,6 +28,14 @@ export interface ModInfo {
   versionEvidence?: string;
   /** Set when the recorded and declared versions disagree — the interesting case. */
   declaredVersion?: string;
+  /**
+   * Where this mod's code lives. The route to checking for updates once Forge is gone:
+   * GitHub's releases API needs no authentication, but only if the repository is known.
+   * Derived from the Forge match cache plus the pre-shutdown harvest, not stored.
+   */
+  sourceUrl?: string;
+  /** "owner/repo" when the source is GitHub — what the releases API takes. */
+  sourceRepo?: string;
   assemblyVersion?: string; // the assembly's own version, kept for the fallback above
   author?: string; // read from the mod's package.json, when present
   installedAt?: string; // ISO date of when the app installed it (local registry)

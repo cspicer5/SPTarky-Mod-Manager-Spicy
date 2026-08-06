@@ -63,6 +63,7 @@ import {
   BulkReinstallProgress,
   BulkReinstallOutcome
 } from "./bulkReinstall";
+import { listGithubReleases, loadInstanceSources, fetchLatestGithubRelease } from "./modSources";
 import { InstanceConfig, InstanceId, ModInfo } from "./types";
 
 const MOD_HUB_URL = "https://hub.sp-tarkov.com/";
@@ -110,10 +111,20 @@ function scanInstance(target: InstanceId): ModInfo[] {
   const roots = rootsFor(target);
   if (!roots) return [];
   const instanceVersion = store.get("sptVersionOverride") ?? detectSptSemver(roots.clientRoot);
-  return scanMods(roots.clientRoot, roots.serverRoot).map((mod) => ({
-    ...mod,
-    sptCompatibility: checkSptCompatibility(mod.sptVersion, instanceVersion ?? undefined)
-  }));
+  // Where each mod's code lives, derived from the Forge match cache plus the pre-shutdown
+  // harvest. Attached here rather than stored, so it stays correct without a migration and
+  // covers mods installed by hand too. This is what makes update checking possible after
+  // Forge is gone: GitHub's releases API needs no auth, only the repository.
+  const sources = loadInstanceSources(roots.clientRoot);
+  return scanMods(roots.clientRoot, roots.serverRoot).map((mod) => {
+    const source = sources[mod.id] ?? sources[mod.originalName];
+    return {
+      ...mod,
+      sptCompatibility: checkSptCompatibility(mod.sptVersion, instanceVersion ?? undefined),
+      sourceUrl: source?.url,
+      sourceRepo: source?.repo
+    };
+  });
 }
 
 function headlessOverrides(): Record<string, HeadlessClass> {
@@ -273,6 +284,37 @@ ipcMain.handle("get-headless-advice", () => {
   }));
 });
 
+/* --- IPC: installing from GitHub --------------------------------------------
+ * The route that outlives Forge. Paste a repository, pick a release, install it — and the
+ * release tag becomes the recorded version, which is more reliable than what most mods
+ * declare about themselves.
+ */
+ipcMain.handle("github-list-releases", (_event, repoOrUrl: string) => listGithubReleases(repoOrUrl));
+
+ipcMain.handle(
+  "github-install-release",
+  async (_event, args: { jobId: string; assetUrl: string; assetName: string; repo: string; version: string; releaseUrl?: string }) => {
+    const roots = rootsFor("main");
+    if (!roots) return { success: false, message: "No SPT instance configured." };
+    return installForgeModVersion(
+      roots.clientRoot,
+      roots.serverRoot,
+      args.assetUrl,
+      // The repository name is a better guess at the mod's name than the asset filename,
+      // which is usually the mod name plus a version that would end up in the folder name.
+      args.repo.split("/")[1] ?? args.assetName,
+      (receivedBytes, totalBytes) => {
+        mainWindow?.webContents.send("download-progress", { jobId: args.jobId, receivedBytes, totalBytes });
+      },
+      {
+        version: args.version,
+        origin: "github",
+        sourceUrl: args.releaseUrl ?? `https://github.com/${args.repo}`
+      }
+    );
+  }
+);
+
 /* --- IPC: bulk reinstall ----------------------------------------------------
  * The most destructive thing the app can do, and the only way to give mods that were never
  * installed through it a real recorded version. See electron/bulkReinstall.ts for why each
@@ -284,16 +326,19 @@ ipcMain.handle("preview-bulk-reinstall", () => {
   const mods = reinstallableMods(scanInstance("main"));
   const configDirs = collectConfigPaths(roots.clientRoot, roots.serverRoot);
   const withoutRecord = mods.filter((m) => m.versionSource !== "recorded").length;
+  // How many could be reinstalled from GitHub, which is what still works after 2026-08-10.
+  const withRepo = mods.filter((m) => m.sourceRepo).length;
   return {
     success: true,
     modCount: mods.length,
     withoutRecord,
+    withRepo,
     configDirs: configDirs.length,
     sptVersion: localSptVersion()
   };
 });
 
-ipcMain.handle("run-bulk-reinstall", async (_event, opts: { sptVersion?: string }) => {
+ipcMain.handle("run-bulk-reinstall", async (_event, opts: { sptVersion?: string; source?: "forge" | "github" }) => {
   const roots = rootsFor("main");
   if (!roots) return { success: false, message: "No SPT instance configured.", outcomes: [], counts: null };
 
@@ -315,23 +360,75 @@ ipcMain.handle("run-bulk-reinstall", async (_event, opts: { sptVersion?: string 
     };
   }
 
-  // One batched pass through the matcher rather than a lookup per mod — it resolves by GUID
-  // in batches and shares the rate-limit budget.
+  const source = opts?.source ?? "forge";
+
+  /**
+   * Where each mod's download comes from.
+   *
+   * Forge resolves in one batched pass (by GUID, sharing the rate-limit budget). GitHub has
+   * to be one request per repository, and unauthenticated GitHub allows only 60 an hour —
+   * so a 59-mod install spends essentially the whole budget on a single run. That is a real
+   * constraint, surfaced in the dialog rather than discovered as a wall of 403s.
+   */
+  type Resolved = { downloadLink: string; version?: string; name?: string; guid?: string; origin: "forge" | "github"; sourceUrl?: string };
+  const resolved = new Map<string, Resolved>();
+
   report({ phase: "resolve", done: 0, total: mods.length, message: "Looking mods up…" });
-  const found = await findForgeDownloadsForNames(
-    mods.map((m) => ({ name: m.originalName, guid: m.guid })),
-    (done, total) => report({ phase: "resolve", done, total }),
-    roots.clientRoot
-  );
+
+  if (source === "github") {
+    let done = 0;
+    for (const mod of mods) {
+      done++;
+      report({ phase: "resolve", done, total: mods.length, current: mod.name });
+      if (!mod.sourceRepo) continue;
+      const release = await fetchLatestGithubRelease(mod.sourceRepo);
+      if (release.error || !release.assetUrl) continue;
+      resolved.set(mod.id, {
+        downloadLink: release.assetUrl,
+        version: release.version,
+        name: mod.originalName,
+        origin: "github",
+        sourceUrl: release.url
+      });
+    }
+  } else {
+    const found = await findForgeDownloadsForNames(
+      mods.map((m) => ({ name: m.originalName, guid: m.guid })),
+      (done, total) => report({ phase: "resolve", done, total }),
+      roots.clientRoot
+    );
+    for (const mod of mods) {
+      const hit = found[mod.originalName];
+      if (hit?.downloadLink) {
+        resolved.set(mod.id, {
+          downloadLink: hit.downloadLink,
+          version: hit.version,
+          name: hit.forgeName,
+          guid: hit.guid,
+          origin: "forge"
+        });
+      }
+    }
+  }
 
   let index = 0;
   for (const mod of mods) {
     index++;
     report({ phase: "install", done: index, total: mods.length, current: mod.name });
-    const hit = found[mod.originalName];
-    if (!hit?.downloadLink) {
+    const hit = resolved.get(mod.id);
+    if (!hit) {
       // Not resolvable is NOT a reason to remove anything — the existing copy stays.
-      outcomes.push({ name: mod.name, status: "not-found", fromVersion: mod.version, detail: "Couldn't find it to download." });
+      outcomes.push({
+        name: mod.name,
+        status: "not-found",
+        fromVersion: mod.version,
+        detail:
+          source === "github"
+            ? mod.sourceRepo
+              ? `No downloadable release on ${mod.sourceRepo}.`
+              : "No known GitHub repository for this mod."
+            : "Couldn't find it on Forge."
+      });
       continue;
     }
     try {
@@ -339,10 +436,10 @@ ipcMain.handle("run-bulk-reinstall", async (_event, opts: { sptVersion?: string 
         roots.clientRoot,
         roots.serverRoot,
         hit.downloadLink,
-        hit.forgeName ?? mod.originalName,
+        hit.name ?? mod.originalName,
         (receivedBytes, totalBytes) =>
           report({ phase: "install", done: index, total: mods.length, current: mod.name, message: `${receivedBytes}/${totalBytes}` }),
-        { name: hit.forgeName, version: hit.version, guid: hit.guid }
+        { name: hit.name, version: hit.version, guid: hit.guid, origin: hit.origin, sourceUrl: hit.sourceUrl }
       );
       outcomes.push({
         name: mod.name,
@@ -379,7 +476,8 @@ ipcMain.handle("run-bulk-reinstall", async (_event, opts: { sptVersion?: string 
     outcomes,
     counts,
     message:
-      `Reinstalled ${counts.reinstalled} of ${mods.length} mod(s); restored ${restored} config file(s).` +
+      `Reinstalled ${counts.reinstalled} of ${mods.length} mod(s) from ${source === "github" ? "GitHub" : "Forge"}; ` +
+      `restored ${restored} config file(s).` +
       (counts.notFound ? ` ${counts.notFound} could not be found and were left alone.` : "") +
       (counts.failed ? ` ${counts.failed} failed.` : "") +
       ` Configuration backup kept at ${backup.dir}`
