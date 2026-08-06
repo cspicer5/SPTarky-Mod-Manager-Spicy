@@ -1136,9 +1136,19 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
     return key;
   };
 
+  // Mods that ALREADY have a registry packageId are included in this pool, not skipped.
+  // Skipping them (the original behaviour) created a blind spot: a mod installed through
+  // the app gets a registry package containing only what was in that one archive. If its
+  // other half was installed separately, the halves could never pair up — the registry one
+  // was excluded from inference, leaving the other alone in its key group.
+  //
+  // Real example: BorkelRNVG (client, installed via the app) and BorkelRNVGServer
+  // (installed by hand). Both reduce to the key "borkelrnvg" and have different types, so
+  // they should obviously pair — but the client half was locked out, so neither grouped,
+  // and the server half went unmatched against Forge as a result.
   const byFolderName = new Map<string, ModInfo[]>();
   for (const mod of mods) {
-    if (mod.packageId || mod.manifestOnly) continue;
+    if (mod.manifestOnly) continue;
     const key = packageBaseKey(mod.id);
     if (!key) continue;
     if (!byFolderName.has(key)) byFolderName.set(key, []);
@@ -1146,15 +1156,37 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
   }
   for (const [key, group] of byFolderName) {
     const distinctTypes = new Set(group.map((m) => m.type));
-    if (group.length >= 2 && distinctTypes.size >= 2) {
-      for (const mod of group) {
-        mod.packageId = `inferred:${key}`;
-        // Record the other parts: their names can differ, so the toggle has no way to
-        // rediscover them on its own.
-        mod.packageSiblings = group
-          .filter((other) => !(other.id === mod.id && other.type === mod.type))
-          .map((other) => ({ id: other.id, type: other.type }));
-      }
+    if (group.length < 2 || distinctTypes.size < 2) continue;
+
+    // If members already belong to registry packages, only adopt when there is at most ONE
+    // such package in the group. Two distinct registry packages sharing a name key means
+    // the key is ambiguous, and merging them would cascade a toggle across mods that were
+    // deliberately installed as separate packages.
+    const existingPackageIds = new Set(
+      group.map((m) => m.packageId).filter((id): id is string => !!id && !id.startsWith("inferred:"))
+    );
+    if (existingPackageIds.size > 1) continue;
+
+    // Prefer the registry package id when one exists: it is a record of what actually
+    // shipped together, which outranks a name-derived guess.
+    const groupId = existingPackageIds.size === 1 ? [...existingPackageIds][0] : `inferred:${key}`;
+
+    for (const mod of group) {
+      // Trust follows the EVIDENCE, not the label. A mod joining a registry package purely
+      // because its folder name looks similar is a name guess wearing a registry id — it
+      // must not inherit that id's credibility. Only members that already carried this
+      // packageId were genuinely recorded as shipping together.
+      //
+      // Concretely: BorkelRNVGServer joins BorkelRNVG's registry package on name
+      // similarity alone. The pairing is very likely right, but the evidence for it is the
+      // folder name, so anything inherited through that link is flagged for confirmation.
+      if (mod.packageId !== groupId) mod.packageInferred = true;
+      mod.packageId = groupId;
+      // Record the other parts: their names can differ, so the toggle has no way to
+      // rediscover them on its own.
+      mod.packageSiblings = group
+        .filter((other) => !(other.id === mod.id && other.type === mod.type))
+        .map((other) => ({ id: other.id, type: other.type }));
     }
   }
 
@@ -2192,11 +2224,19 @@ type ForgeMatchMethod =
   | "guid" // GUID declared by the mod == published guid. No ambiguity possible.
   | "cached-id" // numeric id from an earlier check, re-validated now
   | "name" // published name identical to what we searched for
+  | "sibling" // inherited from another part of the same installed package
   | "fuzzy"; // full-text search + plausibility — THIS IS A GUESS and may be wrong
 
-/** Only "fuzzy" needs human confirmation; everything else is verifiable. */
-function methodNeedsConfirmation(method: ForgeMatchMethod): boolean {
-  return method === "fuzzy";
+/**
+ * "fuzzy" always needs confirmation. "sibling" depends on how the package was established:
+ * a registry package is a record of what actually shipped in one archive (hard evidence),
+ * while an inferred package is a name-similarity guess. The caller signals which via
+ * groupTrusted, so this takes an explicit flag rather than deciding from the method alone.
+ */
+function methodNeedsConfirmation(method: ForgeMatchMethod, groupTrusted = true): boolean {
+  if (method === "fuzzy") return true;
+  if (method === "sibling") return !groupTrusted;
+  return false;
 }
 
 interface ForgeMatch {
@@ -2214,18 +2254,19 @@ interface ForgeMatch {
   forgeGuid?: string;
 }
 
-function toForgeMatch(entry: any, method: ForgeMatchMethod): ForgeMatch {
+function toForgeMatch(entry: any, method: ForgeMatchMethod, groupTrusted = true): ForgeMatch {
   const versions = Array.isArray(entry.versions) ? entry.versions : [];
   const latest = versions[0];
+  const needsConfirmation = methodNeedsConfirmation(method, groupTrusted);
   return {
     identifier: typeof entry.guid === "string" ? entry.guid : String(entry.id),
     modId: Number(entry.id),
     latestVersion: latest?.version,
     latestVersionLink: latest?.link,
     forgeName: typeof entry.name === "string" ? entry.name : undefined,
-    confidence: method === "fuzzy" ? "derived" : "exact",
+    confidence: needsConfirmation ? "derived" : "exact",
     method,
-    needsConfirmation: methodNeedsConfirmation(method),
+    needsConfirmation,
     forgeGuid: typeof entry.guid === "string" ? entry.guid : undefined
   };
 }
@@ -2474,6 +2515,28 @@ function saveForgeMatchCache(root: string, cache: ForgeMatchCache): void {
   }
 }
 
+/**
+ * Turns scanned mods into matcher input, deriving the package grouping used for sibling
+ * propagation. Shared by the update check and the audit script so both measure the same
+ * thing — a divergence there would make the audit's numbers meaningless.
+ *
+ * A packageId beginning with "inferred:" came from folder-name similarity rather than an
+ * install record, so the grouping is marked untrusted and anything inherited through it is
+ * flagged for confirmation.
+ */
+export function buildForgeMatchInput(
+  mods: Pick<ModInfo, "originalName" | "guid" | "packageId" | "packageInferred">[]
+): ForgeMatchInput[] {
+  return mods.map((m) => ({
+    folderName: m.originalName,
+    guid: m.guid,
+    groupKey: m.packageId,
+    // Untrusted if the package id is itself inferred, OR if this particular mod joined an
+    // otherwise-real package by name similarity (see the note in scanMods).
+    groupTrusted: m.packageId ? !m.packageId.startsWith("inferred:") && !m.packageInferred : undefined
+  }));
+}
+
 /** A link made by hand by the user — takes precedence over any automation. */
 export function setManualForgeMatch(root: string, folderName: string, modId: number | string): void {
   const cache = loadForgeMatchCache(root);
@@ -2490,8 +2553,27 @@ export function clearManualForgeMatch(root: string, folderName: string): void {
   }
 }
 
+export interface ForgeMatchInput {
+  folderName: string;
+  guid?: string;
+  /**
+   * Identifies the installed package this mod is part of. Parts of one package are the
+   * same Forge mod, so a part that cannot be resolved on its own can inherit the match
+   * from a sibling that could. Without this, the server half of a mod whose folder name
+   * differs from the client half (BorkelRNVG / BorkelRNVGServer) is reported as missing
+   * even though the mod was found.
+   */
+  groupKey?: string;
+  /**
+   * Whether the grouping is evidence or inference. A registry package records what
+   * actually shipped in one archive; an inferred package is a name-similarity guess.
+   * Inherited matches from an inferred group are flagged for confirmation.
+   */
+  groupTrusted?: boolean;
+}
+
 export async function matchForgeMods(
-  input: (string | { folderName: string; guid?: string })[],
+  input: (string | ForgeMatchInput)[],
   onProgress?: (done: number, total: number) => void,
   cacheRoot?: string
 ): Promise<Map<string, ForgeMatch> & { notChecked?: Set<string> }> {
@@ -2648,6 +2730,60 @@ export async function matchForgeMods(
     reportProgress();
   }
 
+  /* --- Sibling propagation ---------------------------------------------------------
+   * Parts of one installed package are, by definition, the same Forge mod. So a part that
+   * could not be resolved on its own inherits the match from a sibling that could.
+   *
+   * This costs no requests — it is pure bookkeeping over results already fetched.
+   *
+   * Measured on a real 54-mod install: HollywoodGraphics declares the guid
+   * "com.janky.hollywoodgraphics", which is not published on Forge, so every lookup
+   * strategy failed. But it shipped in the same archive as HollywoodFX, which resolved by
+   * GUID to [2003] — so it is not a missing mod, it is a component of a found one.
+   *
+   * The inherited match is only as trustworthy as the grouping: a registry package is a
+   * record of one archive (trusted), an inferred package is a name guess (flagged).
+   * Preference order matters — inherit from the most reliable sibling available, so a
+   * GUID-resolved sibling wins over one that was itself a guess.
+   */
+  const METHOD_RANK: Record<ForgeMatchMethod, number> = {
+    manual: 0,
+    guid: 1,
+    "cached-id": 2,
+    name: 3,
+    sibling: 4,
+    fuzzy: 5
+  };
+  const byGroup = new Map<string, typeof entries>();
+  for (const entry of entries) {
+    if (!entry.groupKey) continue;
+    if (!byGroup.has(entry.groupKey)) byGroup.set(entry.groupKey, []);
+    byGroup.get(entry.groupKey)!.push(entry);
+  }
+  for (const [, members] of byGroup) {
+    const unresolved = members.filter((m) => !matched.has(m.folderName));
+    if (unresolved.length === 0) continue;
+
+    // Never inherit from a guess: propagating a fuzzy match would multiply one bad guess
+    // across every part of the package.
+    const donors = members
+      .map((m) => matched.get(m.folderName))
+      .filter((m): m is ForgeMatch => !!m && m.method !== "fuzzy")
+      .sort((a, b) => METHOD_RANK[a.method] - METHOD_RANK[b.method]);
+    const donor = donors[0];
+    if (!donor) continue;
+
+    for (const target of unresolved) {
+      matched.set(target.folderName, {
+        ...donor,
+        method: "sibling",
+        needsConfirmation: methodNeedsConfirmation("sibling", target.groupTrusted !== false),
+        confidence: target.groupTrusted !== false ? "exact" : "derived"
+      });
+      notChecked.delete(target.folderName);
+    }
+  }
+
   // Mods left unqueried (the budget ran out before reaching them).
   for (const [folderName] of candidatesByName) {
     if (!matched.has(folderName) && !notChecked.has(folderName) && (budget.aborted || budget.remaining <= 0)) {
@@ -2669,7 +2805,10 @@ export async function matchForgeMods(
     for (const [folderName, match] of matched) {
       if (!match.modId) continue;
       if (cache[folderName]?.method === "manual") continue;
-      if (match.method === "fuzzy") continue;
+      // Nothing unconfirmed is persisted — not just fuzzy matches, but any inherited match
+      // from an inferred group too. Caching an unconfirmed result is precisely how a guess
+      // hardens into permanent truth.
+      if (match.needsConfirmation) continue;
       updated[folderName] = {
         modId: String(match.modId),
         method: match.method,
@@ -2815,11 +2954,7 @@ export async function checkForgeUpdates(
   const localVersionByName = new Map<string, string>();
   for (const m of mods) if (m.version) localVersionByName.set(m.name, m.version);
 
-  const matches = await matchForgeMods(
-    mods.map((m) => ({ folderName: m.originalName, guid: m.guid })),
-    onProgress,
-    cacheRoot
-  );
+  const matches = await matchForgeMods(buildForgeMatchInput(mods), onProgress, cacheRoot);
 
   const notChecked = (matches as Map<string, ForgeMatch> & { notChecked?: Set<string> }).notChecked;
   for (const mod of mods) {
