@@ -47,6 +47,25 @@ function scenario(name, { stagingHasExe }) {
     /* the script starts the "app" and deletes itself; a non-zero exit is not meaningful */
   }
 
+  // The swap script relaunches the app with `start "" "<exe>"`, which is correct in
+  // production. Here the "exe" is a dummy .cmd, and Windows opens .cmd files with /K — so
+  // each run left a console window sitting open on a directory this test is about to
+  // delete, showing "The system cannot find the path specified". Harmless but noisy, and
+  // one leaked per test run. Closed by matching the temp directory in the command line.
+  try {
+    execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        `Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" | Where-Object { $_.CommandLine -like '*${path.basename(root)}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`
+      ],
+      { stdio: "ignore", timeout: 20000 }
+    );
+  } catch {
+    /* best effort — a leftover window must never fail the test */
+  }
+
   const read = (f) => (fs.existsSync(path.join(install, f)) ? fs.readFileSync(path.join(install, f), "utf-8") : null);
   const result = {
     installExists: fs.existsSync(install),
