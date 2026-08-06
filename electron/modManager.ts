@@ -2301,67 +2301,69 @@ async function forgeFetchJson(url: string, budget: ForgeBudget, retriedAfter429 
 }
 
 /* ==========================================================================
- * ATENÇÃO — BUG DA API, e a causa raiz de "não acha quase nada":
+ * WARNING — API BUG, and the root cause of "it finds almost nothing":
  *
- * Passar filter[include_legacy] junto com QUALQUER outro filter[...] faz a API
- * ignorar o outro filtro em silêncio e devolver o catálogo inteiro sem filtrar,
- * com HTTP 200. Conferido contra a API real:
+ * Passing filter[include_legacy] alongside ANY other filter[...] makes the API silently
+ * ignore the other filter and return the entire unfiltered catalogue, with HTTP 200.
+ * Verified against the live API:
  *
- *   filter[id]=791                                -> [791] SAIN                  (certo)
- *   filter[id]=791 + filter[include_legacy]=true  -> [2] More Variety, [3] ...    (catálogo cru)
- *   filter[id]=791,902                            -> [791] SAIN, [902] BigBrain  (lote funciona!)
- *   filter[name]=BigBrain                         -> [902] BigBrain              (certo)
- *   filter[name]=BigBrain + include_legacy        -> mesma lista de lixo
- *   filter[name]=qualquer_bobagem + include_legacy-> MESMA lista de lixo
+ *   filter[id]=791                                -> [791] SAIN                  (correct)
+ *   filter[id]=791 + filter[include_legacy]=true  -> [2] More Variety, [3] ...    (raw catalogue)
+ *   filter[id]=791,902                            -> [791] SAIN, [902] BigBrain  (batching works!)
+ *   filter[name]=BigBrain                         -> [902] BigBrain              (correct)
+ *   filter[name]=BigBrain + include_legacy        -> same junk list
+ *   filter[name]=any_nonsense + include_legacy    -> THE SAME junk list
  *
- * A versão anterior mandava include_legacy em TODAS as consultas de identidade, então
- * o lote por guid, o lote por id do cache e a busca por nome estavam todos mortos —
- * sobrava só a busca textual, que é o último recurso e roda depois de gastar ~4
- * requisições por mod à toa.
+ * That last line is the giveaway: a nonsense value returns identical results to a real
+ * one, so the value is not being used at all.
  *
- * O flag NÃO pode simplesmente sumir: sem ele a Forge esconde mods legados (sem
- * constraint de versão do SPT) — filter[id]=2 sem o flag devolve vazio. Por isso a
- * estratégia é em duas passadas: filtros de verdade primeiro (sem o flag), e o que
- * sobrar vai pra busca textual COM o flag, que é a única coisa que ele não quebra
- * (query= é Meilisearch, pipeline separado do filtro).
+ * The previous version sent include_legacy on EVERY identity query, so the guid batch,
+ * the cached-id batch and the name lookup were all dead — leaving only the full-text
+ * search, which is the last resort and runs after burning ~4 requests per mod for nothing.
+ *
+ * The flag CANNOT simply be removed: without it Forge hides legacy mods (those with no SPT
+ * version constraint) — filter[id]=2 without the flag returns empty. Hence the two-pass
+ * strategy: real filters first (no flag), and whatever is left goes to the full-text
+ * search WITH the flag, which is the one thing it does not break (query= is Meilisearch,
+ * a separate pipeline from the filters).
  * ========================================================================== */
 
 /**
- * filter[name] é um filtro de verdade quando não está sabotado pelo include_legacy.
- * Ainda assim o resultado passa por verificação: "filtro" aqui não garante igualdade,
- * e casar errado é pior que não casar.
+ * filter[name] is a genuine filter when it is not sabotaged by include_legacy. The result
+ * still goes through verification: "filter" here does not guarantee equality, and matching
+ * wrong is worse than not matching.
  */
 async function fetchForgeByFuzzyFilter(filterKey: "slug" | "name", value: string, budget: ForgeBudget): Promise<any[]> {
   const url = new URL(`${FORGE_API_BASE}/mods`);
   url.searchParams.set(`filter[${filterKey}]`, value);
   url.searchParams.set("per_page", "10");
   url.searchParams.set("include", "versions");
-  // Sem restringir "fields": a restauração de modlist precisa do LINK de download de
-  // cada versão, e a resposta reduzida não garante trazer esse campo. Pedir o objeto
-  // completo custa alguns KB a mais e evita "não baixa nada" silencioso.
+  // No "fields" restriction: restoring a modlist needs each version's download LINK, and
+  // the trimmed response does not guarantee that field. Requesting the full object costs a
+  // few extra KB and avoids a silent "downloads nothing".
   //
-  // NÃO adicionar filter[include_legacy] aqui — ver o bloco acima: mata este filtro.
+  // Do NOT add filter[include_legacy] here — see the block above: it kills this filter.
   const json = await forgeFetchJson(url.toString(), budget);
   return Array.isArray(json?.data) ? json.data : [];
 }
 
 /**
- * Segunda passada, só pro que não casou: busca textual COM include_legacy, que é o
- * único jeito de alcançar mod legado (o filtro por id/guid não chega nele).
+ * Second pass, only for what did not match: full-text search WITH include_legacy, which is
+ * the only way to reach a legacy mod (the id/guid filters cannot see them).
  */
 async function fetchForgeByQuery(term: string, budget: ForgeBudget, perPage = 10): Promise<any[]> {
   const url = new URL(`${FORGE_API_BASE}/mods`);
   url.searchParams.set("query", term);
   url.searchParams.set("per_page", String(perPage));
   url.searchParams.set("include", "versions");
-  // Aqui o flag é seguro E necessário: query= não passa pelo pipeline de filtro.
+  // Here the flag is both safe AND necessary: query= does not go through the filter pipeline.
   url.searchParams.set("filter[include_legacy]", "true");
   const json = await forgeFetchJson(url.toString(), budget);
   return Array.isArray(json?.data) ? json.data : [];
 }
 
-// GUID SIM aceita lote de verdade — é o único caminho realmente confiável e barato.
-// Uma requisição resolve dezenas de mods, sem fuzzy e sem ambiguidade.
+// GUID and id DO accept genuine batching — the only path that is both reliable and cheap.
+// One request resolves dozens of mods, with no fuzziness and no ambiguity.
 async function fetchForgeByIds(ids: string[], budget: ForgeBudget): Promise<any[]> {
   if (ids.length === 0) return [];
   const results: any[] = [];
@@ -2371,7 +2373,7 @@ async function fetchForgeByIds(ids: string[], budget: ForgeBudget): Promise<any[
     url.searchParams.set("filter[id]", ids.slice(i, i + CHUNK).join(","));
     url.searchParams.set("per_page", "50");
     url.searchParams.set("include", "versions");
-    // sem include_legacy: ele anularia o filter[id] inteiro (ver bloco acima)
+    // no include_legacy: it would nullify the whole filter[id] (see the block above)
     const json = await forgeFetchJson(url.toString(), budget);
     if (Array.isArray(json?.data)) results.push(...json.data);
   }
@@ -2387,7 +2389,7 @@ async function fetchForgeByGuids(guids: string[], budget: ForgeBudget): Promise<
     url.searchParams.set("filter[guid]", guids.slice(i, i + CHUNK).join(","));
     url.searchParams.set("per_page", "50");
     url.searchParams.set("include", "versions");
-    // sem include_legacy: ele anularia o filter[guid] inteiro (ver bloco acima)
+    // no include_legacy: it would nullify the whole filter[guid] (see the block above)
     const json = await forgeFetchJson(url.toString(), budget);
     if (Array.isArray(json?.data)) results.push(...json.data);
   }
