@@ -234,130 +234,20 @@ export function translate(lang: Lang, key: string, vars?: Record<string, string 
   }
   return str;
 }
-
 /**
- * O backend (processo main / modManager.ts) sempre responde em português —
- * ele não sabe em qual idioma a UI está. Em vez de reescrever todas as ~50
- * mensagens do backend pra retornar códigos (grande refatoração, mais risco
- * de reintroduzir bug nas partes que acabamos de corrigir), a gente traduz
- * aqui na hora de exibir, casando contra o conjunto conhecido de mensagens.
- * Se uma mensagem nova não bater com nenhuma regra, mostra o texto original
- * (em português) em vez de quebrar — é um degrade aceitável.
+ * Pass-through. The backend used to reply in Portuguese, so this function held ~50
+ * hand-written regexes translating each known message to English at display time. That
+ * layer was fragile in a specific way: any message without a matching rule leaked to the
+ * UI untranslated, and adding a backend message meant remembering to add a rule.
+ *
+ * The backend now emits English directly, so every one of those rules was dead code and
+ * has been deleted. The function itself is kept — every call site passes backend messages
+ * through it, and it is the natural place to reinstate handling if backend text ever needs
+ * transforming again.
+ *
+ * `lang` is unused for the same reason `Lang` is a one-member union: this fork is
+ * English-only. See the note at the top of this file.
  */
-interface BackendMessageRule {
-  pattern: RegExp;
-  en: (m: RegExpMatchArray, lang: Lang) => string;
-}
-
-const BACKEND_MESSAGE_RULES: BackendMessageRule[] = [
-  // --- Mensagens fixas (sem parte dinâmica) ---
-  { pattern: /^Nenhuma instância SPT configurada\.$/, en: () => "No SPT instance configured." },
-  { pattern: /^Cancelado\.$/, en: () => "Cancelled." },
-  { pattern: /^Pasta aberta\.$/, en: () => "Folder opened." },
-  { pattern: /^Nome restaurado pro original\.$/, en: () => "Name restored to original." },
-  { pattern: /^Nome atualizado\.$/, en: () => "Name updated." },
-  {
-    pattern: /^Estrutura de arquivo incomum: não encontrei DLL, package\.json nem pasta user\/BepInEx\.$/,
-    en: () => "Unusual file structure: found no DLL, package.json, or user/BepInEx folder."
-  },
-  { pattern: /^Mod instalado e verificado \(estrutura completa detectada\)\.$/, en: () => "Mod installed and verified (full structure detected)." },
-  { pattern: /^Caminho temporário inválido\.$/, en: () => "Invalid temporary path." },
-  {
-    pattern: /^A extração temporária não existe mais — tente instalar o arquivo de novo\.$/,
-    en: () => "The temporary extraction no longer exists — try installing the file again."
-  },
-  { pattern: /^Instalação cancelada\.$/, en: () => "Installation cancelled." },
-  {
-    pattern: /^Esse item é um arquivo do próprio SPT \(não é um mod\) e não pode ser alternado\.$/,
-    en: () => "This item is one of SPT's own files (not a mod) and can't be toggled."
-  },
-  {
-    pattern: /^Esse item é um arquivo do próprio SPT \(não é um mod\) e não pode ser removido pelo Manager\.$/,
-    en: () => "This item is one of SPT's own files (not a mod) and can't be removed by the Manager."
-  },
-  { pattern: /^Mod desabilitado\.$/, en: () => "Mod disabled." },
-  {
-    pattern: /^Mod desabilitado \((\d+) partes do pacote\)\.$/,
-    en: (m) => `Mod disabled (${m[1]} package parts).`
-  },
-  {
-    pattern: /^Mod habilitado \((\d+) partes do pacote\)\.$/,
-    en: (m) => `Mod enabled (${m[1]} package parts).`
-  },
-  {
-    pattern: /^Mod desabilitado \(e (\d+) patcher\(s\) junto\)\.$/,
-    en: (m) => `Mod disabled (along with ${m[1]} patcher(s)).`
-  },
-  {
-    pattern: /^Mod habilitado \(e (\d+) patcher\(s\) junto\)\.$/,
-    en: (m) => `Mod enabled (along with ${m[1]} patcher(s)).`
-  },
-  { pattern: /^Mod habilitado\.$/, en: () => "Mod enabled." },
-  { pattern: /^Entrada removida da lista \(nenhum arquivo rastreado\)\.$/, en: () => "Entry removed from the list (no tracked files)." },
-  { pattern: /^Mod removido\.$/, en: () => "Mod removed." },
-  {
-    pattern: /^Mod instalado\. (\d+) arquivo\(s\) do núcleo do SPT vieram no pacote e foram ignorados, pra não quebrar a instalação\.$/,
-    en: (m) => `Mod installed. ${m[1]} SPT core file(s) shipped inside the package were skipped, to avoid breaking the installation.`
-  },
-  {
-    pattern: /^Mod removido \(e (\d+) arquivo\(s\) que vieram junto\)\.$/,
-    en: (m) => `Mod removed (along with ${m[1]} file(s) that came with it).`
-  },
-  { pattern: /^Pasta de server mods não existe\.$/, en: () => "Server mods folder doesn't exist." },
-  { pattern: /^Ordem de carregamento atualizada\.$/, en: () => "Load order updated." },
-  { pattern: /^Falha ao verificar atualizações\.$/, en: () => "Failed to check for updates." },
-  { pattern: /^Falha ao buscar mods na Forge\.$/, en: () => "Failed to search mods on Forge." },
-  {
-    pattern: /^Esse arquivo não parece uma lista de mods exportada por este app\.$/,
-    en: () => "This file doesn't look like a mod list exported by this app."
-  },
-  {
-    pattern: /^Não achei uma instância SPT nessa pasta nem nas subpastas diretas dela\. Selecione a pasta que tem o SPT\.Server\.exe\.$/,
-    en: () => "Couldn't find an SPT instance in that folder or its direct subfolders. Select the folder that has SPT.Server.exe."
-  },
-  { pattern: /^Informe a versão do SPT antes de verificar atualizações\.$/, en: () => "Enter the SPT version before checking for updates." },
-
-  // --- Mensagens com parte dinâmica (nome de arquivo, contagem, erro etc.) ---
-  {
-    pattern: /^Instalação incompleta: arquivo não confirmado no destino \((.+)\)\.$/,
-    en: (m) => `Incomplete installation: file not confirmed at destination (${m[1]}).`
-  },
-  {
-    pattern: /^Mod "(.+)" instalado e verificado como (server mod|client mod)\.$/,
-    en: (m) => `Mod "${m[1]}" installed and verified as a ${m[2] === "server mod" ? "server mod" : "client mod"}.`
-  },
-  { pattern: /^Erro ao instalar: (.+)$/, en: (m, lang) => `Error installing: ${translateBackendMessage(m[1], lang)}` },
-  { pattern: /^(\d+) arquivo\(s\) órfão\(s\) removido\(s\)\.$/, en: (m) => `${m[1]} orphan file(s) removed.` },
-  { pattern: /^Arquivo\/pasta do mod não encontrado: (.+)$/, en: (m) => `Mod file/folder not found: ${m[1]}` },
-  { pattern: /^Mod não encontrado: (.+)$/, en: (m) => `Mod not found: ${m[1]}` },
-  { pattern: /^Não foi possível baixar o mod da Forge \(HTTP (\d+)\)\.$/, en: (m) => `Couldn't download the mod from Forge (HTTP ${m[1]}).` },
-  { pattern: /^Falha ao baixar\/instalar da Forge: (.+)$/, en: (m) => `Failed to download/install from Forge: ${m[1]}` },
-  { pattern: /^Instância encontrada automaticamente em: (.+)$/, en: (m) => `Instance automatically found at: ${m[1]}` },
-  {
-    pattern: /^Instância dividida detectada — client em "(.+)", server em "(.+)"\.$/,
-    en: (m) => `Split instance detected — client at "${m[1]}", server at "${m[2]}".`
-  },
-  { pattern: /^Arquivo "(.+)" não é \.zip, \.7z nem \.rar\.$/, en: (m) => `File "${m[1]}" isn't .zip, .7z, or .rar.` },
-  { pattern: /^Caminho do mod não encontrado: (.+)$/, en: (m) => `Mod path not found: ${m[1]}` },
-  { pattern: /^Lista exportada com (\d+) mod\(s\) para (.+)\.$/, en: (m) => `List exported with ${m[1]} mod(s) to ${m[2]}.` },
-  { pattern: /^Comparado com (\d+) mod\(s\) da lista importada\.$/, en: (m) => `Compared against ${m[1]} mod(s) from the imported list.` },
-  { pattern: /^Erro ao ler o arquivo: (.+)$/, en: (m) => `Error reading the file: ${m[1]}` },
-  { pattern: /^Não foi possível consultar o Forge: (.+)$/, en: (m) => `Couldn't reach Forge: ${m[1]}` },
-  { pattern: /^Forge respondeu (\d+)$/, en: (m) => `Forge responded ${m[1]}` },
-  {
-    pattern: /^Arquivo rejeitado por segurança: entrada suspeita no \.(7z|rar|zip) \("(.+)"\)\.$/,
-    en: (m) => `File rejected for security reasons: suspicious entry in the .${m[1]} ("${m[2]}").`
-  }
-];
-
-export function translateBackendMessage(msg: string | undefined | null, lang: Lang): string {
-  if (!msg) return msg ?? "";
-  for (const rule of BACKEND_MESSAGE_RULES) {
-    const match = msg.match(rule.pattern);
-    if (match) return rule.en(match, lang);
-  }
-  // No rule matched. The backend still speaks Portuguese, so this falls through as the
-  // original string — ugly, but showing the raw message beats swallowing it. Any such
-  // string appearing in the UI is a missing rule, not a broken build.
-  return msg;
+export function translateBackendMessage(msg: string | undefined | null, _lang: Lang): string {
+  return msg ?? "";
 }

@@ -1,9 +1,9 @@
 /* ==========================================================================
-   SPT Mod Manager — tema "manifesto de equipamento"
-   Paleta e tipografia inspiradas no universo tático/militar do próprio
-   Tarkov: grafite quente + terra, carimbo condensado nos títulos, dados
-   técnicos em monoespaçada. Fontes self-hosted via @fontsource (funcionam
-   offline e respeitam a CSP do app — sem chamada externa em runtime).
+   SPT Mod Manager — "gear manifest" theme
+   Palette and typography drawn from Tarkov's own tactical/military look: warm graphite
+   plus earth tones, condensed stencil headings, technical data in monospace. Fonts are
+   self-hosted via @fontsource (they work offline and respect the app's CSP — no external
+   calls at runtime).
    ========================================================================== */
 
 @import "@fontsource/oswald/500.css";
@@ -30,7 +30,7 @@
   --text-dim: #9aa2b0;
   --text-faint: #6b7280;
 
-  /* Assinatura — âmbar de sinalização (fita de risco), não laranja genérico */
+  /* Signature colour — signal amber (hazard tape), not a generic orange */
   --accent: #c8752e;
   --accent-strong: #e08d3f;
   --accent-wash: rgba(200, 117, 46, 0.14);
@@ -59,7 +59,7 @@ body {
   font-family: var(--font-body);
 }
 
-/* Scrollbar — combinando com o tema em vez da barra padrão do SO */
+/* Scrollbar — themed rather than the OS default */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -78,7 +78,7 @@ body {
   background: var(--accent);
 }
 
-/* Foco visível pra navegação por teclado, em qualquer elemento interativo */
+/* Visible focus ring for keyboard navigation, on any interactive element */
 button:focus-visible,
 select:focus-visible,
 input:focus-visible {
@@ -161,8 +161,8 @@ button.danger:hover:not(:disabled) {
 }
 
 .app {
-  /* O respiro extra embaixo garante que o último mod da lista não fique escondido
-     atrás da barra de seleção, que flutua fixa no rodapé. */
+  /* The extra breathing room at the bottom keeps the last mod in the list from hiding
+     behind the selection bar, which is fixed and floats at the foot of the window. */
   padding: 22px 30px 90px;
   position: relative;
   min-height: 100vh;
@@ -301,11 +301,11 @@ header h1 {
   font-size: 12.5px;
 }
 
-/* Barra de seleção em massa: FIXA no rodapé, centralizada.
-   Antes era um elemento no fluxo normal, então aparecer/sumir empurrava a lista
-   inteira pra baixo e pra cima — mexia no layout bem no momento em que a pessoa
-   está mirando um checkbox. Sendo fixa, ela flutua sobre o conteúdo e nada se move.
-   z-index abaixo das modais (1000) e do banner de atualização (950), acima da lista. */
+/* Bulk selection bar: FIXED at the foot of the window, centred.
+   It used to sit in normal flow, so appearing/disappearing pushed the whole list up and
+   down — shifting the layout at exactly the moment someone is aiming at a checkbox. Being
+   fixed, it floats above the content and nothing moves.
+   z-index below the modals (1000) and the update banner (950), above the list. */
 .bulk-bar {
   position: fixed;
   bottom: 20px;
@@ -315,9 +315,9 @@ header h1 {
   display: flex;
   align-items: center;
   gap: 18px;
-  max-width: calc(100vw - 380px); /* deixa espaço pro painel de downloads, à direita */
-  /* Laranja OPACO: flutuando sobre a lista, um fundo translúcido (como o
-     --accent-wash de antes) deixaria o conteúdo aparecer através da barra. */
+  max-width: calc(100vw - 380px); /* leaves room for the downloads panel on the right */
+  /* OPAQUE orange: floating above the list, a translucent background (like the previous
+     --accent-wash) would let content show through the bar. */
   background: #6b4e36;
   border: 1px solid var(--accent);
   border-radius: var(--radius-lg);
@@ -865,7 +865,7 @@ h2 {
 }
 
 /* ==========================================================================
-   Modal — Confirmação de estrutura de arquivo incomum
+   Modal — unusual file structure confirmation
    ========================================================================== */
 
 .confirm-structure-modal {
@@ -907,7 +907,7 @@ h2 {
 
 
 /* ==========================================================================
-   Fila de downloads/instalação (canto inferior direito)
+   Download/install queue (bottom-right corner)
    ========================================================================== */
 
 .download-queue-panel {
@@ -986,7 +986,7 @@ h2 {
 }
 
 /* ==========================================================================
-   Banner de atualização do app
+   App update banner
    ========================================================================== */
 
 .update-banner {
@@ -1015,21 +1015,21 @@ h2 {
   font-size: 11.5px;
 }
 
-/* Cartão de resumo (busca em lote / instalação em série): fica no topo do painel,
-   acima dos itens individuais, e não é removido automaticamente como eles. */
+/* Summary card (batch search / serial install): sits at the top of the panel, above the
+   individual items, and is not auto-dismissed the way they are. */
 .queue-summary-card {
   border-color: var(--accent);
   background: var(--bg-panel-raised);
 }
 
-/* Botão de atualizar embutido na linha do painel de resultados da Forge */
+/* Update button embedded in a row of the Forge results panel */
 .inline-update-button {
   padding: 1px 9px;
   font-size: 11px;
   vertical-align: middle;
 }
 
-/* Chip que marca um mod como parte de um pacote de várias partes */
+/* Chip marking a mod as part of a multi-part package */
 .package-chip {
   border-color: var(--accent);
   color: var(--accent-strong);

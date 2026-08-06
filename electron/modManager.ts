@@ -2880,7 +2880,7 @@ export async function checkForgeUpdates(
         currentVersion: u.current_version?.version,
         recommendedVersion: u.recommended_version?.version,
         downloadLink: u.recommended_version?.link,
-        // Identificador da Forge, pra que atualizar pelo app grave o mesmo GUID e as
+        // The Forge identifier, so that updating through the app records the same GUID and
         // future checks of this mod no longer depend on name matching.
         guid: u.current_version?.guid,
         reason: u.update_reason
@@ -3106,7 +3106,7 @@ export async function installForgeModVersion(
 
     return await installModFromArchive(clientRoot, serverRoot, tmpFilePath, suggestedName, forgeInfo);
   } catch (err: any) {
-    return { success: false, message: `Falha ao baixar/instalar da Forge: ${err.message || err}` };
+    return { success: false, message: `Failed to download/install from Forge: ${err.message || err}` };
   } finally {
     if (tmpFilePath && fs.existsSync(tmpFilePath)) {
       try {
