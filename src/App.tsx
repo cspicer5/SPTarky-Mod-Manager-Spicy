@@ -38,8 +38,17 @@ type OriginFilter = "all" | "manual" | "manager";
 type SortField = "name" | "status" | "origin" | "installedAt" | "forge";
 type SortDirection = "asc" | "desc";
 
+/**
+ * Identity of a ROW, not of a mod.
+ *
+ * The enabled flag is part of it because the same mod can legitimately appear twice — an
+ * enabled copy in plugins/ and a stale disabled one in plugins.disabled/, which is what a
+ * reinstall used to leave behind. With `type:id` alone both rows shared one key, so
+ * selecting either selected both, neither could be deselected, and package counting saw
+ * four parts where there were two.
+ */
 function selectionKey(mod: ModInfo): string {
-  return `${mod.type}:${mod.id}`;
+  return `${mod.type}:${mod.enabled ? "on" : "off"}:${mod.id}`;
 }
 
 /** Numeric semver comparison, so 0.10.0 sorts above 0.9.0 as it should. */

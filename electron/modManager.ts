@@ -906,42 +906,91 @@ export function checkSptCompatibility(
 ): "compatible" | "incompatible" | "unknown" {
   if (!modConstraint?.trim() || !instanceVersion?.trim()) return "unknown";
 
-  const parse = (v: string) =>
-    v
-      .trim()
-      .replace(/^[~^>=<\s]+/, "")
-      .replace(/^v/i, "")
-      .split(".")
-      .map((n) => parseInt(n, 10))
-      .filter((n) => !Number.isNaN(n));
+  const actual = parseVersionParts(instanceVersion);
+  if (actual.length === 0) return "unknown";
 
-  const wanted = parse(modConstraint);
-  const actual = parse(instanceVersion);
-  if (wanted.length === 0 || actual.length === 0) return "unknown";
+  /*
+   * Constraints are a SPACE-SEPARATED LIST of clauses, all of which must hold.
+   *
+   * This used to treat the whole string as one clause: it stripped the leading operator and
+   * split the rest on ".", so "~4 <4.1.0" — which HollywoodFX publishes, and which plainly
+   * includes 4.0.13 — parsed as [4, 1, 0] and was read as "~4.1.0". The mod was then
+   * declared incompatible with the very version it targets, both on its badge and, once the
+   * reinstall started honouring SPT versions, by being skipped entirely.
+   */
+  const clauses = modConstraint.trim().split(/\s+/).filter(Boolean);
+  let decided = false;
+  for (const clause of clauses) {
+    const verdict = satisfiesClause(actual, clause);
+    if (verdict === undefined) continue; // unparseable clause — ignore rather than guess
+    decided = true;
+    if (!verdict) return "incompatible";
+  }
+  return decided ? "compatible" : "unknown";
+}
 
-  const operator = modConstraint.trim().startsWith("~")
-    ? "tilde"
-    : modConstraint.trim().startsWith("^")
-      ? "caret"
-      : modConstraint.trim().startsWith(">")
-        ? "atLeast"
-        : "exact";
+function parseVersionParts(v: string): number[] {
+  return v
+    .trim()
+    .replace(/^[~^>=<!\s]+/, "")
+    .replace(/^v/i, "")
+    .split(/[.\-+]/)
+    .map((n) => parseInt(n, 10))
+    .filter((n) => !Number.isNaN(n));
+}
 
-  // "^4.0" accepts any 4.x; "~4.0.0" accepts any 4.0.x; ">=4.0" accepts that and above.
-  if (operator === "atLeast") {
-    for (let i = 0; i < Math.max(wanted.length, actual.length); i++) {
-      const a = actual[i] ?? 0;
-      const w = wanted[i] ?? 0;
-      if (a !== w) return a > w ? "compatible" : "incompatible";
+/** Compares version parts, treating a missing component as 0 ("4.0" === "4.0.0"). */
+function compareParts(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  return 0;
+}
+
+/**
+ * Evaluates ONE clause. Returns undefined when the clause cannot be understood, so callers
+ * can ignore it instead of inventing a verdict.
+ */
+function satisfiesClause(actual: number[], clause: string): boolean | undefined {
+  const match = clause.match(/^(>=|<=|>|<|\^|~|=)?\s*v?(\d[\d.]*)/i);
+  if (!match) return undefined;
+  const operator = match[1] ?? "";
+  const wanted = parseVersionParts(match[2]);
+  if (wanted.length === 0) return undefined;
+
+  const cmp = compareParts(actual, wanted);
+
+  switch (operator) {
+    case ">=":
+      return cmp >= 0;
+    case ">":
+      return cmp > 0;
+    case "<=":
+      return cmp <= 0;
+    case "<":
+      return cmp < 0;
+    case "^": {
+      // Same major, and not below the stated version.
+      if (cmp < 0) return false;
+      return (actual[0] ?? 0) === (wanted[0] ?? 0);
     }
-    return "compatible";
+    case "~": {
+      // Same major, and same minor WHEN a minor was stated. "~4" is therefore any 4.x,
+      // which is what makes "~4 <4.1.0" mean "4.x, below 4.1".
+      if (cmp < 0) return false;
+      if ((actual[0] ?? 0) !== (wanted[0] ?? 0)) return false;
+      if (wanted.length >= 2 && (actual[1] ?? 0) !== (wanted[1] ?? 0)) return false;
+      return true;
+    }
+    default:
+      // Bare or "=": a prefix match at the precision given, so "4.0" accepts any 4.0.x.
+      for (let i = 0; i < wanted.length; i++) {
+        if ((actual[i] ?? 0) !== wanted[i]) return false;
+      }
+      return true;
   }
-
-  const precision = operator === "caret" ? 1 : Math.min(wanted.length, operator === "tilde" ? 2 : wanted.length);
-  for (let i = 0; i < precision; i++) {
-    if ((actual[i] ?? 0) !== (wanted[i] ?? 0)) return "incompatible";
-  }
-  return "compatible";
 }
 
 export function detectConflicts(clientRoot: string, serverRoot: string): ConflictReport {
