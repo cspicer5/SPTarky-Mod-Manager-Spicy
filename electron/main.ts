@@ -35,10 +35,10 @@ const store = new Store<InstanceConfig>({
   defaults: { sptPath: null, serverRoot: null, sptVersionOverride: null, forgeStatusCache: null, forgeCheckedAt: null }
 });
 
-// sptPath (armazenado) é sempre a raiz de CLIENT. serverRoot é igual a sptPath na
-// grande maioria das instâncias; só é diferente quando a instalação é "dividida" (o
-// instalador da SPT 4.x pode criar uma subpasta separada pro server). O fallback aqui
-// cobre configs salvas antes dessa mudança, onde serverRoot nunca foi definido.
+// The stored sptPath is always the CLIENT root. serverRoot equals sptPath in the vast
+// majority of instances; it only differs on a "split" install (the SPT 4.x installer can
+// create a separate subfolder for the server). The fallback here covers configs saved
+// before that change, where serverRoot was never set.
 function getServerRoot(): string | null {
   return store.get("serverRoot") || store.get("sptPath");
 }
@@ -75,7 +75,7 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// --- IPC: configuração da instância ---
+// --- IPC: instance configuration ---
 ipcMain.handle("get-spt-path", () => {
   const path = store.get("sptPath");
   if (!path) return null;
@@ -96,7 +96,7 @@ ipcMain.handle("select-spt-folder", async () => {
   if (!resolved) {
     return {
       success: false,
-      message: "Não achei uma instância SPT nessa pasta nem nas subpastas diretas dela. Selecione a pasta que tem o SPT.Server.exe."
+      message: "No SPT instance found in that folder or its immediate subfolders. Select the folder containing SPT.Server.exe."
     };
   }
   store.set("sptPath", resolved.instance.clientRoot);
@@ -108,8 +108,8 @@ ipcMain.handle("select-spt-folder", async () => {
     split: resolved.instance.split,
     message: resolved.autoDetected
       ? resolved.instance.split
-        ? `Instância dividida detectada — client em "${resolved.instance.clientRoot}", server em "${resolved.instance.serverRoot}".`
-        : `Instância encontrada automaticamente em: ${resolved.instance.clientRoot}`
+        ? `Split instance detected — client at "${resolved.instance.clientRoot}", server at "${resolved.instance.serverRoot}".`
+        : `Instance found automatically at: ${resolved.instance.clientRoot}`
       : undefined
   };
 });
@@ -118,9 +118,9 @@ ipcMain.handle("select-spt-folder", async () => {
 ipcMain.handle("scan-mods", () => {
   const sptPath = store.get("sptPath");
   if (!sptPath) return [];
-  // A compatibilidade é calculada aqui (e não no scan) porque depende da versão do SPT
-  // ESCOLHIDA pelo usuário, que o backend só conhece pelo store. Fazer aqui evita
-  // duplicar a lógica de comparação de versão no processo de interface.
+  // Compatibility is computed here (not during the scan) because it depends on the SPT
+  // version CHOSEN by the user, which the backend only knows via the store. Doing it here
+  // avoids duplicating the version-comparison logic in the renderer process.
   const instanceVersion = store.get("sptVersionOverride") ?? detectSptSemver(sptPath);
   return scanMods(sptPath, getServerRoot()!).map((mod) => ({
     ...mod,
@@ -179,7 +179,7 @@ ipcMain.handle("check-forge-updates", async (_event, mods: { name: string; origi
     );
     return { success: true, result };
   } catch (err: any) {
-    return { success: false, message: err?.message || "Falha ao verificar atualizações." };
+    return { success: false, message: err?.message || "Failed to check for updates." };
   }
 });
 
@@ -193,7 +193,7 @@ ipcMain.handle(
       const result = await searchForgeMods(params);
       return { success: true, result };
     } catch (err: any) {
-      return { success: false, message: err?.message || "Falha ao buscar mods na Forge." };
+      return { success: false, message: err?.message || "Failed to search mods on Forge." };
     }
   }
 );
@@ -203,9 +203,9 @@ ipcMain.handle("get-forge-categories", () => getForgeCategories());
 ipcMain.handle("check-app-update", () => checkAppUpdate(app.getVersion()));
 
 ipcMain.handle("open-release-page", (_event, url: string) => {
-  // Só abre a página do mod na Forge ou o release no próprio repo — a URL vem do
-  // processo renderer, que não é totalmente confiável pra mandar abrir qualquer
-  // coisa no navegador.
+  // Only opens a Forge mod page or a release on our own repo — the URL comes from the
+  // renderer process, which is not trusted enough to tell the OS to open arbitrary
+  // things in a browser.
   const allowed =
     /^https:\/\/forge\.sp-tarkov\.com\/mod\/2851\//.test(url) ||
     /^https:\/\/github\.com\/Nevek20\/SPT_Mod_Manager\//.test(url);
@@ -248,7 +248,7 @@ ipcMain.handle(
     forgeInfo?: { name?: string; author?: string; version?: string; guid?: string }
   ) => {
     const sptPath = store.get("sptPath");
-    if (!sptPath) return { success: false, message: "Nenhuma instância SPT configurada." };
+    if (!sptPath) return { success: false, message: "No SPT instance configured." };
     return installForgeModVersion(
       sptPath,
       getServerRoot()!,
@@ -264,7 +264,7 @@ ipcMain.handle(
 
 ipcMain.handle("install-mod", async () => {
   const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "Nenhuma instância SPT configurada." };
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
 
   const result = await dialog.showOpenDialog({
     properties: ["openFile"],
@@ -277,11 +277,11 @@ ipcMain.handle("install-mod", async () => {
 
 ipcMain.handle("install-mod-from-path", async (_event, filePath: string) => {
   const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "Nenhuma instância SPT configurada." };
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
 
   const ext = path.extname(filePath).toLowerCase();
   if (ext !== ".zip" && ext !== ".7z" && ext !== ".rar") {
-    return { success: false, message: `Arquivo "${path.basename(filePath)}" não é .zip, .7z nem .rar.` };
+    return { success: false, message: `File "${path.basename(filePath)}" is not a .zip, .7z, or .rar.` };
   }
 
   return installModFromArchive(sptPath, getServerRoot()!, filePath);
@@ -289,41 +289,41 @@ ipcMain.handle("install-mod-from-path", async (_event, filePath: string) => {
 
 ipcMain.handle("install-mod-confirm", (_event, tmpDir: string, archivePath: string) => {
   const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "Nenhuma instância SPT configurada." };
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
   return finalizeUnrecognizedInstall(sptPath, getServerRoot()!, tmpDir, archivePath);
 });
 
 ipcMain.handle("install-mod-abort", (_event, tmpDir: string) => {
   const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "Nenhuma instância SPT configurada." };
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
   return discardPendingInstall(sptPath, tmpDir);
 });
 
 ipcMain.handle("toggle-mod", (_event, mod: ModInfo) => {
   const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "Nenhuma instância SPT configurada." };
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
   return toggleMod(sptPath, getServerRoot()!, mod);
 });
 
 ipcMain.handle("uninstall-mod", (_event, mod: ModInfo) => {
   const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "Nenhuma instância SPT configurada." };
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
   return uninstallMod(sptPath, getServerRoot()!, mod);
 });
 
 ipcMain.handle("rename-mod", (_event, modId: string, alias: string) => {
   const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "Nenhuma instância SPT configurada." };
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
   return setModAlias(sptPath, modId, alias);
 });
 
 ipcMain.handle("open-mod-folder", (_event, mod: ModInfo) => {
   const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "Nenhuma instância SPT configurada." };
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
 
   const target = resolveModPath(sptPath, getServerRoot()!, mod);
   if (!fs.existsSync(target)) {
-    return { success: false, message: "Caminho do mod não encontrado: " + target };
+    return { success: false, message: "Mod path not found: " + target };
   }
   if (fs.statSync(target).isDirectory()) {
     shell.openPath(target);
@@ -335,7 +335,7 @@ ipcMain.handle("open-mod-folder", (_event, mod: ModInfo) => {
 
 ipcMain.handle("export-mod-list", async () => {
   const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "Nenhuma instância SPT configurada." };
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
 
   const data = exportModListData(sptPath, getServerRoot()!);
   const result = await dialog.showSaveDialog({
@@ -350,7 +350,7 @@ ipcMain.handle("export-mod-list", async () => {
 
 ipcMain.handle("import-mod-list", async () => {
   const sptPath = store.get("sptPath");
-  if (!sptPath) return { success: false, message: "Nenhuma instância SPT configurada." };
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
 
   const result = await dialog.showOpenDialog({
     properties: ["openFile"],
@@ -365,10 +365,10 @@ ipcMain.handle("import-mod-list", async () => {
       ? parsed.mods.map((m: { name?: string }) => m.name).filter((n: unknown): n is string => typeof n === "string")
       : [];
     if (names.length === 0) {
-      return { success: false, message: "Esse arquivo não parece uma lista de mods exportada por este app." };
+      return { success: false, message: "That file doesn't look like a mod list exported by this app." };
     }
-    // Repassa os GUIDs da lista (quando existirem) pra que a restauração case por
-    // identificador exato em vez de tentar adivinhar pelo nome da pasta.
+    // Pass through the GUIDs from the list (where present) so restoring matches by exact
+    // identifier instead of guessing from the folder name.
     const guidByName: Record<string, string> = {};
     for (const entry of parsed.mods as { name?: string; guid?: string }[]) {
       if (typeof entry?.name === "string" && typeof entry?.guid === "string") {

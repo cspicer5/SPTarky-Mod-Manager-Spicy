@@ -6,11 +6,10 @@ export default defineConfig({
   base: "./",
   build: {
     outDir: "dist",
-    // A CSP do app (default-src 'self') não permite data: URIs. Sem isso, o
-    // Vite embute arquivos pequenos (tipo os subconjuntos de fonte menos
-    // usados) como base64 direto no CSS, e o navegador bloqueia esse
-    // carregamento. Desligando o limite, todo arquivo vira um asset físico
-    // de verdade, servido de 'self' — sem conflito com a CSP.
+    // The app's CSP (default-src 'self') disallows data: URIs. Without this, Vite
+    // inlines small files (such as the less-used font subsets) as base64 straight into
+    // the CSS, and the browser blocks that load. Setting the limit to 0 makes every
+    // file a real physical asset served from 'self' — no conflict with the CSP.
     assetsInlineLimit: 0
   }
 });
