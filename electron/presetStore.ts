@@ -27,7 +27,16 @@
 import fsp from "fs/promises";
 import fs from "fs";
 import path from "path";
-import { Preset, PRESET_SCHEMA, savePreset, readPreset } from "./presets";
+import { Preset, PresetMod, PRESET_SCHEMA, savePreset, readPreset } from "./presets";
+import { ModInfo } from "./types";
+import {
+  collectModPayloadFiles,
+  storePayload,
+  applyPayload,
+  formatBytes,
+  PayloadProgress
+} from "./presetPayloads";
+import { recordPayloadInstall } from "./modManager";
 
 export const STORE_SCHEMA = 1;
 
@@ -554,4 +563,317 @@ export async function importPresetFromFile(
 export async function readStorePreset(dir: string, id: string): Promise<Preset | null> {
   const entry = (await listStorePresets(dir)).find((e) => e.preset.id === id);
   return entry?.preset ?? null;
+}
+
+/* --------------------------------------------------------------------------
+ * Phase 3 — publishing WITH the mod files
+ * ----------------------------------------------------------------------- */
+
+export interface PublishPayloadProgress extends PayloadProgress {
+  modsDone: number;
+  modsTotal: number;
+  /** Bytes that did not need copying because the store already had that exact content. */
+  bytesReused: number;
+}
+
+export interface PublishWithPayloadsResult extends PublishResult {
+  stored?: number;
+  reused?: number;
+  failed?: { name: string; message: string }[];
+  bytesCopied?: number;
+}
+
+/**
+ * Publishes a preset AND the mods it names, so applying it needs no Forge and no downloads.
+ *
+ * Each mod is stored under a content-addressed key and shared by every preset that uses it,
+ * which is what makes this affordable: the reference install is 17.8 GB, and a second preset
+ * sharing 90% of its mods costs only the remaining 10%.
+ *
+ * A mod whose files cannot be gathered does NOT fail the publish. It is recorded without a
+ * payload — exactly what a phase 2 preset already looked like — and reported. Losing 56 good
+ * payloads because the 57th had a permissions problem would be a worse answer than a preset
+ * that carries most of itself.
+ */
+export async function publishPresetWithPayloads(
+  dir: string,
+  preset: Preset,
+  identity: string,
+  roots: { clientRoot: string; serverRoot: string },
+  localMods: ModInfo[],
+  onProgress?: (p: PublishPayloadProgress) => void,
+  opts: { overwrite?: boolean; isCancelled?: () => boolean } = {}
+): Promise<PublishWithPayloadsResult> {
+  const info = await readStoreInfo(dir);
+  if (!info) return { success: false, message: "That folder is not a preset store." };
+
+  const permission = publishPermission(info, identity);
+  if (!permission.allowed) return { success: false, message: permission.reason ?? "You can't publish to this store." };
+
+  // The collision check happens BEFORE any copying. Discovering that the publish was going to
+  // be refused after 17.8 GB of copying would be its own kind of insult.
+  const target = await readStorePresetFile(dir, preset.id);
+  if (target && !sameIdentity(target.author, identity) && !opts.overwrite) {
+    return {
+      success: false,
+      needsConfirmation: true,
+      message: `"${target.name}" in this store was published by ${target.author || "someone else"}. Publishing will replace it.`
+    };
+  }
+
+  const byKey = new Map<string, ModInfo>();
+  for (const mod of localMods) byKey.set(`${mod.type}:${mod.id.toLowerCase()}`, mod);
+
+  const mods: PresetMod[] = [];
+  const failed: { name: string; message: string }[] = [];
+  let stored = 0;
+  let reused = 0;
+  let bytesCopied = 0;
+  let bytesReused = 0;
+  let modsDone = 0;
+
+  for (const want of preset.mods) {
+    if (opts.isCancelled?.()) {
+      return { success: false, message: `Cancelled after ${modsDone} of ${preset.mods.length} mods. Nothing was published.` };
+    }
+
+    const local = byKey.get(`${want.type}:${want.name.toLowerCase()}`);
+    if (!local) {
+      failed.push({ name: want.name, message: "Not installed here any more." });
+      mods.push({ ...want, payload: undefined, payloadHash: undefined });
+      modsDone++;
+      continue;
+    }
+
+    const files = collectModPayloadFiles(roots.clientRoot, roots.serverRoot, local);
+    const result = await storePayload(
+      dir,
+      files,
+      {
+        name: want.name,
+        version: want.version,
+        type: want.type,
+        guid: want.guid,
+        // license is deliberately absent: the pre-shutdown harvest never captured it, and the
+        // Forge API has no licence field at all, so nothing local knows it. The field stays
+        // in the format so recording it later needs no migration — see docs/PRESETS.md.
+        license: local.license,
+        sourceUrl: local.sourceUrl
+      },
+      (p) => onProgress?.({ ...p, modsDone, modsTotal: preset.mods.length, bytesReused }),
+      opts.isCancelled
+    );
+
+    if (result.success && result.key) {
+      if (result.reused) {
+        reused++;
+        bytesReused += result.manifest?.bytes ?? 0;
+      } else {
+        stored++;
+      }
+      bytesCopied += result.bytesCopied ?? 0;
+      mods.push({
+        ...want,
+        payload: result.key,
+        payloadHash: result.manifest?.hash,
+        sizeBytes: result.manifest?.bytes,
+        // What THIS publisher knows wins over what the payload's manifest happens to record.
+        // A reused payload returns the manifest written by whoever stored it FIRST, so
+        // reading these off it meant a sourceUrl this machine knew was silently dropped the
+        // moment someone else had already stored those bytes. That is the one field that
+        // still matters after Forge is gone — it is how you find the mod when the payload
+        // is not carried.
+        license: local.license ?? result.manifest?.license,
+        sourceUrl: local.sourceUrl ?? result.manifest?.sourceUrl
+      });
+    } else {
+      failed.push({ name: want.name, message: result.message });
+      mods.push({ ...want, payload: undefined, payloadHash: undefined });
+    }
+    modsDone++;
+  }
+
+  const carried = mods.filter((m) => m.payload).length;
+  const published: Preset = {
+    ...preset,
+    author: identity,
+    updatedAt: new Date().toISOString(),
+    // Only true when something is actually carried. Claiming payloads a preset does not have
+    // would make apply fail at the exact moment the user was relying on it.
+    hasPayloads: carried > 0,
+    mods
+  };
+
+  try {
+    await writeJsonAtomic(storePresetPath(dir, preset.id), published);
+  } catch (err: any) {
+    return { success: false, message: err?.message ?? "Couldn't write to the store." };
+  }
+
+  return {
+    success: true,
+    preset: published,
+    stored,
+    reused,
+    failed: failed.length ? failed : undefined,
+    bytesCopied,
+    message:
+      `Published "${published.name}" with ${carried} of ${mods.length} mods carried` +
+      (reused ? ` (${reused} already in the store)` : "") +
+      (bytesCopied ? `, ${formatBytes(bytesCopied)} copied` : "") +
+      (failed.length ? `. ${failed.length} could not be gathered.` : ".")
+  };
+}
+
+/** Reads the raw file for one preset id, without the conflict resolution listStorePresets does. */
+async function readStorePresetFile(dir: string, id: string): Promise<Preset | null> {
+  try {
+    const parsed = JSON.parse(await fsp.readFile(storePresetPath(dir, id), "utf-8")) as Preset;
+    return parsed?.schema === PRESET_SCHEMA ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * Phase 3 — installing from payloads
+ * ----------------------------------------------------------------------- */
+
+export interface ApplyPayloadsProgress {
+  mod: string;
+  modsDone: number;
+  modsTotal: number;
+  bytesDone: number;
+  bytesTotal: number;
+}
+
+export interface ApplyPayloadsResult {
+  success: boolean;
+  message: string;
+  installed: string[];
+  failed: { name: string; message: string }[];
+  skipped: { name: string; message: string }[];
+  bytesInstalled: number;
+}
+
+/**
+ * Installs the mods a preset carries but the target install lacks.
+ *
+ * Additive only. A mod present locally and absent from the preset is left alone: a preset
+ * says what a setup needs, not what it forbids, and deleting somebody's mods because they
+ * are missing from a list is a far more destructive reading than anyone asked for.
+ *
+ * `names` narrows it to specific mods, so the UI can offer "install this one" as well as
+ * "install everything missing".
+ */
+export async function applyPresetPayloads(
+  dir: string,
+  preset: Preset,
+  roots: { clientRoot: string; serverRoot: string },
+  names: string[] | null,
+  onProgress?: (p: ApplyPayloadsProgress) => void,
+  isCancelled?: () => boolean
+): Promise<ApplyPayloadsResult> {
+  const wanted = names ? new Set(names.map((n) => n.toLowerCase())) : null;
+  const targets = preset.mods.filter((m) => !wanted || wanted.has(m.name.toLowerCase()));
+
+  const installed: string[] = [];
+  const failed: { name: string; message: string }[] = [];
+  const skipped: { name: string; message: string }[] = [];
+  let bytesInstalled = 0;
+
+  const bytesTotal = targets.reduce((s, m) => s + (m.sizeBytes ?? 0), 0);
+  let modsDone = 0;
+
+  for (const mod of targets) {
+    if (isCancelled?.()) break;
+
+    if (!mod.payload) {
+      // Named but not carried. Honest about which it is: "missing" and "we have it but can't
+      // install it" send the user to completely different places.
+      skipped.push({
+        name: mod.name,
+        message: mod.sourceUrl ? `Not carried by this preset — get it from ${mod.sourceUrl}` : "Not carried by this preset."
+      });
+      modsDone++;
+      continue;
+    }
+
+    onProgress?.({ mod: mod.name, modsDone, modsTotal: targets.length, bytesDone: bytesInstalled, bytesTotal });
+
+    const result = await applyPayload(dir, mod.payload, roots.clientRoot, roots.serverRoot, {
+      enabled: mod.enabled,
+      verifyFirst: true
+    });
+
+    if (result.success) {
+      installed.push(mod.name);
+      bytesInstalled += result.bytesCopied ?? 0;
+
+      // Record what was installed, for two reasons. The obvious one: this is a third install
+      // path, and both earlier ones shipped recording nothing. The subtle one: a payload
+      // install rewrites every file, so mtimes change even when bytes do not, and the
+      // ledger's fingerprint is stat-only — without this, installing a preset would mark
+      // every mod it touched "stale-record" and go back to trusting what mods say about
+      // themselves. Measured: it did exactly that to 5 mods on the reference install.
+      const installedPath = installedPathFor(roots, mod);
+      if (installedPath) {
+        try {
+          recordPayloadInstall(roots.clientRoot, {
+            id: mod.name,
+            type: mod.type,
+            installedPath,
+            version: mod.version,
+            presetName: preset.name,
+            payloadHash: mod.payloadHash
+          });
+        } catch {
+          // A ledger entry is worth having but never worth failing an install over.
+        }
+      }
+    } else {
+      failed.push({ name: mod.name, message: result.message });
+    }
+    modsDone++;
+  }
+
+  return {
+    success: failed.length === 0,
+    installed,
+    failed,
+    skipped,
+    bytesInstalled,
+    message:
+      `Installed ${installed.length} mod(s)` +
+      (bytesInstalled ? `, ${formatBytes(bytesInstalled)}` : "") +
+      (skipped.length ? `. ${skipped.length} not carried by this preset` : "") +
+      (failed.length ? `. ${failed.length} failed` : "") +
+      "."
+  };
+}
+
+/**
+ * Where a mod's files end up, which is what the ledger fingerprints.
+ *
+ * Mirrors resolvePayloadTarget's roots rule rather than restating it loosely: a server mod
+ * lives under the SERVER root, a client mod under the CLIENT root, and on a split install
+ * those differ.
+ */
+function installedPathFor(
+  roots: { clientRoot: string; serverRoot: string },
+  mod: PresetMod
+): string | null {
+  if (mod.type === "server") {
+    return path.join(roots.serverRoot, "user", mod.enabled ? "mods" : "mods.disabled", mod.name);
+  }
+  return path.join(roots.clientRoot, "BepInEx", mod.enabled ? "plugins" : "plugins.disabled", mod.name);
+}
+
+/** Every payload key any preset in the store still refers to. */
+export async function payloadKeysInUse(dir: string): Promise<Set<string>> {
+  const keys = new Set<string>();
+  for (const entry of await listStorePresets(dir)) {
+    for (const mod of entry.preset.mods) if (mod.payload) keys.add(mod.payload);
+  }
+  return keys;
 }

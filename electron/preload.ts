@@ -70,6 +70,21 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   importPreset: (id: string, overwrite?: boolean) => ipcRenderer.invoke("import-preset", id, overwrite),
   getStorePresetReport: (id: string) => ipcRenderer.invoke("get-store-preset-report", id),
 
+  // --- preset payloads: the store carries the mod files, so no Forge is needed ---
+  publishPresetWithPayloads: (id: string, overwrite?: boolean) =>
+    ipcRenderer.invoke("publish-preset-with-payloads", id, overwrite),
+  // names omitted = install everything the preset carries that is missing here
+  installPresetPayloads: (id: string, names?: string[]) => ipcRenderer.invoke("install-preset-payloads", id, names),
+  verifyPresetPayloads: (id: string, deep?: boolean) => ipcRenderer.invoke("verify-preset-payloads", id, deep),
+  cancelPresetPayloads: () => ipcRenderer.invoke("cancel-preset-payloads"),
+  getStoreUsage: () => ipcRenderer.invoke("get-store-usage"),
+  cleanStorePayloads: () => ipcRenderer.invoke("clean-store-payloads"),
+  onPresetPayloadProgress: (callback: (p: any) => void) => {
+    const handler = (_e: unknown, p: any) => callback(p);
+    ipcRenderer.on("preset-payload-progress", handler);
+    return () => ipcRenderer.removeListener("preset-payload-progress", handler);
+  },
+
   // --- preset files: sharing with no store at all ---
   exportPresetFile: (id: string) => ipcRenderer.invoke("export-preset-file", id),
   // knownPath is the file already chosen on the first call, so confirming an overwrite does

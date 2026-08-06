@@ -36,6 +36,13 @@ export interface ModInfo {
   sourceUrl?: string;
   /** "owner/repo" when the source is GitHub — what the releases API takes. */
   sourceRepo?: string;
+  /**
+   * The mod's licence, when anything knows it — which today is almost never. The Forge API
+   * has no licence field at all (checked 2026-08-06), so the pre-shutdown harvest could not
+   * capture one; a live SPT server reports it, but only for the server mods it has loaded.
+   * Carried so that publishing a preset can show what is being redistributed.
+   */
+  license?: string;
   assemblyVersion?: string; // the assembly's own version, kept for the fallback above
   author?: string; // read from the mod's package.json, when present
   installedAt?: string; // ISO date of when the app installed it (local registry)
@@ -98,7 +105,7 @@ export interface InstanceConfig {
  * off the filename. "declared-at-install" is what the mod itself claimed at the moment it
  * went in — kept because it at least pins a point in time.
  */
-export type VersionOrigin = "forge" | "github" | "archive-name" | "declared-at-install";
+export type VersionOrigin = "forge" | "github" | "archive-name" | "declared-at-install" | "preset";
 
 /**
  * A cheap signature of a mod's files on disk, taken at install time.

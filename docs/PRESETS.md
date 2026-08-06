@@ -136,12 +136,22 @@ it.
 }
 ```
 
-`license` and `sourceUrl` are recorded because both are already available — from
-`/launcher/server/loadedServerMods` and from `data/forge-directory.json` — and because
-someone publishing a 17.8 GB bundle of other people's work should be able to see what they
-are sharing. Several installed mods carry `CC-BY-NC-ND` and one is `PUSL`. Verbatim
-redistribution among a private group is a very different thing from publishing, but the app
-should surface the licences at publish time rather than pretend it does not know.
+`sourceUrl` is recorded and populated: every installed mod resolves to one.
+
+**`license` is recorded but currently never populated, and this was a wrong assumption.** The
+original claim here was that licences were "already available" from both
+`/launcher/server/loadedServerMods` and `data/forge-directory.json`. Only the first is true.
+Checked against the live API on 2026-08-06, `/mod/<id>` has **no licence field of any kind** —
+its fields are `id, hub_id, guid, name, slug, teaser, thumbnail, downloads, favourites_count,
+description, detail_url, fika_compatibility, featured, contains_ads, contains_ai_content,
+custom_ai_disclosure, shows_profile_binding_notice, cheat_notice, category_id, published_at,
+created_at, updated_at, owner, additional_authors, category` — so the harvest could not have
+captured it and re-harvesting before the shutdown would not help.
+
+That leaves a live SPT server as the only source, and only for the SERVER mods it has loaded.
+The field stays in the format so filling it in later needs no migration. Someone publishing a
+17.8 GB bundle of other people's work should be able to see what they are sharing — several
+installed mods carry `CC-BY-NC-ND` and one is `PUSL` — so this is a real gap, not a decision.
 
 ---
 
@@ -202,9 +212,32 @@ Two things learned building it:
   id. The newest wins for display and the losers are named, because silently picking one is
   how somebody applies a preset they did not write.
 
-**Phase 3 — payloads.** The deduped `mods/` store, copy-on-publish, apply-from-payload,
-progress reporting for multi-GB copies, resume/verify on interrupted copies. This is the part
-that removes Forge from the equation entirely.
+**Phase 3 — payloads. DONE.** The deduped `mods/` store, copy-on-publish, apply-from-payload,
+progress reporting, resume, and verification. A preset can now set someone up with no Forge,
+no catalogue and no downloads.
+
+Measured on the reference install: **57 mods, 17 GB published in 28.7s**, every payload
+deep-verified by re-hashing, every mod byte-for-byte identical after installing into a fresh
+target, and re-publishing the same preset stored 0 and reused 57, copying **zero bytes**.
+
+Three things the design above got wrong, found by building it:
+
+- **Payload keys must be type-scoped.** `<name>@<version>` puts a mod's server half and
+  client half at one address — `acidphantasm-botplacementsystem`, `WTT-PackNStrap` and
+  `showmethemoney` all ship both under one folder name. The content hash would keep them
+  apart in practice, but only because their contents happen to differ, and making a
+  structural distinction rest on a coincidence is how the headless parity report once let
+  server rows overwrite client rows. Keys are now `<type>_<name>@<version>`.
+- **Installing from a payload has to write to the version ledger.** A payload install
+  rewrites every file, so mtimes move even when bytes do not, and the ledger's fingerprint is
+  deliberately stat-only. Without recording, installing a preset marks every mod it touched
+  `stale-record` and goes back to trusting what mods declare about themselves. Measured: it
+  did exactly that to 5 mods on the live install before it was fixed. This was the THIRD
+  install path to ship recording nothing.
+- **Metadata must not be read back off a reused payload.** A reused payload returns the
+  manifest written by whoever stored it first, so a `sourceUrl` this machine knew was silently
+  dropped the moment someone else had already stored those bytes — losing the one field that
+  still matters after Forge is gone.
 
 **Phase 4 (later) — other transports.** An HTTP/WebDAV backend behind the same interface if
 the folder ever stops being enough. Explicitly out of scope for v1.2.1.

@@ -10,7 +10,15 @@
  * is not installed. That needs payloads (phase 3) or Forge.
  */
 import { useState } from "react";
-import { Preset, PresetReport, PresetRow, PresetStoreStatus, WritePolicy } from "./types";
+import {
+  Preset,
+  PresetReport,
+  PresetRow,
+  PresetStoreStatus,
+  PayloadProgress,
+  StoreUsage,
+  WritePolicy
+} from "./types";
 import "./presets.css";
 
 const ISSUE_LABEL: Record<string, string> = {
@@ -75,6 +83,59 @@ function PresetRowItem({ row }: { row: PresetRow }) {
   );
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
+}
+
+/**
+ * Progress for a copy that can run for tens of minutes.
+ *
+ * Shows the mod and the file, not just a bar. "Copying WTT-ContentBackport, 812 of 1179
+ * files" is the difference between a user waiting and a user killing the app because it
+ * looks hung — that mod alone is 4.76 GB.
+ */
+function PayloadProgressBar({ progress, onCancel }: { progress: PayloadProgress; onCancel: () => void }) {
+  const pct = progress.bytesTotal > 0 ? Math.min(100, (progress.bytesDone / progress.bytesTotal) * 100) : 0;
+  return (
+    <div className="preset-payload-progress">
+      <div className="preset-payload-head">
+        <span className="preset-payload-mod">
+          {progress.phase === "publish" ? "Copying to the store" : "Installing"}: <strong>{progress.mod}</strong>
+        </span>
+        <button onClick={onCancel} title="Stop after the current file. Progress is kept and resumes next time.">
+          Stop
+        </button>
+      </div>
+      <div className="preset-payload-track">
+        <div className="preset-payload-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="preset-payload-meta">
+        <span>
+          mod {Math.min(progress.modsDone + 1, progress.modsTotal)} of {progress.modsTotal}
+          {progress.filesTotal ? ` · file ${progress.filesDone} of ${progress.filesTotal}` : ""}
+        </span>
+        <span>
+          {formatBytes(progress.bytesDone)} / {formatBytes(progress.bytesTotal)}
+          {progress.bytesReused ? ` · ${formatBytes(progress.bytesReused)} reused` : ""}
+        </span>
+      </div>
+      {progress.file && (
+        <span className="preset-payload-file" title={progress.file}>
+          {progress.file}
+        </span>
+      )}
+    </div>
+  );
+}
+
 /**
  * The shared store: connect to a folder, see what is in it, publish and import.
  *
@@ -86,6 +147,8 @@ function StoreSection({
   status,
   identity,
   busy,
+  usage,
+  progress,
   selectedPresetName,
   canPublishSelected,
   onChoose,
@@ -94,13 +157,20 @@ function StoreSection({
   onSetIdentity,
   onSetPolicy,
   onPublish,
+  onPublishWithPayloads,
   onUnpublish,
   onImport,
+  onInstallPayloads,
+  onVerifyPayloads,
+  onCleanStore,
+  onCancelPayloads,
   onImportFile
 }: {
   status: PresetStoreStatus | null;
   identity: string;
   busy: boolean;
+  usage: StoreUsage | null;
+  progress: PayloadProgress | null;
   selectedPresetName: string | null;
   canPublishSelected: boolean;
   onChoose: () => void;
@@ -109,8 +179,13 @@ function StoreSection({
   onSetIdentity: (name: string) => void;
   onSetPolicy: (policy: WritePolicy) => void;
   onPublish: () => void;
+  onPublishWithPayloads: () => void;
   onUnpublish: (id: string) => void;
   onImport: (id: string) => void;
+  onInstallPayloads: (id: string) => void;
+  onVerifyPayloads: (id: string, deep: boolean) => void;
+  onCleanStore: () => void;
+  onCancelPayloads: () => void;
   onImportFile: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -266,25 +341,66 @@ function StoreSection({
                 )}
               </div>
 
+              {progress && <PayloadProgressBar progress={progress} onCancel={onCancelPayloads} />}
+
               <div className="preset-store-publish">
-                <button
-                  className={canPublishSelected ? "primary" : ""}
-                  disabled={busy || !canPublishSelected}
-                  onClick={onPublish}
-                  title={
-                    !selectedPresetName
-                      ? "Pick one of your presets first"
-                      : status?.canPublish
-                        ? `Publish "${selectedPresetName}" to ${status?.info?.name}`
-                        : status?.publishBlockedReason
-                  }
-                >
-                  {selectedPresetName ? `Publish "${selectedPresetName}"` : "Publish a preset"}
-                </button>
+                <div className="preset-store-actions">
+                  <button
+                    disabled={busy || !canPublishSelected}
+                    onClick={onPublish}
+                    title={
+                      !selectedPresetName
+                        ? "Pick one of your presets first"
+                        : status?.canPublish
+                          ? `Share the list of mods only — small, and needs Forge or a manual download to act on`
+                          : status?.publishBlockedReason
+                    }
+                  >
+                    Publish list only
+                  </button>
+                  {/* The one that makes a preset self-sufficient. Named for what it does
+                      rather than "publish", because the difference is 40 KB versus 17.8 GB. */}
+                  <button
+                    className={canPublishSelected ? "primary" : ""}
+                    disabled={busy || !canPublishSelected}
+                    onClick={onPublishWithPayloads}
+                    title={
+                      !selectedPresetName
+                        ? "Pick one of your presets first"
+                        : status?.canPublish
+                          ? `Copy every mod in "${selectedPresetName}" into the store, so it can be installed with no Forge and no downloads`
+                          : status?.publishBlockedReason
+                    }
+                  >
+                    Publish with mod files
+                  </button>
+                </div>
+                {selectedPresetName && (
+                  <span className="preset-store-note">
+                    Publishing "{selectedPresetName}". Mods are stored once and shared between presets, so a second
+                    preset only copies what is new.
+                  </span>
+                )}
                 {!status?.canPublish && status?.publishBlockedReason && (
                   <span className="preset-store-warn">{status.publishBlockedReason}</span>
                 )}
               </div>
+
+              {usage && usage.payloads > 0 && (
+                <div className="preset-store-usage">
+                  <span>
+                    {usage.payloads} mod payload(s) · {formatBytes(usage.bytes)}
+                    {usage.stagingBytes > 0 ? ` · ${formatBytes(usage.stagingBytes)} part-copied` : ""}
+                  </span>
+                  <button
+                    disabled={busy}
+                    onClick={onCleanStore}
+                    title="Delete payloads no preset in this store refers to any more"
+                  >
+                    Clean up
+                  </button>
+                </div>
+              )}
 
               {(status?.entries.length ?? 0) === 0 ? (
                 <p className="empty-list">Nothing published here yet.</p>
@@ -311,8 +427,47 @@ function StoreSection({
                               {entry.conflictsWith.length} conflicting copy(ies) in the folder — showing the newest.
                             </span>
                           )}
+                          {/* Whether this preset can actually set someone up, or only tell
+                              them what to go and find. After Forge shuts down that is the
+                              whole difference between the two. */}
+                          {(() => {
+                            const carried = entry.preset.mods.filter((m) => m.payload);
+                            const bytes = carried.reduce((s, m) => s + (m.sizeBytes ?? 0), 0);
+                            return carried.length > 0 ? (
+                              <span className="preset-store-carried">
+                                carries {carried.length}/{entry.preset.mods.length} mods · {formatBytes(bytes)}
+                              </span>
+                            ) : (
+                              <span className="preset-store-listonly">list only — no mod files</span>
+                            );
+                          })()}
                         </div>
                         <div className="preset-store-item-actions">
+                          {entry.preset.mods.some((m) => m.payload) && (
+                            <>
+                              <button
+                                className="primary"
+                                disabled={busy}
+                                onClick={() => onInstallPayloads(entry.preset.id)}
+                                title="Copy this preset's mod files straight into your install — no Forge, no downloads"
+                              >
+                                Install mods
+                              </button>
+                              <button
+                                disabled={busy}
+                                onClick={() => onVerifyPayloads(entry.preset.id, false)}
+                                title="Check the stored files are complete. Shift-click to re-hash every byte."
+                                onMouseDown={(e) => {
+                                  if (e.shiftKey) {
+                                    e.preventDefault();
+                                    onVerifyPayloads(entry.preset.id, true);
+                                  }
+                                }}
+                              >
+                                Verify
+                              </button>
+                            </>
+                          )}
                           <button disabled={busy} onClick={() => onImport(entry.preset.id)}>
                             Import
                           </button>
@@ -345,6 +500,8 @@ export default function PresetsPanel({
   busy,
   storeStatus,
   identity,
+  storeUsage,
+  payloadProgress,
   onSelect,
   onSaveCurrent,
   onRecapture,
@@ -360,6 +517,11 @@ export default function PresetsPanel({
   onImportFromStore,
   onExportFile,
   onImportFile,
+  onPublishWithPayloads,
+  onInstallPayloads,
+  onVerifyPayloads,
+  onCleanStore,
+  onCancelPayloads,
   onClose
 }: {
   presets: Preset[];
@@ -368,6 +530,8 @@ export default function PresetsPanel({
   busy: boolean;
   storeStatus: PresetStoreStatus | null;
   identity: string;
+  storeUsage: StoreUsage | null;
+  payloadProgress: PayloadProgress | null;
   onSelect: (id: string) => void;
   onSaveCurrent: (name: string, description: string) => void;
   onRecapture: (id: string) => void;
@@ -383,6 +547,11 @@ export default function PresetsPanel({
   onImportFromStore: (id: string) => void;
   onExportFile: (id: string) => void;
   onImportFile: () => void;
+  onPublishWithPayloads: (id: string) => void;
+  onInstallPayloads: (id: string) => void;
+  onVerifyPayloads: (id: string, deep: boolean) => void;
+  onCleanStore: () => void;
+  onCancelPayloads: () => void;
   onClose: () => void;
 }) {
   const [newName, setNewName] = useState("");
@@ -444,6 +613,8 @@ export default function PresetsPanel({
             status={storeStatus}
             identity={identity}
             busy={busy}
+            usage={storeUsage}
+            progress={payloadProgress}
             selectedPresetName={selected?.name ?? null}
             canPublishSelected={!!selected && storeStatus?.canPublish === true}
             onChoose={onChooseStore}
@@ -452,8 +623,13 @@ export default function PresetsPanel({
             onSetIdentity={onSetIdentity}
             onSetPolicy={onSetStorePolicy}
             onPublish={() => selected && onPublish(selected.id)}
+            onPublishWithPayloads={() => selected && onPublishWithPayloads(selected.id)}
             onUnpublish={onUnpublish}
             onImport={onImportFromStore}
+            onInstallPayloads={onInstallPayloads}
+            onVerifyPayloads={onVerifyPayloads}
+            onCleanStore={onCleanStore}
+            onCancelPayloads={onCancelPayloads}
             onImportFile={onImportFile}
           />
 

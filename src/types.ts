@@ -317,6 +317,13 @@ export interface PresetMod {
   loadOrder: number;
   required: boolean;
   author?: string;
+  /* --- phase 3: set only when the preset carries this mod's files --------- */
+  /** Key into the store's mods/ directory. Absent means "named, not carried". */
+  payload?: string;
+  payloadHash?: string;
+  sizeBytes?: number;
+  license?: string;
+  sourceUrl?: string;
 }
 
 export interface Preset {
@@ -366,6 +373,38 @@ export interface PresetStoreStatus {
   canPublish: boolean;
   publishBlockedReason?: string;
   message?: string;
+}
+
+/* --- payloads (phase 3) --------------------------------------------------- */
+
+export interface StoreUsage {
+  payloads: number;
+  bytes: number;
+  /** Left behind by interrupted copies. Resumable, so not deleted on sight. */
+  stagingBytes: number;
+}
+
+export interface PayloadVerifyRow {
+  name: string;
+  ok: boolean;
+  key: string;
+  /** "deep" re-hashed every byte; "shallow" checked file count and sizes only. */
+  depth: "shallow" | "deep";
+  message: string;
+}
+
+/** Streamed during publish and install, which can run for tens of minutes on a big store. */
+export interface PayloadProgress {
+  phase: "publish" | "install";
+  mod: string;
+  file?: string;
+  filesDone?: number;
+  filesTotal?: number;
+  bytesDone: number;
+  bytesTotal: number;
+  modsDone: number;
+  modsTotal: number;
+  bytesReused?: number;
 }
 
 export type PresetIssue = "missing" | "version-mismatch" | "state-mismatch" | "extra" | "unknown-version";
@@ -497,6 +536,39 @@ export interface ModManagerAPI {
   ) => Promise<{ success: boolean; message: string; needsConfirmation?: boolean; preset?: Preset }>;
   /** Compares a store preset against this install without importing a copy of it. */
   getStorePresetReport: (id: string) => Promise<{ success: boolean; report?: PresetReport; message?: string }>;
+
+  // --- preset payloads (phase 3): the store carries the mod files ---
+  publishPresetWithPayloads: (
+    id: string,
+    overwrite?: boolean
+  ) => Promise<{
+    success: boolean;
+    message: string;
+    needsConfirmation?: boolean;
+    stored?: number;
+    reused?: number;
+    failed?: { name: string; message: string }[];
+    status?: PresetStoreStatus;
+  }>;
+  installPresetPayloads: (
+    id: string,
+    names?: string[]
+  ) => Promise<{
+    success: boolean;
+    message: string;
+    installed?: string[];
+    failed?: { name: string; message: string }[];
+    /** Named by the preset but not carried by it — a different problem from a failure. */
+    skipped?: { name: string; message: string }[];
+  }>;
+  verifyPresetPayloads: (
+    id: string,
+    deep?: boolean
+  ) => Promise<{ success: boolean; message: string; results?: PayloadVerifyRow[] }>;
+  cancelPresetPayloads: () => Promise<{ success: boolean; message: string }>;
+  getStoreUsage: () => Promise<{ success: boolean; usage?: StoreUsage; human?: string; message?: string }>;
+  cleanStorePayloads: () => Promise<{ success: boolean; message: string; removed?: string[]; bytesFreed?: number }>;
+  onPresetPayloadProgress: (callback: (p: PayloadProgress) => void) => () => void;
 
   // --- preset files: sharing with no store at all ---
   exportPresetFile: (

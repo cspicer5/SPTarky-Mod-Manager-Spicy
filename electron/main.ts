@@ -67,8 +67,12 @@ import {
   exportPresetToFile,
   importPresetFromFile,
   presetFileName,
+  publishPresetWithPayloads,
+  applyPresetPayloads,
+  payloadKeysInUse,
   WritePolicy
 } from "./presetStore";
+import { storeUsage, verifyPayload, collectOrphanPayloads, formatBytes } from "./presetPayloads";
 import {
   backupConfigs,
   restoreConfigs,
@@ -723,6 +727,114 @@ ipcMain.handle("get-store-preset-report", async (_event, id: string) => {
   const preset = await readStorePreset(dir, id);
   if (!preset) return { success: false, message: "That preset is not in this store." };
   return { success: true, report: buildPresetReport(preset, scanInstance("main"), localSptVersion()) };
+});
+
+/* --- IPC: preset payloads (phase 3) ------------------------------------------
+ * The part that removes Forge from the equation: a preset that carries the mod files needs
+ * no catalogue and no downloads.
+ *
+ * These are the only preset operations that can run for tens of minutes — the reference
+ * install is 17.8 GB — so they stream progress and can be cancelled. Cancelling is safe:
+ * copies are staged and only renamed into place when complete, and staging is resumable.
+ */
+let payloadCancelled = false;
+
+ipcMain.handle("cancel-preset-payloads", () => {
+  payloadCancelled = true;
+  return { success: true, message: "Stopping after the current file. Progress is kept." };
+});
+
+ipcMain.handle("get-store-usage", async () => {
+  const dir = store.get("presetStorePath");
+  if (!dir) return { success: false, message: "No store connected." };
+  const usage = await storeUsage(dir);
+  return { success: true, usage, human: formatBytes(usage.bytes) };
+});
+
+ipcMain.handle("publish-preset-with-payloads", async (_event, id: string, overwrite?: boolean) => {
+  const dir = store.get("presetStorePath");
+  if (!dir) return { success: false, message: "No store connected." };
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+  const preset = readPreset(presetRoot(), id);
+  if (!preset) return { success: false, message: "That preset no longer exists." };
+
+  payloadCancelled = false;
+  const identity = presetIdentity();
+  const result = await publishPresetWithPayloads(
+    dir,
+    preset,
+    identity,
+    roots,
+    scanInstance("main"),
+    (p) => mainWindow?.webContents.send("preset-payload-progress", { ...p, phase: "publish" }),
+    { overwrite, isCancelled: () => payloadCancelled }
+  );
+  return { ...result, status: await getStoreStatus(dir, identity) };
+});
+
+/**
+ * Installs the mods a store preset carries but this install lacks.
+ *
+ * Additive only, deliberately. A mod present here and absent from the preset is left alone:
+ * a preset says what a setup needs, not what it forbids.
+ */
+ipcMain.handle("install-preset-payloads", async (_event, id: string, names?: string[]) => {
+  const dir = store.get("presetStorePath");
+  if (!dir) return { success: false, message: "No store connected." };
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+  const preset = (await readStorePreset(dir, id)) ?? readPreset(presetRoot(), id);
+  if (!preset) return { success: false, message: "That preset could not be found." };
+
+  payloadCancelled = false;
+  const result = await applyPresetPayloads(
+    dir,
+    preset,
+    roots,
+    names ?? null,
+    (p) => mainWindow?.webContents.send("preset-payload-progress", { ...p, phase: "install" }),
+    () => payloadCancelled
+  );
+  return result;
+});
+
+ipcMain.handle("verify-preset-payloads", async (_event, id: string, deep?: boolean) => {
+  const dir = store.get("presetStorePath");
+  if (!dir) return { success: false, message: "No store connected." };
+  const preset = (await readStorePreset(dir, id)) ?? readPreset(presetRoot(), id);
+  if (!preset) return { success: false, message: "That preset could not be found." };
+
+  const results = [];
+  for (const mod of preset.mods) {
+    if (!mod.payload) continue;
+    results.push({ name: mod.name, ...(await verifyPayload(dir, mod.payload, deep)) });
+  }
+  const bad = results.filter((r) => !r.ok);
+  return {
+    success: bad.length === 0,
+    results,
+    message: bad.length === 0
+      ? `All ${results.length} payload(s) check out${deep ? " (contents re-hashed)" : ""}.`
+      : `${bad.length} of ${results.length} payload(s) are not intact.`
+  };
+});
+
+/** Frees space by deleting payloads no preset in the store refers to any more. */
+ipcMain.handle("clean-store-payloads", async () => {
+  const dir = store.get("presetStorePath");
+  if (!dir) return { success: false, message: "No store connected." };
+  const inUse = await payloadKeysInUse(dir);
+  const result = await collectOrphanPayloads(dir, inUse);
+  return {
+    success: true,
+    ...result,
+    message:
+      result.removed.length || result.staleStaging
+        ? `Removed ${result.removed.length} unused payload(s), freeing ${formatBytes(result.bytesFreed)}.` +
+          (result.staleStaging ? ` Cleared ${result.staleStaging} finished staging folder(s).` : "")
+        : "Nothing to clean up — every payload is still in use."
+  };
 });
 
 /* --- IPC: preset files -------------------------------------------------------

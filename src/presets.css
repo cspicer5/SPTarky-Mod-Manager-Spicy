@@ -528,3 +528,90 @@
   color: var(--text-faint);
   font-style: italic;
 }
+
+/* --- payloads (phase 3) ---------------------------------------------------
+   A publish can move 17.8 GB, so progress has to say what it is doing, not just spin.
+   "Copying WTT-ContentBackport, 812 of 1179 files" is the difference between a user waiting
+   and a user killing the app because it looks hung. */
+.preset-payload-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-wash);
+}
+
+.preset-payload-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.preset-payload-mod {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Its own track and fill, NOT the bulk-reinstall bar's. Reusing a class name across two
+   features is exactly how `.bulk-bar` once squashed the selection bar to a 4px sliver. */
+.preset-payload-track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+
+.preset-payload-fill {
+  height: 100%;
+  background: var(--accent-strong);
+  transition: width 120ms linear;
+}
+
+.preset-payload-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.preset-payload-file {
+  font-family: var(--font-mono, monospace);
+  font-size: 9px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* a long path is identified by its END, not its start */
+  text-align: left;
+}
+
+.preset-store-usage {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 5px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+}
+
+/* Whether a preset can actually set someone up, or only tell them what to go and find.
+   After Forge shuts down that is the whole difference between the two. */
+.preset-store-carried {
+  font-size: 10px;
+  color: var(--ok-strong);
+}
+
+.preset-store-listonly {
+  font-size: 10px;
+  color: var(--text-faint);
+  font-style: italic;
+}

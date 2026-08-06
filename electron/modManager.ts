@@ -216,16 +216,19 @@ function resolveUnpackedBinaryPath(binPath: string): string {
 }
 
 // --- Folders of interest inside an SPT instance ---
-const SERVER_MODS_DIR = ["user", "mods"];
-const SERVER_MODS_DISABLED_DIR = ["user", "mods.disabled"];
-const CLIENT_PLUGINS_DIR = ["BepInEx", "plugins"];
-const CLIENT_PLUGINS_DISABLED_DIR = ["BepInEx", "plugins.disabled"];
+// Exported for the preset payload store, which has to gather the SAME complete file set this
+// module already knows how to move. Two copies of "what belongs to this mod" is how the
+// version ledger ended up recording nothing on the merge path.
+export const SERVER_MODS_DIR = ["user", "mods"];
+export const SERVER_MODS_DISABLED_DIR = ["user", "mods.disabled"];
+export const CLIENT_PLUGINS_DIR = ["BepInEx", "plugins"];
+export const CLIENT_PLUGINS_DISABLED_DIR = ["BepInEx", "plugins.disabled"];
 // Prepatchers run BEFORE the game loads and live outside plugins/. A mod can ship both
 // parts (e.g. Wedge has Wedge.Client.dll in plugins/ and Wedge.Prepatch.dll in patchers/),
 // and disabling only the plugin left the patcher active — worse than not disabling at
 // all, because the mod ends up half-loaded.
-const CLIENT_PATCHERS_DIR = ["BepInEx", "patchers"];
-const CLIENT_PATCHERS_DISABLED_DIR = ["BepInEx", "patchers.disabled"];
+export const CLIENT_PATCHERS_DIR = ["BepInEx", "patchers"];
+export const CLIENT_PATCHERS_DISABLED_DIR = ["BepInEx", "patchers.disabled"];
 
 /**
  * Files/folders that belong to SPT itself (not mods) but live inside BepInEx/plugins —
@@ -243,7 +246,7 @@ const PROTECTED_CLIENT_PLUGIN_NAMES = new Set(["spt", "spt-core.dll"]);
  * this, it showed up as a second entry with the same name and no metadata at all,
  * cluttering both the list and the exported modlist.
  */
-function listCompanionFolderNames(dir: string): Set<string> {
+export function listCompanionFolderNames(dir: string): Set<string> {
   if (!fs.existsSync(dir)) return new Set();
   const looseDllBases = new Set<string>();
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -266,7 +269,7 @@ function listCompanionFolderNames(dir: string): Set<string> {
  * The name rule requires a word boundary: "Wedge" matches "Wedge.Prepatch.dll" but NOT
  * "WedgeExtras.dll" — moving another mod's patcher would break that other mod.
  */
-function findRelatedPatcherFiles(dir: string, modId: string, manifestFiles: string[] = []): string[] {
+export function findRelatedPatcherFiles(dir: string, modId: string, manifestFiles: string[] = []): string[] {
   if (!fs.existsSync(dir)) return [];
   const modBase = modId.replace(/\.dll$/i, "").toLowerCase();
   if (!modBase) return [];
@@ -290,7 +293,7 @@ function findRelatedPatcherFiles(dir: string, modId: string, manifestFiles: stri
     .map((entry) => path.join(dir, entry.name));
 }
 
-function isProtectedClientEntry(name: string): boolean {
+export function isProtectedClientEntry(name: string): boolean {
   return PROTECTED_CLIENT_PLUGIN_NAMES.has(name.toLowerCase());
 }
 
@@ -717,6 +720,39 @@ function loadRegistry(sptPath: string): RegistryEntry[] {
 
 function saveRegistry(sptPath: string, entries: RegistryEntry[]) {
   fs.writeFileSync(getRegistryPath(sptPath), JSON.stringify(entries, null, 2), "utf-8");
+}
+
+/**
+ * Records a mod installed from a preset payload.
+ *
+ * Exported because installing from a payload is a THIRD install path, and the first two both
+ * shipped recording nothing until it was noticed: `performMerge` had its own addToRegistry
+ * calls that were never instrumented, and before that `forgeVersion` was only ever set by the
+ * Forge browse flow.
+ *
+ * It also has to exist for a reason peculiar to payloads. A payload install rewrites every
+ * file, so mtimes change even when the bytes are identical — and the ledger's fingerprint is
+ * deliberately stat-only. Without re-recording here, installing a preset would mark every mod
+ * it touched `stale-record` and fall back to whatever the mod declares about itself, which is
+ * exactly what the ledger exists to stop trusting. The preset knows the version AND carries a
+ * content hash for it, so this is the best-evidenced install path of the three.
+ */
+export function recordPayloadInstall(
+  sptPath: string,
+  entry: { id: string; type: ModType; installedPath: string; version?: string; presetName?: string; payloadHash?: string }
+): void {
+  const existing = loadRegistry(sptPath).find((e) => e.id === entry.id && e.type === entry.type);
+  addToRegistry(sptPath, {
+    ...(existing ?? { id: entry.id, type: entry.type, installedAt: new Date().toISOString() }),
+    id: entry.id,
+    type: entry.type,
+    installedVersion: entry.version ?? existing?.installedVersion,
+    versionOrigin: entry.version ? "preset" : existing?.versionOrigin,
+    versionEvidence: entry.version
+      ? `Preset${entry.presetName ? ` "${entry.presetName}"` : ""}${entry.payloadHash ? ` — payload ${entry.payloadHash.slice(0, 12)}` : ""}`
+      : existing?.versionEvidence,
+    fingerprint: fingerprintPath(entry.installedPath)
+  } as RegistryEntry);
 }
 
 function addToRegistry(sptPath: string, entry: RegistryEntry) {

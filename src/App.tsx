@@ -19,6 +19,8 @@ import {
   Preset,
   PresetReport,
   PresetStoreStatus,
+  PayloadProgress,
+  StoreUsage,
   WritePolicy,
   BulkReinstallProgress,
   BulkReinstallOutcome
@@ -566,6 +568,10 @@ export default function App() {
     ]);
     setStoreStatus(status);
     setPresetIdentity(identity.identity);
+    if (status.connected) {
+      const usage = await window.modManagerAPI.getStoreUsage();
+      setStoreUsage(usage.success ? usage.usage ?? null : null);
+    }
   }, []);
 
   async function withStoreBusy<T>(fn: () => Promise<T>): Promise<T> {
@@ -655,6 +661,98 @@ export default function App() {
         await handleSelectPreset(result.preset.id);
       }
     });
+  }
+
+  /* --- payloads (phase 3) ---------------------------------------------------
+   * The only preset operations that can run for tens of minutes, so they stream progress and
+   * can be stopped. Stopping is safe: copies are staged and renamed into place only when
+   * complete, and staging resumes rather than restarting.
+   */
+  const [payloadProgress, setPayloadProgress] = useState<PayloadProgress | null>(null);
+  const [storeUsage, setStoreUsage] = useState<StoreUsage | null>(null);
+
+  useEffect(() => window.modManagerAPI.onPresetPayloadProgress(setPayloadProgress), []);
+
+  const refreshStoreUsage = useCallback(async () => {
+    const result = await window.modManagerAPI.getStoreUsage();
+    setStoreUsage(result.success ? result.usage ?? null : null);
+  }, []);
+
+  async function handlePublishWithPayloads(id: string) {
+    const preset = presets.find((p) => p.id === id);
+    if (
+      !window.confirm(
+        `Publish "${preset?.name ?? id}" WITH its mod files?\n\n` +
+          `This copies every mod in the preset into the shared store. The first publish can be large — the reference install is 17.8 GB — but mods are stored once and shared between presets, so later publishes only copy what is new.\n\n` +
+          `You can stop it at any point; progress is kept.`
+      )
+    )
+      return;
+
+    setPayloadProgress(null);
+    await withStoreBusy(async () => {
+      let result = await window.modManagerAPI.publishPresetWithPayloads(id);
+      if (result.needsConfirmation) {
+        if (!window.confirm(`${result.message}\n\nPublish anyway?`)) return;
+        result = await window.modManagerAPI.publishPresetWithPayloads(id, true);
+      }
+      pushToast(result.message, result.success);
+      // Which mods could not be gathered matters more than the headline: the preset is still
+      // published, just carrying less than it says.
+      if (result.failed?.length) {
+        pushToast(`Not carried: ${result.failed.map((f) => f.name).join(", ")}`, false);
+      }
+      if (result.status) setStoreStatus(result.status);
+      await Promise.all([refreshPresets(), refreshStoreUsage()]);
+    });
+    setPayloadProgress(null);
+  }
+
+  async function handleInstallPayloads(id: string) {
+    const entry = storeStatus?.entries.find((e) => e.preset.id === id);
+    const carried = entry?.preset.mods.filter((m) => m.payload).length ?? 0;
+    if (
+      !window.confirm(
+        `Install the ${carried} mod(s) this preset carries?\n\n` +
+          `Files are copied straight from the store — no Forge, no downloads. Mods you already have are overwritten with the preset's copies; mods not in the preset are left alone.`
+      )
+    )
+      return;
+
+    setPayloadProgress(null);
+    await withStoreBusy(async () => {
+      const result = await window.modManagerAPI.installPresetPayloads(id);
+      pushToast(result.message, result.success);
+      // "Named but not carried" is a different problem from "failed", and sends the user
+      // somewhere else entirely — to the mod's own page rather than to a retry.
+      if (result.skipped?.length) {
+        pushToast(`${result.skipped.length} mod(s) are named but not carried by this preset.`, false);
+      }
+      await refreshMods();
+      if (selectedPresetId) await loadPresetReport(selectedPresetId);
+    });
+    setPayloadProgress(null);
+  }
+
+  async function handleVerifyPayloads(id: string, deep: boolean) {
+    await withStoreBusy(async () => {
+      const result = await window.modManagerAPI.verifyPresetPayloads(id, deep);
+      pushToast(result.message, result.success);
+    });
+  }
+
+  async function handleCleanStore() {
+    if (!window.confirm("Delete payloads no preset in this store refers to any more?\n\nPresets are not touched.")) return;
+    await withStoreBusy(async () => {
+      const result = await window.modManagerAPI.cleanStorePayloads();
+      pushToast(result.message, result.success);
+      await refreshStoreUsage();
+    });
+  }
+
+  async function handleCancelPayloads() {
+    const result = await window.modManagerAPI.cancelPresetPayloads();
+    pushToast(result.message, true);
   }
 
   async function handleExportPresetFile(id: string) {
@@ -2082,6 +2180,8 @@ export default function App() {
               busy={presetBusy}
               storeStatus={storeStatus}
               identity={presetIdentity}
+              storeUsage={storeUsage}
+              payloadProgress={payloadProgress}
               onSelect={handleSelectPreset}
               onSaveCurrent={handleSavePreset}
               onRecapture={handleRecapturePreset}
@@ -2097,6 +2197,11 @@ export default function App() {
               onImportFromStore={handleImportFromStore}
               onExportFile={handleExportPresetFile}
               onImportFile={handleImportPresetFile}
+              onPublishWithPayloads={handlePublishWithPayloads}
+              onInstallPayloads={handleInstallPayloads}
+              onVerifyPayloads={handleVerifyPayloads}
+              onCleanStore={handleCleanStore}
+              onCancelPayloads={handleCancelPayloads}
               onClose={() => setPresetsOpen(false)}
             />
           )}

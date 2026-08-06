@@ -38,6 +38,19 @@ export interface PresetMod {
   /** false = "part of my setup, but you can play without it". */
   required: boolean;
   author?: string;
+
+  /* --- phase 3: set only when the preset carries the mod's files --------- */
+  /** Key into the store's `mods/` directory. Its absence means "named, not carried". */
+  payload?: string;
+  /** Content hash of the payload, so a preset resolves to the exact bytes it was built from. */
+  payloadHash?: string;
+  sizeBytes?: number;
+  /**
+   * Recorded because someone publishing a bundle of other people's work should be able to
+   * see what they are sharing. Several installed mods are CC-BY-NC-ND and one is PUSL.
+   */
+  license?: string;
+  sourceUrl?: string;
 }
 
 export interface Preset {
