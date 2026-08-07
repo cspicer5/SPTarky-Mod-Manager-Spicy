@@ -420,6 +420,32 @@ export interface AddonSuggestion {
   installed: boolean;
 }
 
+/**
+ * An addon this app installed.
+ *
+ * Kept separately from the mod list because most addons unpack into their PARENT's folder and
+ * never appear as a mod of their own — which is why "did I already install this?" cannot be
+ * answered by looking at folders.
+ */
+export interface InstalledAddonRecord {
+  forgeAddonId?: number;
+  name: string;
+  version?: string;
+  parentName: string;
+  parentType: ModType;
+  parentConstraint?: string;
+  installedAt: string;
+  source: "forge" | "github" | "file";
+  folders: { id: string; type: ModType }[];
+  /** True when it has no folder of its own, so it cannot be uninstalled separately. */
+  mergedIntoParent: boolean;
+  /**
+   * Its parent was reinstalled afterwards, which replaced the folder and took this addon's
+   * files with it — silently, since nothing about the parent's own row changes.
+   */
+  needsReinstall?: boolean;
+}
+
 export interface AddonLink {
   name: string;
   type: ModType;
@@ -617,8 +643,12 @@ export interface ModManagerAPI {
     success: boolean;
     suggestions?: AddonSuggestion[];
     catalogueSize?: number;
+    /** Everything installed as an addon, including those with no folder of their own. */
+    ledger?: InstalledAddonRecord[];
     message?: string;
   }>;
+  /** Drops an addon from the list. Never deletes files — see the handler for why. */
+  forgetAddon: (forgeAddonId?: number, name?: string) => Promise<{ success: boolean; message: string }>;
   /** Reads the installed assemblies — on demand, not part of a scan. */
   detectAddonLinks: () => Promise<{
     success: boolean;

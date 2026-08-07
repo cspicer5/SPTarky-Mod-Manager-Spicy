@@ -200,6 +200,159 @@ export function suggestAddons(
 }
 
 /* --------------------------------------------------------------------------
+ * The addon ledger
+ * ----------------------------------------------------------------------- */
+
+/**
+ * A record of an addon this app installed.
+ *
+ * Kept SEPARATELY from the mod registry, and written at install time, because an addon
+ * frequently has no folder of its own. Manimal's Icebreaker Backport Fika Sync unpacks
+ * straight into the parent's `ManimalIcebreaker` folders; the CAG BRNVG patch unpacks into
+ * `BorkelRNVG`. Working out what was installed by diffing folder names before and after
+ * therefore finds NOTHING, and the addon vanishes — which is exactly what happened: the
+ * panel kept offering an addon that was already installed.
+ *
+ * This is the version ledger's lesson a second time. At install time the app knows precisely
+ * what it did; every attempt to reconstruct that afterwards from the files is a guess, and
+ * here the guess has no evidence to work from at all.
+ */
+export interface InstalledAddonRecord {
+  /** Forge's addon id, when it came from the catalogue. */
+  forgeAddonId?: number;
+  name: string;
+  version?: string;
+  parentName: string;
+  parentType: ModType;
+  /** Range of parent versions this build declares it fits, e.g. "~2.7.0". */
+  parentConstraint?: string;
+  installedAt: string;
+  source: "forge" | "github" | "file";
+  /** Folders that appeared. Empty when the addon merged into its parent. */
+  folders: { id: string; type: ModType }[];
+  /** True when nothing new appeared, so the addon lives inside its parent's folders. */
+  mergedIntoParent: boolean;
+}
+
+const addonLedgerPath = (clientRoot: string) => path.join(clientRoot, ".spt-mod-manager-addons.json");
+
+export function loadAddonLedger(clientRoot: string): InstalledAddonRecord[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(addonLedgerPath(clientRoot), "utf-8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Identity is the Forge id when there is one, and the name-plus-parent otherwise. */
+function sameAddon(a: InstalledAddonRecord, b: Pick<InstalledAddonRecord, "forgeAddonId" | "name" | "parentName">) {
+  if (a.forgeAddonId !== undefined && b.forgeAddonId !== undefined) return a.forgeAddonId === b.forgeAddonId;
+  return a.name.toLowerCase() === b.name.toLowerCase() && a.parentName.toLowerCase() === b.parentName.toLowerCase();
+}
+
+export function recordAddonInstall(clientRoot: string, record: InstalledAddonRecord): void {
+  const ledger = loadAddonLedger(clientRoot).filter((e) => !sameAddon(e, record));
+  ledger.push(record);
+  fs.writeFileSync(addonLedgerPath(clientRoot), JSON.stringify(ledger, null, 2), "utf-8");
+}
+
+/**
+ * Addons whose files a later reinstall of their parent has wiped out.
+ *
+ * An addon that unpacks into its parent's folder has no separate existence, so reinstalling
+ * the parent replaces the folder and takes the addon with it — silently, because nothing about
+ * the parent's own row changes. Measured: reinstalling Borkel's RNVG to repair a version left
+ * zero files of the CAG BRNVG patch behind, and nothing said so.
+ *
+ * Decided by timestamps rather than by looking for files: the addon's files are indistinguishable
+ * from the parent's once merged, which is the whole problem. If the parent was installed AFTER
+ * the addon, the addon is gone.
+ */
+export function addonsNeedingReinstall(
+  ledger: InstalledAddonRecord[],
+  parentInstalledAt: (name: string, type: ModType) => string | undefined
+): InstalledAddonRecord[] {
+  return ledger.filter((record) => {
+    if (!record.mergedIntoParent) return false; // it has its own folder, so it survived
+    const parentAt = parentInstalledAt(record.parentName, record.parentType);
+    if (!parentAt || !record.installedAt) return false;
+    return parentAt.localeCompare(record.installedAt) > 0;
+  });
+}
+
+export function forgetAddon(clientRoot: string, match: { forgeAddonId?: number; name?: string; parentName?: string }): boolean {
+  const ledger = loadAddonLedger(clientRoot);
+  const kept = ledger.filter(
+    (e) =>
+      !(
+        (match.forgeAddonId !== undefined && e.forgeAddonId === match.forgeAddonId) ||
+        (match.name !== undefined && e.name.toLowerCase() === match.name.toLowerCase())
+      )
+  );
+  if (kept.length === ledger.length) return false;
+  fs.writeFileSync(addonLedgerPath(clientRoot), JSON.stringify(kept, null, 2), "utf-8");
+  return true;
+}
+
+/**
+ * Version fields of every registry entry, as they were before an install.
+ *
+ * Taken so an addon install can be stopped from relabelling the mod it patches. Installing
+ * the CAG BRNVG patch (v1.0.0) into Borkel's RNVG rewrote that mod's recorded version from
+ * 2.1.1 to 1.0.0, and the app then TRUSTED the wrong number over what the files declared —
+ * the precise failure the version ledger exists to prevent.
+ */
+export interface VersionSnapshot {
+  [key: string]: { installedVersion?: string; versionOrigin?: string; versionEvidence?: string };
+}
+
+export function snapshotVersions(registryPath: string): VersionSnapshot {
+  const snap: VersionSnapshot = {};
+  try {
+    for (const e of JSON.parse(fs.readFileSync(registryPath, "utf-8"))) {
+      snap[`${e.type}:${String(e.id).toLowerCase()}`] = {
+        installedVersion: e.installedVersion,
+        versionOrigin: e.versionOrigin,
+        versionEvidence: e.versionEvidence
+      };
+    }
+  } catch {
+    /* no registry yet */
+  }
+  return snap;
+}
+
+/**
+ * Puts back any version an addon install overwrote.
+ *
+ * Only touches entries that ALREADY EXISTED: a folder the addon created for itself is its
+ * own, and its version is the addon's. A mod that was already installed is never the addon,
+ * so any change to its recorded version during an addon install is wrong by definition.
+ */
+export function restoreClobberedVersions(registryPath: string, before: VersionSnapshot): string[] {
+  let registry: any[];
+  try {
+    registry = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
+  } catch {
+    return [];
+  }
+  const restored: string[] = [];
+  for (const entry of registry) {
+    const key = `${entry.type}:${String(entry.id).toLowerCase()}`;
+    const prior = before[key];
+    if (!prior) continue; // created by this install — genuinely the addon's own folder
+    if (entry.installedVersion === prior.installedVersion) continue;
+    entry.installedVersion = prior.installedVersion;
+    entry.versionOrigin = prior.versionOrigin;
+    entry.versionEvidence = prior.versionEvidence;
+    restored.push(`${entry.id} [${entry.type}]`);
+  }
+  if (restored.length) fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2), "utf-8");
+  return restored;
+}
+
+/* --------------------------------------------------------------------------
  * Recording that something IS an addon
  * ----------------------------------------------------------------------- */
 

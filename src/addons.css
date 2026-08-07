@@ -258,3 +258,29 @@
   font-size: 11px;
   color: var(--text-faint);
 }
+
+.addon-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.addon-section strong {
+  font-size: 12px;
+}
+
+/* An addon with no folder of its own cannot be uninstalled separately. Said up front rather
+   than discovered when someone tries to remove it. */
+.addon-badge-merged {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+/* Its parent was reinstalled afterwards, which replaced the folder its files lived in.
+   Louder than "merged", because this one means the addon is not actually installed any more. */
+.addon-badge-gone {
+  color: var(--danger-strong);
+  border-color: var(--danger);
+}

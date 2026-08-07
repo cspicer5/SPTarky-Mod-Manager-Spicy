@@ -12,7 +12,7 @@
  * discovered on the 11th.
  */
 import { useState } from "react";
-import { AddonSuggestion, AddonLink, AddonIntegration, ModInfo, ModType } from "./types";
+import { AddonSuggestion, AddonLink, AddonIntegration, InstalledAddonRecord, ModInfo, ModType } from "./types";
 import "./addons.css";
 
 const FIT_LABEL: Record<string, string> = {
@@ -90,6 +90,8 @@ export default function AddonsPanel({
   busy,
   scanned,
   catalogueSize,
+  ledger,
+  onForgetAddon,
   onInstallForgeAddon,
   onInstallFromFile,
   onDetectLinks,
@@ -103,6 +105,8 @@ export default function AddonsPanel({
   busy: boolean;
   scanned: boolean;
   catalogueSize: number;
+  ledger: InstalledAddonRecord[];
+  onForgetAddon: (forgeAddonId?: number, name?: string) => void;
   onInstallForgeAddon: (addonId: number) => void;
   onInstallFromFile: (parentName: string) => void;
   onDetectLinks: () => void;
@@ -143,7 +147,7 @@ export default function AddonsPanel({
           Available ({usable.length})
         </button>
         <button className={tab === "installed" ? "addon-tab-active" : ""} onClick={() => setTab("installed")}>
-          Installed ({links.length})
+          Installed ({ledger.length + links.length})
         </button>
         <button className={tab === "integrations" ? "addon-tab-active" : ""} onClick={() => setTab("integrations")}>
           Could add ({integrations.length})
@@ -206,6 +210,64 @@ export default function AddonsPanel({
 
       {tab === "installed" && (
         <div className="addon-body">
+          {/* The ledger comes first because it is the only record of the addons that have no
+              folder of their own — the scan below cannot see those at all, since there is
+              nothing separate to look at. */}
+          <div className="addon-section">
+            <strong>Addons installed through the manager</strong>
+            {ledger.length === 0 ? (
+              <p className="empty-list">None yet.</p>
+            ) : (
+              <ul className="addon-list">
+                {ledger.map((r) => (
+                  <li key={`${r.forgeAddonId ?? r.name}:${r.parentName}`} className="addon-row">
+                    <div className="addon-row-main">
+                      <span className="addon-name">{r.name}</span>
+                      {r.version && <span className="addon-badge">v{r.version}</span>}
+                      <span className="addon-badge">{r.source}</span>
+                      {/* Told up front rather than discovered at uninstall time. */}
+                      {r.mergedIntoParent && (
+                        <span
+                          className="addon-badge addon-badge-merged"
+                          title={`Its files are inside ${r.parentName}'s folder, so it can't be removed on its own.`}
+                        >
+                          inside {r.parentName}
+                        </span>
+                      )}
+                      {/* Reinstalling a mod replaces its folder and takes any addon inside it
+                          along — in silence, because nothing about the parent's row changes. */}
+                      {r.needsReinstall && (
+                        <span
+                          className="addon-badge addon-badge-gone"
+                          title={`${r.parentName} was reinstalled after this addon, which replaced the folder its files were in.`}
+                        >
+                          wiped by a reinstall
+                        </span>
+                      )}
+                    </div>
+                    <div className="addon-row-meta">
+                      <span>
+                        for <strong>{r.parentName}</strong>
+                        {r.parentConstraint ? ` · needs parent ${r.parentConstraint}` : ""}
+                      </span>
+                      <span>{r.installedAt.slice(0, 10)}</span>
+                    </div>
+                    <div className="addon-row-actions">
+                      {r.needsReinstall && typeof r.forgeAddonId === "number" && (
+                        <button className="primary" disabled={busy} onClick={() => onInstallForgeAddon(r.forgeAddonId!)}>
+                          Reinstall
+                        </button>
+                      )}
+                      <button disabled={busy} onClick={() => onForgetAddon(r.forgeAddonId, r.name)}>
+                        Forget
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
           <div className="addon-actions">
             <button onClick={onDetectLinks} disabled={busy} className={scanned ? "" : "primary"}>
               {scanned ? "Re-scan" : "Scan installed mods"}

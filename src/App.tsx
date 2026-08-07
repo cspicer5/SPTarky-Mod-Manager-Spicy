@@ -25,6 +25,7 @@ import {
   AddonSuggestion,
   AddonLink,
   AddonIntegration,
+  InstalledAddonRecord,
   BulkReinstallProgress,
   BulkReinstallOutcome
 } from "./types";
@@ -566,6 +567,7 @@ export default function App() {
   const [addonLinks, setAddonLinks] = useState<AddonLink[]>([]);
   const [addonIntegrations, setAddonIntegrations] = useState<AddonIntegration[]>([]);
   const [addonCatalogueSize, setAddonCatalogueSize] = useState(0);
+  const [addonLedger, setAddonLedger] = useState<InstalledAddonRecord[]>([]);
   const [addonsScanned, setAddonsScanned] = useState(false);
   const [addonBusy, setAddonBusy] = useState(false);
 
@@ -574,10 +576,23 @@ export default function App() {
     if (result.success) {
       setAddonSuggestions(result.suggestions ?? []);
       setAddonCatalogueSize(result.catalogueSize ?? 0);
+      setAddonLedger(result.ledger ?? []);
     } else if (result.message) {
       pushToast(result.message, false);
     }
   }, []);
+
+  async function handleForgetAddon(forgeAddonId?: number, name?: string) {
+    if (
+      !window.confirm(
+        `Remove "${name ?? "this addon"}" from the addon list?\n\nIts files are NOT deleted. An addon that installed into its parent's folder can't be separated from it — reinstall the parent if you want the files gone.`
+      )
+    )
+      return;
+    const result = await window.modManagerAPI.forgetAddon(forgeAddonId, name);
+    pushToast(result.message, result.success);
+    if (result.success) await refreshAddonSuggestions();
+  }
 
   async function openAddons() {
     setAddonsOpen(true);
@@ -2279,6 +2294,8 @@ export default function App() {
               busy={addonBusy}
               scanned={addonsScanned}
               catalogueSize={addonCatalogueSize}
+              ledger={addonLedger}
+              onForgetAddon={handleForgetAddon}
               onInstallForgeAddon={handleInstallForgeAddon}
               onInstallFromFile={handleInstallAddonFromFile}
               onDetectLinks={handleDetectAddonLinks}

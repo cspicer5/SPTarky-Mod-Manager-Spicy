@@ -89,7 +89,13 @@ import {
   detectAddonLinks,
   findKnownIntegrations,
   markInstalledAsAddon,
-  clearAddonMark
+  clearAddonMark,
+  loadAddonLedger,
+  recordAddonInstall,
+  forgetAddon,
+  snapshotVersions,
+  restoreClobberedVersions,
+  addonsNeedingReinstall
 } from "./addons";
 import { InstanceConfig, InstanceId, ModInfo, ModType } from "./types";
 
@@ -769,14 +775,27 @@ function forgeIdsByFolder(clientRoot: string): Record<string, string> {
   }
 }
 
-/** Addon ids already installed here, so the catalogue can say "you have this". */
+/**
+ * Addon ids already installed here, so the catalogue can say "you have this".
+ *
+ * Read from the ADDON LEDGER, not the mod registry. Most addons unpack into their parent's
+ * folder and never get a registry entry of their own — the Icebreaker Fika sync lands in
+ * `ManimalIcebreaker`, the CAG BRNVG patch in `BorkelRNVG` — so a registry-based answer said
+ * "not installed" for addons that plainly were.
+ */
 function installedAddonIds(clientRoot: string): Set<number> {
+  const ids = new Set<number>();
+  for (const record of loadAddonLedger(clientRoot)) {
+    if (typeof record.forgeAddonId === "number") ids.add(record.forgeAddonId);
+  }
+  // Registry marks still count, for addons that DID get their own folder.
   try {
     const reg = JSON.parse(fs.readFileSync(path.join(clientRoot, ".spt-mod-manager-registry.json"), "utf-8"));
-    return new Set(reg.filter((e: any) => typeof e.forgeAddonId === "number").map((e: any) => e.forgeAddonId));
+    for (const e of reg) if (typeof e.forgeAddonId === "number") ids.add(e.forgeAddonId);
   } catch {
-    return new Set();
+    /* no registry */
   }
+  return ids;
 }
 
 ipcMain.handle("get-addon-suggestions", () => {
@@ -792,7 +811,57 @@ ipcMain.handle("get-addon-suggestions", () => {
     catalogue,
     installedAddonIds(roots.clientRoot)
   );
-  return { success: true, suggestions, catalogueSize: catalogue.length };
+  return {
+    success: true,
+    suggestions,
+    catalogueSize: catalogue.length,
+    // Everything this app has installed as an addon, including the many that have no folder
+    // of their own and are therefore invisible in the mod list. Each is flagged when a later
+    // reinstall of its parent has silently wiped its files.
+    ledger: withReinstallFlags(roots.clientRoot)
+  };
+});
+
+/**
+ * The addon ledger, with `needsReinstall` filled in.
+ *
+ * Reinstalling a mod replaces its folder, which takes any addon that unpacked into it along
+ * too — and nothing about the parent's own row changes, so it happens in silence. Measured:
+ * reinstalling Borkel's RNVG left zero files of the CAG BRNVG patch behind.
+ */
+function withReinstallFlags(clientRoot: string) {
+  const ledger = loadAddonLedger(clientRoot);
+  let registry: any[] = [];
+  try {
+    registry = JSON.parse(fs.readFileSync(path.join(clientRoot, ".spt-mod-manager-registry.json"), "utf-8"));
+  } catch {
+    /* no registry */
+  }
+  const installedAt = (name: string, type: ModType) =>
+    registry.find((e) => e.id?.toLowerCase() === name.toLowerCase() && e.type === type)?.installedAt;
+
+  const stale = new Set(addonsNeedingReinstall(ledger, installedAt).map((r) => `${r.forgeAddonId ?? r.name}`));
+  return ledger.map((r) => ({ ...r, needsReinstall: stale.has(`${r.forgeAddonId ?? r.name}`) }));
+}
+
+/**
+ * Drops an addon from the ledger without touching files.
+ *
+ * Honest about its limits: an addon that unpacked into its parent's folder cannot be removed
+ * separately, because its files are mixed in with the parent's. The only clean way back is to
+ * reinstall the parent. Pretending otherwise would mean deleting files that might belong to
+ * either one.
+ */
+ipcMain.handle("forget-addon", (_event, forgeAddonId?: number, name?: string) => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+  const removed = forgetAddon(roots.clientRoot, { forgeAddonId, name });
+  return {
+    success: removed,
+    message: removed
+      ? "Removed from the addon list. Its files were left alone — reinstall the parent mod to clear them."
+      : "That addon was not in the list."
+  };
 });
 
 /**
@@ -876,7 +945,12 @@ ipcMain.handle("install-forge-addon", async (_event, jobId: string, addonId: num
     };
   }
 
+  const registryPath = path.join(roots.clientRoot, ".spt-mod-manager-registry.json");
   const before = new Set(scanInstance("main").map((m) => `${m.type}:${m.id}`));
+  // Taken so the addon cannot relabel the mod it patches. Installing the CAG BRNVG patch
+  // (v1.0.0) into Borkel's RNVG rewrote that mod's recorded version from 2.1.1 to 1.0.0.
+  const versionsBefore = snapshotVersions(registryPath);
+
   const result = await installForgeModVersion(
     roots.clientRoot,
     roots.serverRoot,
@@ -887,22 +961,45 @@ ipcMain.handle("install-forge-addon", async (_event, jobId: string, addonId: num
   );
   if (!result.success) return result;
 
-  // Whatever the archive actually produced gets marked, not whatever was expected: an addon
-  // can drop a server part and a client part exactly like a mod.
+  const restored = restoreClobberedVersions(registryPath, versionsBefore);
+
   const added = scanInstance("main")
     .filter((m) => !before.has(`${m.type}:${m.id}`))
     .map((m) => ({ id: m.id, type: m.type }));
-  markInstalledAsAddon(path.join(roots.clientRoot, ".spt-mod-manager-registry.json"), added, {
+
+  // Marks whatever the archive produced — an addon can drop a server and a client part
+  // exactly like a mod. Frequently it produces nothing new at all, which is why the ledger
+  // below is the record that actually matters.
+  markInstalledAsAddon(registryPath, added, {
     parentName: parent.id,
     parentType: parent.type,
     forgeAddonId: addon.id,
     parentConstraint: picked.version.modConstraint
   });
 
+  recordAddonInstall(roots.clientRoot, {
+    forgeAddonId: addon.id,
+    name: addon.name,
+    version: picked.version.version,
+    parentName: parent.id,
+    parentType: parent.type,
+    parentConstraint: picked.version.modConstraint,
+    installedAt: new Date().toISOString(),
+    source: "forge",
+    folders: added,
+    mergedIntoParent: added.length === 0
+  });
+
   return {
     ...result,
-    message: `${result.message} Marked as an addon of "${parent.id}".`,
-    installedAs: added.map((a) => a.id)
+    message:
+      `${result.message} Recorded as an addon of "${parent.id}".` +
+      // Said out loud: an addon with no folder of its own cannot be uninstalled separately,
+      // and finding that out later would be worse than being told now.
+      (added.length === 0 ? ` It installed into ${parent.id}'s own folder rather than its own.` : "") +
+      (restored.length ? ` Kept ${restored.join(", ")} at its own version.` : ""),
+    installedAs: added.map((a) => a.id),
+    mergedIntoParent: added.length === 0
   };
 });
 
@@ -930,22 +1027,37 @@ ipcMain.handle("install-addon-from-file", async (_event, parentName: string, fil
     archive = chosen.filePaths[0];
   }
 
+  const registryPath = path.join(roots.clientRoot, ".spt-mod-manager-registry.json");
   const before = new Set(scanInstance("main").map((m) => `${m.type}:${m.id}`));
+  const versionsBefore = snapshotVersions(registryPath);
+
   const result = await installModFromArchive(roots.clientRoot, roots.serverRoot, archive);
   if (!result.success) return result;
 
+  const restored = restoreClobberedVersions(registryPath, versionsBefore);
   const added = scanInstance("main")
     .filter((m) => !before.has(`${m.type}:${m.id}`))
     .map((m) => ({ id: m.id, type: m.type }));
-  const marked = markInstalledAsAddon(path.join(roots.clientRoot, ".spt-mod-manager-registry.json"), added, {
+  markInstalledAsAddon(registryPath, added, { parentName: parent.id, parentType: parent.type });
+
+  recordAddonInstall(roots.clientRoot, {
+    name: path.basename(archive).replace(/\.(zip|7z|rar)$/i, ""),
     parentName: parent.id,
-    parentType: parent.type
+    parentType: parent.type,
+    installedAt: new Date().toISOString(),
+    source: "file",
+    folders: added,
+    mergedIntoParent: added.length === 0
   });
 
   return {
     ...result,
-    message: `${result.message}${marked ? ` Marked as an addon of "${parent.id}".` : ""}`,
-    installedAs: added.map((a) => a.id)
+    message:
+      `${result.message} Recorded as an addon of "${parent.id}".` +
+      (added.length === 0 ? ` It installed into ${parent.id}'s own folder rather than its own.` : "") +
+      (restored.length ? ` Kept ${restored.join(", ")} at its own version.` : ""),
+    installedAs: added.map((a) => a.id),
+    mergedIntoParent: added.length === 0
   };
 });
 
@@ -966,7 +1078,10 @@ ipcMain.handle(
     const parent = scanInstance("main").find((m) => m.id.toLowerCase() === args.parentName?.toLowerCase());
     if (!parent) return { success: false, message: `"${args.parentName}" is not installed.` };
 
+    const registryPath = path.join(roots.clientRoot, ".spt-mod-manager-registry.json");
     const before = new Set(scanInstance("main").map((m) => `${m.type}:${m.id}`));
+    const versionsBefore = snapshotVersions(registryPath);
+
     const result = await installForgeModVersion(
       roots.clientRoot,
       roots.serverRoot,
@@ -978,14 +1093,32 @@ ipcMain.handle(
     );
     if (!result.success) return result;
 
+    const restored = restoreClobberedVersions(registryPath, versionsBefore);
     const added = scanInstance("main")
       .filter((m) => !before.has(`${m.type}:${m.id}`))
       .map((m) => ({ id: m.id, type: m.type }));
-    markInstalledAsAddon(path.join(roots.clientRoot, ".spt-mod-manager-registry.json"), added, {
+    markInstalledAsAddon(registryPath, added, { parentName: parent.id, parentType: parent.type });
+
+    recordAddonInstall(roots.clientRoot, {
+      name: args.repo.split("/")[1] ?? args.assetName,
+      version: args.version,
       parentName: parent.id,
-      parentType: parent.type
+      parentType: parent.type,
+      installedAt: new Date().toISOString(),
+      source: "github",
+      folders: added,
+      mergedIntoParent: added.length === 0
     });
-    return { ...result, message: `${result.message} Marked as an addon of "${parent.id}".`, installedAs: added.map((a) => a.id) };
+
+    return {
+      ...result,
+      message:
+        `${result.message} Recorded as an addon of "${parent.id}".` +
+        (added.length === 0 ? ` It installed into ${parent.id}'s own folder rather than its own.` : "") +
+        (restored.length ? ` Kept ${restored.join(", ")} at its own version.` : ""),
+      installedAs: added.map((a) => a.id),
+      mergedIntoParent: added.length === 0
+    };
   }
 );
 

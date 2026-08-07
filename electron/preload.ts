@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
 
   // --- addons: compatibility and companion mods (v1.2.2) ---
   getAddonSuggestions: () => ipcRenderer.invoke("get-addon-suggestions"),
+  forgetAddon: (forgeAddonId?: number, name?: string) => ipcRenderer.invoke("forget-addon", forgeAddonId, name),
   // Reads the installed assemblies, so it is deliberately on demand rather than part of a scan.
   detectAddonLinks: () => ipcRenderer.invoke("detect-addon-links"),
   setAddonParent: (id: string, type: "server" | "client", parentName: string | null) =>
