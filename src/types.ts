@@ -140,7 +140,7 @@ export interface AppUpdateInfo {
   updateAvailable: boolean;
   currentVersion: string;
   latestVersion?: string;
-  downloadPageUrl?: string;
+  /** The GitHub release — changelog and download both, since the zip is attached to it. */
   releaseUrl?: string;
   releaseName?: string;
 }

@@ -235,8 +235,9 @@ const en: Dict = {
   "restore.andMore": " and {count} more",
 
   "update.available": "New Mod Manager version available: v{latest} (you're on v{current}).",
-  "update.download": "Download on Forge",
-  "update.viewChangelog": "Changelog",
+  // Was "Download on Forge". This fork is not published on Forge, and the link never went
+  // there — it pointed at the repository's own releases all along.
+  "update.viewRelease": "View release",
   "update.dismiss": "Not now"
 };
 

@@ -1750,17 +1750,13 @@ export default function App() {
             })}
           </span>
           <div className="update-banner-actions">
-            {appUpdate.downloadPageUrl && (
-              <button
-                className="primary"
-                onClick={() => window.modManagerAPI.openReleasePage(appUpdate.downloadPageUrl!)}
-              >
-                {t("update.download")}
-              </button>
-            )}
+            {/* There was a "Download on Forge" button here. This fork is not published on
+                Forge — the link already pointed at this repository's releases, so the label
+                was simply wrong, and it duplicated the release link beside it. One link, to
+                the release itself, which is where the download actually is. */}
             {appUpdate.releaseUrl && (
-              <button onClick={() => window.modManagerAPI.openReleasePage(appUpdate.releaseUrl!)}>
-                {t("update.viewChangelog")}
+              <button className="primary" onClick={() => window.modManagerAPI.openReleasePage(appUpdate.releaseUrl!)}>
+                {t("update.viewRelease")}
               </button>
             )}
             <button onClick={() => setUpdateDismissed(true)}>{t("update.dismiss")}</button>

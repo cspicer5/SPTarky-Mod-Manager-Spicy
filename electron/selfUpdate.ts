@@ -160,6 +160,22 @@ export async function prepareUpdate(opts: ApplyUpdateOptions): Promise<{ success
   const backup = path.join(parent, ".sptarky-update-backup");
   const zipPath = path.join(parent, ".sptarky-update.zip");
 
+  /*
+   * Electron patches `fs` so that ANY path containing ".asar" is treated as an archive to
+   * look inside, rather than as an ordinary file. Every release zip contains
+   * `resources/app.asar`, so extracting one from inside the app made adm-zip write the file
+   * and then fail to chmod it:
+   *
+   *   ENOENT: no such file or directory, chmod '...\.sptarky-update-staging\resources\app.asar'
+   *
+   * The same extraction succeeds in plain Node, which is exactly why this shipped: nothing
+   * short of running it inside Electron could have caught it. `process.noAsar` turns the
+   * interception off. It has to cover the cleanup paths too, since removing the staging
+   * folder recurses through that same file.
+   */
+  const previousNoAsar = (process as NodeJS.Process & { noAsar?: boolean }).noAsar;
+  (process as NodeJS.Process & { noAsar?: boolean }).noAsar = true;
+
   try {
     for (const leftover of [staging, backup]) {
       if (fs.existsSync(leftover)) fs.rmSync(leftover, { recursive: true, force: true });
@@ -213,6 +229,10 @@ export async function prepareUpdate(opts: ApplyUpdateOptions): Promise<{ success
       }
     }
     return { success: false, message: `Update failed: ${err?.message ?? err}. Your install was not touched.` };
+  } finally {
+    // Restored rather than left on: asar interception is what makes require() work against
+    // the packaged app, and leaving it disabled would change behaviour well outside updating.
+    (process as NodeJS.Process & { noAsar?: boolean }).noAsar = previousNoAsar;
   }
 }
 

@@ -4013,16 +4013,13 @@ export async function installForgeModVersion(
  */
 const GITHUB_REPO = "cspicer5/SPTarky-Mod-Manager-Spicy";
 const GITHUB_RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
-// Downloads come from this repository's own releases page. The original pointed at the
-// upstream project's Forge listing, which is not this application.
-const RELEASES_PAGE = `https://github.com/${GITHUB_REPO}/releases`;
 
 export interface AppUpdateInfo {
   updateAvailable: boolean;
   currentVersion: string;
   latestVersion?: string;
-  downloadPageUrl?: string; // this fork's releases page — where the download lives
-  releaseUrl?: string; // the specific GitHub release (changelog/code), as a secondary link
+  /** The specific GitHub release — changelog AND download, since the zip is attached to it. */
+  releaseUrl?: string;
   releaseName?: string;
 }
 
@@ -4065,7 +4062,6 @@ export async function checkAppUpdate(currentVersion: string): Promise<AppUpdateI
       updateAvailable: compareVersions(latestVersion, currentVersion) > 0,
       currentVersion,
       latestVersion: latestVersion.replace(/^v/i, ""),
-      downloadPageUrl: RELEASES_PAGE,
       releaseUrl: json?.html_url,
       releaseName: json?.name || undefined
     };
