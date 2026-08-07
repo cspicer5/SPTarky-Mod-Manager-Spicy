@@ -54,7 +54,8 @@ import {
   updatePreset,
   renamePreset,
   deletePreset,
-  buildPresetReport
+  buildPresetReport,
+  PresetAddon
 } from "./presets";
 import {
   getStoreStatus,
@@ -551,6 +552,29 @@ function presetRoot(): string {
   return app.getPath("userData");
 }
 
+/**
+ * Addons installed here, in the shape a preset stores them.
+ *
+ * Read from the ledger rather than from the mod list, because most addons unpack into their
+ * parent's folder and have no mod row at all. A preset built from the mod list alone
+ * described zero addons on an install that had three.
+ */
+function localPresetAddons(): PresetAddon[] {
+  const roots = rootsFor("main");
+  if (!roots) return [];
+  return loadAddonLedger(roots.clientRoot).map((r) => ({
+    name: r.name,
+    forgeAddonId: r.forgeAddonId,
+    version: r.version,
+    parentName: r.parentName,
+    parentType: r.parentType,
+    parentConstraint: r.parentConstraint,
+    source: r.source,
+    mergedIntoParent: r.mergedIntoParent,
+    folders: r.folders?.length ? r.folders : undefined
+  }));
+}
+
 function localSptVersion(): string | undefined {
   const sptPath = store.get("sptPath");
   return (store.get("sptVersionOverride") ?? (sptPath ? detectSptSemver(sptPath) : undefined)) ?? undefined;
@@ -566,9 +590,16 @@ ipcMain.handle("create-preset", (_event, opts: { name: string; description?: str
       name: opts.name,
       description: opts.description,
       optional: opts.optional,
-      sptVersion: localSptVersion()
+      sptVersion: localSptVersion(),
+      addons: localPresetAddons()
     });
-    return { success: true, preset, message: `Saved "${preset.name}" with ${preset.mods.length} mod(s).` };
+    return {
+      success: true,
+      preset,
+      message:
+        `Saved "${preset.name}" with ${preset.mods.length} mod(s)` +
+        (preset.addons?.length ? ` and ${preset.addons.length} addon(s).` : ".")
+    };
   } catch (err: any) {
     return { success: false, message: err?.message ?? "Couldn't save that preset." };
   }
@@ -576,7 +607,7 @@ ipcMain.handle("create-preset", (_event, opts: { name: string; description?: str
 
 ipcMain.handle("update-preset", (_event, id: string) => {
   if (!store.get("sptPath")) return { success: false, message: "No SPT instance configured." };
-  const preset = updatePreset(presetRoot(), id, scanInstance("main"), localSptVersion());
+  const preset = updatePreset(presetRoot(), id, scanInstance("main"), localSptVersion(), localPresetAddons());
   return preset
     ? { success: true, preset, message: `Updated "${preset.name}" from the current install.` }
     : { success: false, message: "That preset no longer exists." };
@@ -593,7 +624,7 @@ ipcMain.handle("get-preset-report", (_event, id: string) => {
   const preset = readPreset(presetRoot(), id);
   if (!preset) return { success: false, message: "That preset no longer exists." };
   if (!store.get("sptPath")) return { success: false, message: "No SPT instance configured." };
-  return { success: true, report: buildPresetReport(preset, scanInstance("main"), localSptVersion()) };
+  return { success: true, report: buildPresetReport(preset, scanInstance("main"), localSptVersion(), localPresetAddons()) };
 });
 
 /**
@@ -611,7 +642,7 @@ ipcMain.handle("apply-preset-state", (_event, id: string) => {
   const roots = rootsFor("main");
   if (!roots) return { success: false, message: "No SPT instance configured." };
 
-  const report = buildPresetReport(preset, scanInstance("main"), localSptVersion());
+  const report = buildPresetReport(preset, scanInstance("main"), localSptVersion(), localPresetAddons());
   const toToggle = report.rows.filter((r) => r.issue === "state-mismatch");
   if (toToggle.length === 0) {
     return { success: true, changed: 0, message: "Nothing to change — enabled states already match." };
@@ -742,7 +773,7 @@ ipcMain.handle("get-store-preset-report", async (_event, id: string) => {
   if (!store.get("sptPath")) return { success: false, message: "No SPT instance configured." };
   const preset = await readStorePreset(dir, id);
   if (!preset) return { success: false, message: "That preset is not in this store." };
-  return { success: true, report: buildPresetReport(preset, scanInstance("main"), localSptVersion()) };
+  return { success: true, report: buildPresetReport(preset, scanInstance("main"), localSptVersion(), localPresetAddons()) };
 });
 
 /* --- IPC: addons (v1.2.2) ----------------------------------------------------

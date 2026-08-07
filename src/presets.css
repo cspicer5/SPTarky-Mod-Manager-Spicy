@@ -632,3 +632,75 @@
 .preset-issue-tag-orphaned-addon {
   color: var(--accent-strong);
 }
+
+/* Compatibility addons get their own block, not a row in the mod list. Most have no folder
+   of their own, so the parent's row looks identical whether the patch is present or not —
+   nothing in the mod list could ever have shown this. */
+.preset-addons {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-panel-raised);
+}
+
+.preset-addons strong {
+  font-size: 12px;
+}
+
+.preset-addons ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preset-addons li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+
+.preset-addon-name {
+  font-weight: 500;
+}
+
+.preset-addon-parent,
+.preset-addon-detail {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.preset-addon-detail {
+  flex-basis: 100%;
+}
+
+.preset-addon-status {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.preset-addon-status-present {
+  color: var(--ok-strong);
+  border-color: var(--ok);
+}
+
+.preset-addon-status-missing {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+.preset-addon-status-parent-missing {
+  color: var(--text-faint);
+}

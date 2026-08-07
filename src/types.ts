@@ -331,6 +331,34 @@ export interface PresetMod {
   addonParentConstraint?: string;
 }
 
+/**
+ * An addon a preset carries, recorded separately from the mod list because most addons unpack
+ * into their parent's folder and have no mod row of their own.
+ */
+export interface PresetAddon {
+  name: string;
+  forgeAddonId?: number;
+  version?: string;
+  parentName: string;
+  parentType: ModType;
+  parentConstraint?: string;
+  source: "forge" | "github" | "file";
+  mergedIntoParent: boolean;
+  folders?: { id: string; type: ModType }[];
+}
+
+export interface PresetAddonRow {
+  name: string;
+  forgeAddonId?: number;
+  version?: string;
+  parentName: string;
+  parentType: ModType;
+  parentConstraint?: string;
+  mergedIntoParent: boolean;
+  status: "present" | "missing" | "parent-missing";
+  detail?: string;
+}
+
 export interface Preset {
   schema: number;
   id: string;
@@ -344,6 +372,8 @@ export interface Preset {
   /** Present when this was imported from a shared store rather than captured here. */
   origin?: { store: string; path: string; author?: string; importedAt: string };
   mods: PresetMod[];
+  /** Compatibility addons in this setup, most of which have no mod row of their own. */
+  addons?: PresetAddon[];
 }
 
 /* --- the shared store ---------------------------------------------------- */
@@ -541,6 +571,8 @@ export interface PresetReport {
   };
   /** Addons in this preset, by the mod they attach to. */
   addonsByParent?: Record<string, string[]>;
+  /** Every addon this preset carries, and whether this install has it. */
+  addonRows?: PresetAddonRow[];
   satisfied: boolean;
 }
 

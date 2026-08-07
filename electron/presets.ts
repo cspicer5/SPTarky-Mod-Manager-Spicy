@@ -65,6 +65,32 @@ export interface PresetMod {
   addonParentConstraint?: string;
 }
 
+/**
+ * An addon a preset carries, recorded independently of the mod list.
+ *
+ * The mod-row fields above (`addonOf` and friends) only work for an addon that has a folder
+ * of its own. Most do not: on the reference install all three unpacked straight into their
+ * parent's folder, so there was no row to attach anything to and a preset captured from that
+ * install described zero addons while three were installed.
+ *
+ * With payloads the FILES still travel — they sit inside the parent's folder, so publishing
+ * the parent ships the patch with it — but nothing told the recipient a patch was there, and
+ * a manifest-only preset lost them completely.
+ */
+export interface PresetAddon {
+  name: string;
+  forgeAddonId?: number;
+  version?: string;
+  parentName: string;
+  parentType: ModType;
+  /** Range of PARENT versions this build declares it fits, e.g. "~2.7.0". */
+  parentConstraint?: string;
+  source: "forge" | "github" | "file";
+  /** True when its files live inside the parent's folder rather than its own. */
+  mergedIntoParent: boolean;
+  folders?: { id: string; type: ModType }[];
+}
+
 export interface Preset {
   schema: number;
   id: string;
@@ -90,6 +116,11 @@ export interface Preset {
     importedAt: string;
   };
   mods: PresetMod[];
+  /**
+   * Compatibility addons in this setup. Separate from `mods` because an addon usually has no
+   * folder, and therefore no mod row, of its own.
+   */
+  addons?: PresetAddon[];
 }
 
 /* --------------------------------------------------------------------------
@@ -187,12 +218,23 @@ export interface CreatePresetOptions {
   include?: string[];
   /** Folder names that are merely nice to have. Everything else is required. */
   optional?: string[];
+  /**
+   * Addons installed here, taken from the addon ledger. Passed in rather than read, so this
+   * module stays independent of how addons are tracked.
+   */
+  addons?: PresetAddon[];
 }
 
 export function createPreset(root: string, mods: ModInfo[], opts: CreatePresetOptions): Preset {
   const include = opts.include ? new Set(opts.include) : null;
   const optional = new Set(opts.optional ?? []);
   const now = new Date().toISOString();
+
+  const chosen = mods.filter((m) => !m.manifestOnly && (!include || include.has(m.id)));
+  // Membership of the PRESET, not of the install. Checking the full scanned list instead let
+  // an addon survive whose parent had been deliberately excluded — it would have been
+  // unapplicable by construction, and read as a promise the preset could not keep.
+  const inPreset = new Set(chosen.map((m) => `${m.type}:${m.id.toLowerCase()}`));
 
   const preset: Preset = {
     schema: PRESET_SCHEMA,
@@ -204,23 +246,22 @@ export function createPreset(root: string, mods: ModInfo[], opts: CreatePresetOp
     updatedAt: now,
     sptVersion: opts.sptVersion,
     hasPayloads: false,
-    mods: mods
-      .filter((m) => !m.manifestOnly && (!include || include.has(m.id)))
-      .map((m) => ({
-        name: m.id,
-        guid: m.guid,
-        version: m.version,
-        versionSource: m.versionSource,
-        type: m.type,
-        enabled: m.enabled,
-        loadOrder: m.loadOrder,
-        required: !optional.has(m.id),
-        author: m.author,
-        addonOf: m.addonOf,
-        addonOfType: m.addonOfType,
-        forgeAddonId: m.forgeAddonId,
-        addonParentConstraint: m.addonParentConstraint
-      }))
+    addons: (opts.addons ?? []).filter((a) => inPreset.has(`${a.parentType}:${a.parentName.toLowerCase()}`)),
+    mods: chosen.map((m) => ({
+      name: m.id,
+      guid: m.guid,
+      version: m.version,
+      versionSource: m.versionSource,
+      type: m.type,
+      enabled: m.enabled,
+      loadOrder: m.loadOrder,
+      required: !optional.has(m.id),
+      author: m.author,
+      addonOf: m.addonOf,
+      addonOfType: m.addonOfType,
+      forgeAddonId: m.forgeAddonId,
+      addonParentConstraint: m.addonParentConstraint
+    }))
   };
 
   writePreset(root, preset);
@@ -228,7 +269,13 @@ export function createPreset(root: string, mods: ModInfo[], opts: CreatePresetOp
 }
 
 /** Re-captures an existing preset from the current install, keeping its identity. */
-export function updatePreset(root: string, id: string, mods: ModInfo[], sptVersion?: string): Preset | null {
+export function updatePreset(
+  root: string,
+  id: string,
+  mods: ModInfo[],
+  sptVersion?: string,
+  addons?: PresetAddon[]
+): Preset | null {
   const existing = readPreset(root, id);
   if (!existing) return null;
   // Optional flags are a human judgement that a rescan knows nothing about, so they are
@@ -239,7 +286,10 @@ export function updatePreset(root: string, id: string, mods: ModInfo[], sptVersi
     description: existing.description,
     author: existing.author,
     sptVersion,
-    optional
+    optional,
+    // Re-read from the ledger when given; otherwise keep what the preset already recorded,
+    // rather than silently dropping addons because the caller did not supply them.
+    addons: addons ?? existing.addons
   });
   // createPreset minted a new id; move the content onto the original and drop the duplicate.
   fs.rmSync(presetPath(root, rebuilt.id), { force: true });
@@ -296,6 +346,23 @@ export interface PresetRow {
   addonOf?: string;
 }
 
+export interface PresetAddonRow {
+  name: string;
+  forgeAddonId?: number;
+  version?: string;
+  parentName: string;
+  parentType: ModType;
+  parentConstraint?: string;
+  mergedIntoParent: boolean;
+  /**
+   * "present"       — this install has it too.
+   * "missing"       — the parent is here, the addon is not.
+   * "parent-missing" — the mod it patches is not installed, so it cannot go on.
+   */
+  status: "present" | "missing" | "parent-missing";
+  detail?: string;
+}
+
 export interface PresetReport {
   presetId: string;
   presetName: string;
@@ -315,6 +382,8 @@ export interface PresetReport {
   };
   /** Addons in this preset, by the mod they attach to. */
   addonsByParent?: Record<string, string[]>;
+  /** Every addon this preset carries, and whether this install has it. */
+  addonRows?: PresetAddonRow[];
   /** True when everything the preset requires is present, at the right version and state. */
   satisfied: boolean;
 }
@@ -331,7 +400,13 @@ const rowKey = (name: string, type: ModType) => `${sideOf(type)}:${norm(name)}`;
  * ships a server half and a client half under one folder name must stay two rows — the same
  * collision that produced wrong verdicts in the headless parity report.
  */
-export function buildPresetReport(preset: Preset, localMods: ModInfo[], localSptVersion?: string): PresetReport {
+export function buildPresetReport(
+  preset: Preset,
+  localMods: ModInfo[],
+  localSptVersion?: string,
+  /** Addons installed HERE, from the local ledger, so "do I have it too?" can be answered. */
+  localAddons: { forgeAddonId?: number; name: string; parentName: string }[] = []
+): PresetReport {
   const counts = {
     matching: 0,
     missing: 0,
@@ -437,6 +512,45 @@ export function buildPresetReport(preset: Preset, localMods: ModInfo[], localSpt
     counts.extra++;
   }
 
+  /*
+   * Addons are reconciled separately from mods, because most of them have no mod row to
+   * reconcile. An addon that unpacked into its parent's folder is invisible in the mod list
+   * — the parent looks completely ordinary — so the only way to notice one is missing is to
+   * compare the two ledgers.
+   */
+  const hasAddon = (a: PresetAddon) =>
+    localAddons.some((l) =>
+      a.forgeAddonId !== undefined && l.forgeAddonId !== undefined
+        ? l.forgeAddonId === a.forgeAddonId
+        : l.name.toLowerCase() === a.name.toLowerCase() && l.parentName.toLowerCase() === a.parentName.toLowerCase()
+    );
+
+  const addonRows: PresetAddonRow[] = (preset.addons ?? []).map((a) => {
+    const parentInstalled = localMods.some(
+      (m) => m.id.toLowerCase() === a.parentName.toLowerCase() && m.type === a.parentType
+    );
+    const status: PresetAddonRow["status"] = !parentInstalled ? "parent-missing" : hasAddon(a) ? "present" : "missing";
+    return {
+      name: a.name,
+      forgeAddonId: a.forgeAddonId,
+      version: a.version,
+      parentName: a.parentName,
+      parentType: a.parentType,
+      parentConstraint: a.parentConstraint,
+      mergedIntoParent: a.mergedIntoParent,
+      status,
+      detail:
+        status === "parent-missing"
+          ? `Patches "${a.parentName}", which is not installed here.`
+          : status === "missing"
+            ? a.mergedIntoParent
+              ? `Not installed. Its files live inside "${a.parentName}", so applying this preset with mod files brings it across.`
+              : "Not installed."
+            : undefined
+    };
+  });
+  const addonsMissing = addonRows.filter((r) => r.status !== "present").length;
+
   const sptMatches =
     preset.sptVersion && localSptVersion ? compareVersions(preset.sptVersion, localSptVersion) === 0 : undefined;
 
@@ -467,9 +581,16 @@ export function buildPresetReport(preset: Preset, localMods: ModInfo[], localSpt
     rows,
     counts,
     addonsByParent: Object.keys(addonsByParent).length ? addonsByParent : undefined,
+    addonRows: addonRows.length ? addonRows : undefined,
     // "Extra" mods and optional gaps do not stop you playing; a missing required mod, a
-    // version mismatch, or a mod that should be on and is off, do.
+    // version mismatch, or a mod that should be on and is off, do. A missing compatibility
+    // addon counts too: its whole job is to stop two mods breaking each other, and the pair
+    // it patches IS installed.
     satisfied:
-      counts.missingRequired === 0 && counts.versionMismatch === 0 && counts.stateMismatch === 0 && sptMatches !== false
+      counts.missingRequired === 0 &&
+      counts.versionMismatch === 0 &&
+      counts.stateMismatch === 0 &&
+      addonsMissing === 0 &&
+      sptMatches !== false
   };
 }

@@ -657,6 +657,7 @@ export default function PresetsPanel({
                         const off = p.mods.filter((m) => m.enabled === false).length;
                         return off > 0 ? ` (${p.mods.length - off} on, ${off} off)` : "";
                       })()}
+                      {p.addons?.length ? ` · ${p.addons.length} addon${p.addons.length > 1 ? "s" : ""}` : ""}
                       {p.sptVersion ? ` · SPT ${p.sptVersion}` : ""}
                     </span>
                     {p.description && <span className="preset-item-desc">{p.description}</span>}
@@ -693,6 +694,33 @@ export default function PresetsPanel({
                   {report.counts.extra > 0 && ` · ${report.counts.extra} extra`}
                 </span>
               </div>
+
+              {/* Addons get their own block rather than a row in the mod list, because most
+                  have no folder of their own — the parent looks entirely ordinary whether the
+                  patch is there or not, so nothing in the mod list could ever show this. */}
+              {report.addonRows && report.addonRows.length > 0 && (
+                <div className="preset-addons">
+                  <strong>
+                    Compatibility addons ({report.addonRows.filter((a) => a.status === "present").length}/
+                    {report.addonRows.length})
+                  </strong>
+                  <ul>
+                    {report.addonRows.map((a) => (
+                      <li key={`${a.forgeAddonId ?? a.name}:${a.parentName}`} className={`preset-addon-${a.status}`}>
+                        <span className="preset-addon-name">{a.name}</span>
+                        <span className="preset-addon-parent">
+                          for {a.parentName}
+                          {a.version ? ` · v${a.version}` : ""}
+                        </span>
+                        <span className={`preset-addon-status preset-addon-status-${a.status}`}>
+                          {a.status === "present" ? "installed" : a.status === "missing" ? "missing" : "parent missing"}
+                        </span>
+                        {a.detail && <span className="preset-addon-detail">{a.detail}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               {report.sptMatches === false && (
                 <p className="preset-spt-warning">

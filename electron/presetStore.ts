@@ -37,7 +37,7 @@ import {
   PayloadProgress
 } from "./presetPayloads";
 import { recordPayloadInstall } from "./modManager";
-import { markInstalledAsAddon } from "./addons";
+import { markInstalledAsAddon, recordAddonInstall } from "./addons";
 
 export const STORE_SCHEMA = 1;
 
@@ -755,6 +755,10 @@ export interface ApplyPayloadsResult {
   failed: { name: string; message: string }[];
   skipped: { name: string; message: string }[];
   bytesInstalled: number;
+  /** Addons that arrived inside their parent's payload and are now recorded locally. */
+  addonsRecorded: string[];
+  /** Addons that could not come across, and why. */
+  addonsUnavailable: { name: string; message: string }[];
 }
 
 /**
@@ -858,15 +862,60 @@ export async function applyPresetPayloads(
     modsDone++;
   }
 
+  /*
+   * Addons ride along with their parent's payload — their files are physically inside that
+   * folder — so once the parent is installed the addon IS present. What was missing is any
+   * record of it, which is what made a preset unable to say a patch was there.
+   *
+   * Recorded here rather than installed: there is nothing separate to install.
+   */
+  const addonsRecorded: string[] = [];
+  const addonsUnavailable: { name: string; message: string }[] = [];
+  for (const addon of preset.addons ?? []) {
+    const parentInstalled = installed.some((n) => n.toLowerCase() === addon.parentName.toLowerCase());
+    if (!parentInstalled) {
+      addonsUnavailable.push({
+        name: addon.name,
+        message: `"${addon.parentName}" was not installed, so this patch did not come across.`
+      });
+      continue;
+    }
+    if (!addon.mergedIntoParent) {
+      // It has its own folder, so it is an ordinary mod row and was handled above — or was
+      // never carried, in which case saying so is the honest answer.
+      continue;
+    }
+    try {
+      recordAddonInstall(roots.clientRoot, {
+        forgeAddonId: addon.forgeAddonId,
+        name: addon.name,
+        version: addon.version,
+        parentName: addon.parentName,
+        parentType: addon.parentType,
+        parentConstraint: addon.parentConstraint,
+        installedAt: new Date().toISOString(),
+        source: addon.source,
+        folders: [],
+        mergedIntoParent: true
+      });
+      addonsRecorded.push(addon.name);
+    } catch {
+      /* a ledger entry is never worth failing an install over */
+    }
+  }
+
   return {
     success: failed.length === 0,
     installed,
     failed,
     skipped,
     bytesInstalled,
+    addonsRecorded,
+    addonsUnavailable,
     message:
       `Installed ${installed.length} mod(s)` +
       (bytesInstalled ? `, ${formatBytes(bytesInstalled)}` : "") +
+      (addonsRecorded.length ? ` including ${addonsRecorded.length} addon(s)` : "") +
       (skipped.length ? `. ${skipped.length} not carried by this preset` : "") +
       (failed.length ? `. ${failed.length} failed` : "") +
       "."
