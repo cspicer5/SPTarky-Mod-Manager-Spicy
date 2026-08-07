@@ -36,8 +36,9 @@ function scenario(name, { stagingHasExe }) {
   fs.writeFileSync(path.join(staging, "version.txt"), "NEW");
 
   const scriptPath = path.join(root, "apply.cmd");
-  // PID 1 never matches a live process here, so the wait loop falls straight through —
-  // exactly the state the script sees once the app has quit.
+  // The pid is no longer consulted at all: the script retries the MOVE, which fails exactly
+  // while the folder is locked. Polling a pid meant hanging inside `tasklist | find` in a
+  // detached console with no stdin, leaving a visible window and never updating anything.
   fs.writeFileSync(scriptPath, buildSwapScript({ installDir: install, staging, backup, exeName, pid: 1, script: scriptPath }), "utf-8");
 
   console.log(`\n${name}`);
@@ -79,6 +80,52 @@ function scenario(name, { stagingHasExe }) {
   return result;
 }
 
+console.log("\nthe script uses nothing that can hang on a missing stdin");
+{
+  // Every one of these ran in a detached console with no stdin. `tasklist | find` hung inside
+  // find, leaving a window titled 'find "12604"' that had to be killed by hand while the
+  // update silently never happened. `timeout` refuses redirected input for the same reason.
+  const body = buildSwapScript({
+    installDir: "C:\\i",
+    staging: "C:\\s",
+    backup: "C:\\b",
+    exeName: "app.exe",
+    pid: 4080,
+    script: "C:\\x.cmd"
+  });
+  /*
+   * CMD parses redirection and pipes BEFORE `rem` swallows the line, so a pipe inside a
+   * comment is still executed. One in this script's own comments split the line, left
+   * INSTALL empty, and turned every move into `move "" ""` — the script ran to completion
+   * and updated nothing. Non-ASCII is checked too: a .cmd is read in the console codepage.
+   */
+  const offending = body
+    .split(/\r?\n/)
+    .map((line, i) => ({ line, i: i + 1 }))
+    .filter(({ line }) => /^\s*rem\b/i.test(line))
+    .filter(({ line }) => /[|&<>]/.test(line) || /[^\x00-\x7F]/.test(line));
+  check(
+    "no comment contains a pipe, redirect or non-ASCII character",
+    offending.length === 0 ? "clean" : offending.map((o) => `line ${o.i}`).join(", "),
+    "clean"
+  );
+
+  // Only the lines cmd will RUN. The comments name these utilities to explain why they are
+  // gone, and matching those was the assertion failing rather than the script.
+  const code = body
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*rem\b/i.test(line))
+    .join("\n");
+  check("no tasklist", /tasklist/i.test(code), false);
+  check("no find", /\bfind\b/i.test(code), false);
+  check("no timeout", /\btimeout\b/i.test(code), false);
+  check("sleeps with ping, which ignores stdin", /ping -n/i.test(code), true);
+  // The pid is no longer consulted: whether the move succeeds IS whether the app let go.
+  check("does not mention the pid at all", body.includes("4080"), false);
+  check("retries the move instead", /:wait[\s\S]*move "%INSTALL%" "%BACKUP%"/.test(body), true);
+  check("and removes its own launcher shim", /sptarky-apply-update\.vbs/.test(body), true);
+}
+
 const good = scenario("update applies cleanly", { stagingHasExe: true });
 check("install directory still exists", good.installExists, true);
 check("new version is in place", good.version, "NEW");
@@ -86,6 +133,98 @@ check("executable present", good.exePresent, true);
 check("backup cleaned up on success", good.backupLeftBehind, false);
 check("staging cleaned up", good.stagingLeftBehind, false);
 check("script deletes itself", good.scriptLeftBehind, false);
+
+/*
+ * A genuinely locked folder — the case that was never covered, and the one that broke.
+ *
+ * Every earlier scenario ran against a folder nothing held open, so the script's wait was
+ * never exercised at all. In production the app IS holding it, and the update silently did
+ * nothing while a console window sat there spinning. Here a process holds a handle inside the
+ * install and releases it partway through; the script must wait it out and then complete.
+ */
+{
+  const { spawn } = require("child_process");
+  const exeName = "fake-app.cmd";
+  const root2 = fs.mkdtempSync(path.join(os.tmpdir(), "sptarky-swap-lock-"));
+  const install2 = path.join(root2, "app");
+  const staging2 = path.join(root2, ".staging");
+  fs.mkdirSync(install2, { recursive: true });
+  fs.writeFileSync(path.join(install2, exeName), "@echo off\r\nexit /b 0\r\n");
+  fs.writeFileSync(path.join(install2, "version.txt"), "OLD");
+  fs.mkdirSync(staging2, { recursive: true });
+  fs.writeFileSync(path.join(staging2, exeName), "@echo off\r\nexit /b 0\r\n");
+  fs.writeFileSync(path.join(staging2, "version.txt"), "NEW");
+
+  const script2 = path.join(root2, "apply.cmd");
+  fs.writeFileSync(
+    script2,
+    buildSwapScript({
+      installDir: install2,
+      staging: staging2,
+      backup: path.join(root2, ".backup"),
+      exeName,
+      pid: 999999,
+      script: script2
+    }),
+    "utf-8"
+  );
+
+  const locker = spawn(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-Command",
+      `$f=[System.IO.File]::Open('${path.join(install2, "version.txt")}','Open','Read','None'); Start-Sleep -Seconds 6; $f.Close()`
+    ],
+    { stdio: "ignore" }
+  );
+
+  console.log("\nthe folder is genuinely locked when the script starts");
+  // PowerShell takes about a second to start, and without waiting for it the swap ran before
+  // the lock existed — the test then "passed" while proving nothing.
+  try {
+    execFileSync("powershell.exe", ["-NoProfile", "-Command", "Start-Sleep -Milliseconds 1800"], {
+      stdio: "ignore",
+      timeout: 20000
+    });
+  } catch {
+    /* best effort */
+  }
+  const started = Date.now();
+  try {
+    execFileSync("cmd.exe", ["/c", script2], { stdio: "ignore", timeout: 120000 });
+  } catch {
+    /* the script relaunches the dummy app; a non-zero exit is not meaningful */
+  }
+  const waited = (Date.now() - started) / 1000;
+
+  const finalVersion = fs.existsSync(path.join(install2, "version.txt"))
+    ? fs.readFileSync(path.join(install2, "version.txt"), "utf-8")
+    : "(gone)";
+  check("it waited rather than giving up immediately", waited > 3, true);
+  check("and the swap completed", finalVersion, "NEW");
+  check("staging cleaned up", fs.existsSync(staging2), false);
+
+  try {
+    locker.kill();
+  } catch {
+    /* already gone */
+  }
+  try {
+    execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        `Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" | Where-Object { $_.CommandLine -like '*${path.basename(root2)}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`
+      ],
+      { stdio: "ignore", timeout: 20000 }
+    );
+  } catch {
+    /* best effort */
+  }
+  fs.rmSync(root2, { recursive: true, force: true });
+}
 
 // The safety net. If the swapped-in folder has no executable the app would be unlaunchable,
 // so the script must put the old one back rather than leave an empty install.

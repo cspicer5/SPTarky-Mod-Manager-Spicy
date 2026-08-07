@@ -216,7 +216,27 @@ export async function prepareUpdate(opts: ApplyUpdateOptions): Promise<{ success
     const script = path.join(parent, "sptarky-apply-update.cmd");
     fs.writeFileSync(script, buildSwapScript({ installDir, staging, backup, exeName, pid, script }), "utf-8");
 
-    const child = spawn("cmd.exe", ["/c", script], { detached: true, stdio: "ignore", windowsHide: true });
+    /*
+     * Launched through a one-line VBScript shim so it is genuinely invisible.
+     *
+     * `windowsHide: true` cannot help here: `detached: true` gives the child its OWN console
+     * on Windows, and that console is shown regardless. Users saw a black window appear as
+     * the app closed and sit there — the update looked like a crash. WScript.Shell.Run with a
+     * window style of 0 is the one way to start a console program on Windows with no window
+     * at all, and `false` means do not wait, so the shim exits immediately.
+     */
+    const shim = path.join(parent, "sptarky-apply-update.vbs");
+    fs.writeFileSync(
+      shim,
+      `CreateObject("WScript.Shell").Run "cmd /c ""${script}""", 0, False\r\n`,
+      "utf-8"
+    );
+
+    const child = spawn("wscript.exe", ["//B", "//Nologo", shim], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true
+    });
     child.unref();
 
     return { success: true, message: `Installing ${release.version}. The app will restart.`, script };
@@ -258,21 +278,26 @@ set "STAGING=${o.staging}"
 set "BACKUP=${o.backup}"
 set "EXE=${o.exeName}"
 
-rem Wait for the app to exit. Without this the folder is still locked and every move fails.
+rem Retry the MOVE rather than polling for the app process id.
+rem The move fails exactly while the folder is locked and succeeds the moment it is not,
+rem so it is a direct test of the thing we care about. Polling a pid meant piping tasklist
+rem into find inside a detached console with no stdin, where find hung forever and left a
+rem visible window while the update never happened. Ping is the sleep that ignores stdin.
+rem Same volume, so a successful move is a rename and cannot half-finish.
+rem
+rem NOTE: keep these comments plain ASCII with no pipes, ampersands or angle brackets.
+rem CMD parses redirection before rem swallows the line, so a pipe in a comment is still
+rem executed. One in this very block split the line, left INSTALL empty, and broke the swap.
 set /a TRIES=0
 :wait
-tasklist /FI "PID eq ${o.pid}" 2>nul | find "${o.pid}" >nul
-if errorlevel 1 goto ready
+move "%INSTALL%" "%BACKUP%" >nul 2>&1
+if not errorlevel 1 goto ready
 set /a TRIES+=1
-if %TRIES% GEQ 60 goto giveup
-timeout /t 1 /nobreak >nul
+if %TRIES% GEQ 90 goto giveup
+ping -n 2 127.0.0.1 >nul 2>&1
 goto wait
 
 :ready
-rem Move rather than copy: same volume, so it is a rename and cannot half-finish.
-move "%INSTALL%" "%BACKUP%" >nul 2>&1
-if errorlevel 1 goto giveup
-
 move "%STAGING%" "%INSTALL%" >nul 2>&1
 if errorlevel 1 goto rollback
 
@@ -295,6 +320,8 @@ if exist "%INSTALL%\\%EXE%" start "" "%INSTALL%\\%EXE%"
 
 :done
 rd /s /q "%STAGING%" >nul 2>&1
+rem The VBScript shim that launched this, removed alongside it.
+del "%~dp0sptarky-apply-update.vbs" >nul 2>&1
 del "%~f0" >nul 2>&1
 `;
 }
