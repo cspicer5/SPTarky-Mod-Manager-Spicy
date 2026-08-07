@@ -342,7 +342,17 @@ export function restoreClobberedVersions(registryPath: string, before: VersionSn
     const key = `${entry.type}:${String(entry.id).toLowerCase()}`;
     const prior = before[key];
     if (!prior) continue; // created by this install — genuinely the addon's own folder
-    if (entry.installedVersion === prior.installedVersion) continue;
+
+    // Every version field is compared, not just the number. An addon whose version happens
+    // to EQUAL its parent's slips through a version-only check while still rewriting the
+    // provenance: Manimal's Icebreaker Fika Sync is 0.2.1 and so is the mod it patches, so
+    // the parent kept the right version attributed to entirely the wrong thing.
+    const changed =
+      entry.installedVersion !== prior.installedVersion ||
+      entry.versionOrigin !== prior.versionOrigin ||
+      entry.versionEvidence !== prior.versionEvidence;
+    if (!changed) continue;
+
     entry.installedVersion = prior.installedVersion;
     entry.versionOrigin = prior.versionOrigin;
     entry.versionEvidence = prior.versionEvidence;
