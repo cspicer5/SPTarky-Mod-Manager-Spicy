@@ -409,6 +409,37 @@ export interface ParityRow {
   detail?: string;
 }
 
+/**
+ * How an addon on the main install bears on the headless client.
+ *
+ * A compatibility patch has to exist wherever BOTH the mods it patches exist, or the pair it
+ * was written to reconcile breaks on one side only — which shows up as a desync rather than
+ * as a missing mod, and is correspondingly horrible to diagnose.
+ *
+ * Two cases, and the split is structural rather than a preference:
+ *
+ *   a CLIENT parent — the headless client loads BepInEx/, so the patch is needed there too.
+ *                     Because most addons unpack INTO their parent's folder, syncing that
+ *                     folder carries the patch across automatically. Reported so the user
+ *                     knows it happened, rather than having to take it on trust.
+ *   a SERVER parent — a headless client has no server and never loads user/mods, so the
+ *                     patch is irrelevant there. Copying it would be the appearance of doing
+ *                     something with no effect, which is the exact failure the whole headless
+ *                     model exists to prevent.
+ */
+export interface AddonParityRow {
+  name: string;
+  parentName: string;
+  parentType: ModType;
+  /** True when its files live inside the parent's folder and travel with it. */
+  mergedIntoParent: boolean;
+  needsHeadless: boolean;
+  /** Whether the parent is present on the headless side. */
+  parentOnHeadless: boolean;
+  status: "carried-with-parent" | "parent-missing" | "not-applicable" | "needs-attention";
+  detail: string;
+}
+
 export interface ParityReport {
   rows: ParityRow[];
   counts: {
@@ -419,6 +450,71 @@ export interface ParityReport {
     headlessOnly: number;
     needsReview: number;
   };
+  /** Compatibility addons and what they mean for the headless side. */
+  addons?: AddonParityRow[];
+}
+
+/**
+ * Works out what each addon means for the headless client.
+ *
+ * Kept separate from the plugin rows because an addon usually has no folder of its own — the
+ * parent's row looks identical whether the patch is inside it or not, so no amount of
+ * plugin-by-plugin comparison could ever surface this.
+ */
+export function buildAddonParity(
+  addons: { name: string; parentName: string; parentType: ModType; mergedIntoParent: boolean }[],
+  mainMods: ModInfo[],
+  headlessMods: ModInfo[]
+): AddonParityRow[] {
+  const onHeadless = new Set(headlessMods.map((m) => `${m.type}:${m.id.toLowerCase()}`));
+  const onMain = new Set(mainMods.map((m) => `${m.type}:${m.id.toLowerCase()}`));
+
+  return addons.map((a) => {
+    const parentKey = `${a.parentType}:${a.parentName.toLowerCase()}`;
+    const parentOnHeadless = onHeadless.has(parentKey);
+
+    // Structural: a headless client has no server, so a server-side patch can never load
+    // there no matter what anyone copies.
+    if (a.parentType === "server") {
+      return {
+        ...a,
+        needsHeadless: false,
+        parentOnHeadless,
+        status: "not-applicable" as const,
+        detail: `Patches a server mod. A headless client has no server, so this is not needed there.`
+      };
+    }
+
+    if (!onMain.has(parentKey)) {
+      return {
+        ...a,
+        needsHeadless: true,
+        parentOnHeadless,
+        status: "parent-missing" as const,
+        detail: `"${a.parentName}" is not installed on the main instance.`
+      };
+    }
+
+    if (!parentOnHeadless) {
+      return {
+        ...a,
+        needsHeadless: true,
+        parentOnHeadless,
+        status: "parent-missing" as const,
+        detail: `Sync "${a.parentName}" to the headless client; this patch travels with it.`
+      };
+    }
+
+    return {
+      ...a,
+      needsHeadless: true,
+      parentOnHeadless,
+      status: a.mergedIntoParent ? ("carried-with-parent" as const) : ("needs-attention" as const),
+      detail: a.mergedIntoParent
+        ? `Its files are inside "${a.parentName}", which is already synced, so the headless client has it.`
+        : `Has its own folder — check it was synced alongside "${a.parentName}".`
+    };
+  });
 }
 
 /**

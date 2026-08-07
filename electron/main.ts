@@ -38,6 +38,7 @@ import {
   resolveHeadlessInstance,
   describeHeadlessRejection,
   buildParityReport,
+  buildAddonParity,
   classifyForHeadless,
   buildServerCounterpartIndex,
   forgeHintsFor,
@@ -73,7 +74,7 @@ import {
   payloadKeysInUse,
   WritePolicy
 } from "./presetStore";
-import { storeUsage, verifyPayload, collectOrphanPayloads, formatBytes } from "./presetPayloads";
+import { storeUsage, verifyPayload, collectOrphanPayloads, formatBytes, applyPayload } from "./presetPayloads";
 import {
   backupConfigs,
   restoreConfigs,
@@ -82,7 +83,14 @@ import {
   BulkReinstallProgress,
   BulkReinstallOutcome
 } from "./bulkReinstall";
-import { listGithubReleases, loadInstanceSources, fetchLatestGithubRelease, loadHarvest } from "./modSources";
+import {
+  listGithubReleases,
+  loadInstanceSources,
+  fetchLatestGithubRelease,
+  loadHarvest,
+  githubRepoFromUrl
+} from "./modSources";
+import { buildSyncPlan, describeSyncPlan } from "./presetSync";
 import {
   loadAddonCatalogue,
   suggestAddons,
@@ -101,6 +109,19 @@ import {
 import { InstanceConfig, InstanceId, ModInfo, ModType } from "./types";
 
 const MOD_HUB_URL = "https://hub.sp-tarkov.com/";
+
+/**
+ * Whether Forge can still be treated as a source.
+ *
+ * Answered from the date rather than by probing, because this is consulted whenever a sync is
+ * planned and a dead host would make that hang. Being wrong in either direction is cheap: the
+ * install paths report an honest failure if Forge is gone early, and a GitHub source is
+ * preferred over Forge anyway.
+ */
+const FORGE_SHUTDOWN_DATE = Date.parse("2026-08-10T00:00:00Z");
+function isForgeShutDown(): boolean {
+  return Date.now() >= FORGE_SHUTDOWN_DATE;
+}
 
 const store = new Store<InstanceConfig>({
   defaults: {
@@ -292,6 +313,23 @@ ipcMain.handle("get-headless-view", () => {
     manual: headlessOverrides(),
     forge: { ...forgeHintsFor(mainMods), ...forgeHintsFor(headlessMods) }
   });
+
+  // A compatibility patch has to exist wherever both the mods it reconciles do, or the pair
+  // breaks on one side only — which surfaces as a desync rather than a missing mod. Most
+  // addons have no folder of their own, so no plugin-by-plugin comparison can show this.
+  const roots = rootsFor("main");
+  report.addons = roots
+    ? buildAddonParity(
+        loadAddonLedger(roots.clientRoot).map((r) => ({
+          name: r.name,
+          parentName: r.parentName,
+          parentType: r.parentType,
+          mergedIntoParent: r.mergedIntoParent
+        })),
+        mainMods,
+        headlessMods
+      )
+    : [];
 
   return {
     configured: true,
@@ -670,6 +708,178 @@ ipcMain.handle("apply-preset-state", (_event, id: string) => {
   };
 });
 
+/* --- IPC: making this install match a preset ---------------------------------
+ * The comparison view could say what was wrong and offer nothing to fix it. Everything
+ * needed already existed — payload copying, the Forge installer, the GitHub installer, the
+ * toggle — but nothing joined them up, so someone handed a preset saw a list of problems and
+ * a shrug.
+ */
+ipcMain.handle("plan-preset-sync", async (_event, id: string, fromStore?: boolean) => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+
+  const storeDir = store.get("presetStorePath");
+  const preset = fromStore && storeDir ? await readStorePreset(storeDir, id) : readPreset(presetRoot(), id);
+  if (!preset) return { success: false, message: "That preset could not be found." };
+
+  const report = buildPresetReport(preset, scanInstance("main"), localSptVersion(), localPresetAddons());
+  const storeConnected = !!storeDir && (await getStoreStatus(storeDir, presetIdentity())).connected;
+  const plan = buildSyncPlan(preset, report, {
+    storeConnected,
+    // Cached rather than probed: this runs on every panel open, and a dead Forge should not
+    // make the button hang. The install paths handle a failure honestly either way.
+    forgeAvailable: !isForgeShutDown()
+  });
+
+  return { success: true, plan, summary: describeSyncPlan(plan), presetName: preset.name };
+});
+
+/**
+ * Carries out the plan.
+ *
+ * Order matters: mods first, then addons (an addon installed before its parent patches
+ * nothing), then enabled/disabled state last so it is not undone by an install.
+ */
+ipcMain.handle("sync-install-to-preset", async (_event, id: string, fromStore?: boolean) => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+
+  const storeDir = store.get("presetStorePath");
+  const preset = fromStore && storeDir ? await readStorePreset(storeDir, id) : readPreset(presetRoot(), id);
+  if (!preset) return { success: false, message: "That preset could not be found." };
+
+  const report = buildPresetReport(preset, scanInstance("main"), localSptVersion(), localPresetAddons());
+  const storeConnected = !!storeDir && (await getStoreStatus(storeDir, presetIdentity())).connected;
+  const plan = buildSyncPlan(preset, report, { storeConnected, forgeAvailable: !isForgeShutDown() });
+
+  payloadCancelled = false;
+  const done: string[] = [];
+  const failed: { name: string; message: string }[] = [];
+  let index = 0;
+
+  const report_ = (step: string, name: string) =>
+    mainWindow?.webContents.send("preset-sync-progress", {
+      step,
+      name,
+      done: index,
+      total: plan.actionable.length
+    });
+
+  for (const step of plan.actionable) {
+    if (payloadCancelled) break;
+    report_(step.reason, step.name);
+
+    try {
+      if (step.reason === "state-mismatch") {
+        const mod = scanInstance("main").find(
+          (m) => m.id.toLowerCase() === step.name.toLowerCase() && m.type === step.type
+        );
+        if (!mod) {
+          failed.push({ name: step.name, message: "No longer installed." });
+        } else {
+          const r = toggleMod(roots.clientRoot, roots.serverRoot, mod);
+          r.success ? done.push(step.name) : failed.push({ name: step.name, message: r.message });
+        }
+        index++;
+        continue;
+      }
+
+      if (step.reason === "addon-missing" && step.forgeAddonId !== undefined) {
+        const r = await installCataloguedAddon(`sync-addon-${step.forgeAddonId}`, step.forgeAddonId);
+        r.success ? done.push(step.name) : failed.push({ name: step.name, message: r.message ?? "Addon install failed." });
+        index++;
+        continue;
+      }
+
+      if (step.source === "payload" && step.payloadKey && storeDir) {
+        const r = await applyPayload(storeDir, step.payloadKey, roots.clientRoot, roots.serverRoot, {
+          enabled: step.wantEnabled !== false
+        });
+        r.success ? done.push(step.name) : failed.push({ name: step.name, message: r.message });
+        index++;
+        continue;
+      }
+
+      if (step.source === "github" && step.sourceUrl) {
+        const repo = githubRepoFromUrl(step.sourceUrl);
+        const release = repo ? await fetchLatestGithubRelease(repo) : null;
+        if (!release?.assetUrl) {
+          failed.push({ name: step.name, message: `No downloadable release at ${step.sourceUrl}` });
+        } else {
+          const r = await installForgeModVersion(
+            roots.clientRoot,
+            roots.serverRoot,
+            release.assetUrl,
+            step.name,
+            (received, total) =>
+              mainWindow?.webContents.send("preset-sync-progress", {
+                step: step.reason,
+                name: step.name,
+                done: index,
+                total: plan.actionable.length,
+                receivedBytes: received,
+                totalBytes: total
+              }),
+            { version: release.version, origin: "github", sourceUrl: step.sourceUrl }
+          );
+          r.success ? done.push(step.name) : failed.push({ name: step.name, message: r.message });
+        }
+        index++;
+        continue;
+      }
+
+      if (step.source === "forge") {
+        const found = await findForgeDownloadForName(step.name, localSptVersion());
+        if (!found.found || !found.downloadLink) {
+          failed.push({ name: step.name, message: "Not found on Forge." });
+        } else {
+          const r = await installForgeModVersion(
+            roots.clientRoot,
+            roots.serverRoot,
+            found.downloadLink,
+            step.name,
+            (received, total) =>
+              mainWindow?.webContents.send("preset-sync-progress", {
+                step: step.reason,
+                name: step.name,
+                done: index,
+                total: plan.actionable.length,
+                receivedBytes: received,
+                totalBytes: total
+              }),
+            { name: found.forgeName, version: found.version }
+          );
+          r.success ? done.push(step.name) : failed.push({ name: step.name, message: r.message });
+        }
+        index++;
+        continue;
+      }
+
+      failed.push({ name: step.name, message: step.blockedReason ?? "No source available." });
+      index++;
+    } catch (err: any) {
+      failed.push({ name: step.name, message: err?.message ?? String(err) });
+      index++;
+    }
+  }
+
+  const after = buildPresetReport(preset, scanInstance("main"), localSptVersion(), localPresetAddons());
+  return {
+    success: failed.length === 0,
+    done: done.length,
+    failed,
+    // The blocked list is returned every time, not only on failure: those are the mods the
+    // user has to fetch themselves, and they would otherwise silently stay missing.
+    blocked: plan.blocked.map((b) => ({ name: b.name, message: b.blockedReason ?? "No source." })),
+    satisfied: after.satisfied,
+    message:
+      `Synced ${done.length} of ${plan.actionable.length} item(s).` +
+      (failed.length ? ` ${failed.length} failed.` : "") +
+      (plan.blocked.length ? ` ${plan.blocked.length} need fetching by hand.` : "") +
+      (after.satisfied ? " This install now matches the preset." : "")
+  };
+});
+
 /* --- IPC: the shared preset store (phase 2: manifests only) -----------------
  *
  * The store is a folder someone else can also reach — a Windows share, a VPN path, a synced
@@ -951,7 +1161,18 @@ ipcMain.handle("set-addon-parent", (_event, id: string, type: ModType, parentNam
  * Deliberately does NOT take a version from the renderer: which build fits is a function of
  * the parent's installed version, and that is known here.
  */
-ipcMain.handle("install-forge-addon", async (_event, jobId: string, addonId: number) => {
+/**
+ * Installs a catalogued addon, pinned to the build that fits the parent installed here.
+ *
+ * A plain function rather than only an IPC handler, because syncing an install to a preset
+ * needs the identical behaviour — version picking, parent-version protection and ledger
+ * recording included. Two copies of this would drift, and the one that drifted would be the
+ * one nobody was watching.
+ */
+async function installCataloguedAddon(
+  jobId: string,
+  addonId: number
+): Promise<{ success: boolean; message: string; installedAs?: string[]; mergedIntoParent?: boolean }> {
   const roots = rootsFor("main");
   if (!roots) return { success: false, message: "No SPT instance configured." };
 
@@ -1032,7 +1253,11 @@ ipcMain.handle("install-forge-addon", async (_event, jobId: string, addonId: num
     installedAs: added.map((a) => a.id),
     mergedIntoParent: added.length === 0
   };
-});
+}
+
+ipcMain.handle("install-forge-addon", (_event, jobId: string, addonId: number) =>
+  installCataloguedAddon(jobId, addonId)
+);
 
 /**
  * Installs an addon from a local archive and attaches it to a parent.

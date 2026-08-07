@@ -26,6 +26,7 @@ import {
   AddonLink,
   AddonIntegration,
   InstalledAddonRecord,
+  PresetSyncProgress,
   BulkReinstallProgress,
   BulkReinstallOutcome
 } from "./types";
@@ -555,6 +556,57 @@ export default function App() {
       await loadPresetReport(id);
     } finally {
       setPresetBusy(false);
+    }
+  }
+
+  /* --- making this install match a preset -----------------------------------
+   * The comparison could say what was wrong and offer nothing to fix it. Confirmation shows
+   * the real plan first, because this downloads and overwrites mods.
+   */
+  const [syncProgress, setSyncProgress] = useState<PresetSyncProgress | null>(null);
+  useEffect(() => window.modManagerAPI.onPresetSyncProgress(setSyncProgress), []);
+
+  async function handleSyncToPreset(id: string, fromStore = false) {
+    const planned = await window.modManagerAPI.planPresetSync(id, fromStore);
+    if (!planned.success || !planned.plan) {
+      pushToast(planned.message ?? "Couldn't work out what to change.", false);
+      return;
+    }
+    const { plan, summary } = planned;
+    if (plan.actionable.length === 0 && plan.blocked.length === 0) {
+      pushToast("Nothing to do — this install already matches.", true);
+      return;
+    }
+
+    const blockedNote = plan.blocked.length
+      ? `\n\n${plan.blocked.length} cannot be fetched automatically and will be listed for you to get by hand:\n` +
+        plan.blocked.slice(0, 6).map((b) => `  · ${b.name}`).join("\n") +
+        (plan.blocked.length > 6 ? `\n  · …and ${plan.blocked.length - 6} more` : "")
+      : "";
+
+    if (
+      !window.confirm(
+        `Make this install match "${planned.presetName}"?\n\nThis will ${summary}\n\n` +
+          `Mods you have that the preset doesn't mention are left alone — nothing is deleted.${blockedNote}`
+      )
+    )
+      return;
+
+    setSyncProgress(null);
+    setPresetBusy(true);
+    try {
+      const result = await window.modManagerAPI.syncInstallToPreset(id, fromStore);
+      pushToast(tMsg(result.message), result.success);
+      // Named individually rather than counted: these are the ones the user now has to go
+      // and fetch, and a bare number tells them nothing actionable.
+      for (const b of result.blocked ?? []) pushToast(`${b.name}: ${b.message}`, false);
+      for (const f of (result.failed ?? []).slice(0, 5)) pushToast(`${f.name}: ${f.message}`, false);
+      await refreshMods();
+      await refreshAddonSuggestions();
+      if (selectedPresetId) await loadPresetReport(selectedPresetId);
+    } finally {
+      setPresetBusy(false);
+      setSyncProgress(null);
     }
   }
 
@@ -2315,6 +2367,8 @@ export default function App() {
               onRecapture={handleRecapturePreset}
               onDelete={handleDeletePreset}
               onApplyState={handleApplyPresetState}
+              onSync={handleSyncToPreset}
+              syncProgress={syncProgress}
               onChooseStore={handleChooseStore}
               onCreateStore={handleCreateStore}
               onDisconnectStore={handleDisconnectStore}

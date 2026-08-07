@@ -197,6 +197,8 @@ export interface ParityReport {
     headlessOnly: number;
     needsReview: number;
   };
+  /** Compatibility addons and what they mean for the headless side. */
+  addons?: AddonParityRow[];
 }
 
 /* --- live SPT server ------------------------------------------------------- */
@@ -246,6 +248,24 @@ export interface ServerSyncReport {
     unknownVersion: number;
   };
   readyToPlay: boolean;
+}
+
+/**
+ * What an addon means for the headless client.
+ *
+ * A compatibility patch must exist wherever both mods it reconciles do, or the pair breaks on
+ * one side only. Server-side patches are structurally irrelevant: a headless client has no
+ * server and never loads user/mods.
+ */
+export interface AddonParityRow {
+  name: string;
+  parentName: string;
+  parentType: ModType;
+  mergedIntoParent: boolean;
+  needsHeadless: boolean;
+  parentOnHeadless: boolean;
+  status: "carried-with-parent" | "parent-missing" | "not-applicable" | "needs-attention";
+  detail: string;
 }
 
 export interface HeadlessView {
@@ -494,6 +514,45 @@ export interface AddonIntegration {
   forgeName: string;
 }
 
+/* --- syncing an install to a preset ---------------------------------------- */
+
+/**
+ * Where a mod would come from. Payload is strongest (exact bytes, no network, survives the
+ * Forge shutdown); "none" means nothing can supply it and the user is told rather than
+ * left with a silent gap.
+ */
+export type SyncSource = "payload" | "github" | "forge" | "none";
+
+export interface SyncStep {
+  name: string;
+  type: ModType;
+  reason: "missing" | "version-mismatch" | "state-mismatch" | "addon-missing";
+  source: SyncSource;
+  wantVersion?: string;
+  haveVersion?: string;
+  wantEnabled?: boolean;
+  sourceUrl?: string;
+  parentName?: string;
+  blockedReason?: string;
+}
+
+export interface SyncPlan {
+  steps: SyncStep[];
+  actionable: SyncStep[];
+  blocked: SyncStep[];
+  counts: { install: number; update: number; toggle: number; addons: number; blocked: number };
+  payloadBytes: number;
+}
+
+export interface PresetSyncProgress {
+  step: string;
+  name: string;
+  done: number;
+  total: number;
+  receivedBytes?: number;
+  totalBytes?: number;
+}
+
 /* --- payloads (phase 3) --------------------------------------------------- */
 
 export interface StoreUsage {
@@ -639,6 +698,24 @@ export interface ModManagerAPI {
   getPresetReport: (id: string) => Promise<{ success: boolean; report?: PresetReport; message?: string }>;
   /** Applies only what needs no download: enabling/disabling to match. Never removes mods. */
   applyPresetState: (id: string) => Promise<{ success: boolean; changed?: number; message: string }>;
+  /** What a sync would do, so the confirmation shows real numbers. */
+  planPresetSync: (
+    id: string,
+    fromStore?: boolean
+  ) => Promise<{ success: boolean; plan?: SyncPlan; summary?: string; presetName?: string; message?: string }>;
+  /** Installs, updates and toggles until this install matches. Never removes extra mods. */
+  syncInstallToPreset: (
+    id: string,
+    fromStore?: boolean
+  ) => Promise<{
+    success: boolean;
+    done?: number;
+    failed?: { name: string; message: string }[];
+    blocked?: { name: string; message: string }[];
+    satisfied?: boolean;
+    message: string;
+  }>;
+  onPresetSyncProgress: (callback: (p: PresetSyncProgress) => void) => () => void;
 
   // --- the shared preset store (phase 2: manifests only) ---
   getPresetStoreStatus: () => Promise<PresetStoreStatus>;

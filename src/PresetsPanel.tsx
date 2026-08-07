@@ -16,6 +16,7 @@ import {
   PresetRow,
   PresetStoreStatus,
   PayloadProgress,
+  PresetSyncProgress,
   StoreUsage,
   WritePolicy
 } from "./types";
@@ -514,6 +515,8 @@ export default function PresetsPanel({
   onRecapture,
   onDelete,
   onApplyState,
+  onSync,
+  syncProgress,
   onChooseStore,
   onCreateStore,
   onDisconnectStore,
@@ -544,6 +547,9 @@ export default function PresetsPanel({
   onRecapture: (id: string) => void;
   onDelete: (id: string) => void;
   onApplyState: (id: string) => void;
+  /** Installs, updates and toggles until this install matches. Never removes extra mods. */
+  onSync: (id: string, fromStore?: boolean) => void;
+  syncProgress: PresetSyncProgress | null;
   onChooseStore: () => void;
   onCreateStore: (name: string, policy: WritePolicy) => void;
   onDisconnectStore: () => void;
@@ -729,21 +735,62 @@ export default function PresetsPanel({
                 </p>
               )}
 
+              {syncProgress && (
+                <div className="preset-sync-progress">
+                  <span>
+                    {syncProgress.step === "missing"
+                      ? "Installing"
+                      : syncProgress.step === "version-mismatch"
+                        ? "Updating"
+                        : syncProgress.step === "addon-missing"
+                          ? "Installing addon"
+                          : "Switching"}
+                    : <strong>{syncProgress.name}</strong>
+                  </span>
+                  <span>
+                    {syncProgress.done}/{syncProgress.total}
+                    {syncProgress.totalBytes
+                      ? ` · ${Math.round((syncProgress.receivedBytes ?? 0) / 1048576)}/${Math.round(syncProgress.totalBytes / 1048576)} MB`
+                      : ""}
+                  </span>
+                </div>
+              )}
+
               <div className="preset-actions">
+                {/* The action the panel was missing: it could say what was wrong and offer
+                    nothing to fix it. Everything else here is narrower, so this leads. */}
+                <button
+                  onClick={() => onSync(selected.id)}
+                  disabled={busy || report.satisfied}
+                  className={!report.satisfied ? "primary" : ""}
+                  title={
+                    report.satisfied
+                      ? "This install already matches"
+                      : "Download and install whatever is missing, update wrong versions, and switch mods on or off to match. Nothing is deleted."
+                  }
+                >
+                  {report.satisfied ? "Already matching" : "Match this preset"}
+                </button>
                 <button
                   onClick={() => onApplyState(selected.id)}
                   disabled={busy || report.counts.stateMismatch === 0}
-                  className={report.counts.stateMismatch > 0 ? "primary" : ""}
                   title={
                     report.counts.stateMismatch > 0
-                      ? "Switch mods on and off so they match the preset"
+                      ? "Switch mods on and off so they match, without downloading anything"
                       : "Nothing to switch — on/off states already match"
                   }
                 >
-                  {report.counts.stateMismatch > 0 ? `Fix on/off (${report.counts.stateMismatch})` : "On/off matches"}
+                  {report.counts.stateMismatch > 0 ? `Fix on/off only (${report.counts.stateMismatch})` : "On/off matches"}
                 </button>
-                <button onClick={() => onRecapture(selected.id)} disabled={busy} title="Overwrite this preset with the current install">
-                  Update from install
+                {/* Named for what it does TO THE PRESET. "Update from install" read as though
+                    it updated the install, which is the opposite direction and now sits next
+                    to it as "Match this preset". */}
+                <button
+                  onClick={() => onRecapture(selected.id)}
+                  disabled={busy}
+                  title="Replace this preset's contents with whatever is installed right now"
+                >
+                  Overwrite preset with current modset
                 </button>
                 <button
                   onClick={() => onExportFile(selected.id)}
@@ -764,8 +811,8 @@ export default function PresetsPanel({
               {/* Said plainly rather than discovered: Apply cannot install anything yet. */}
               {report.counts.missing > 0 && (
                 <p className="preset-note">
-                  {report.counts.missing} mod(s) in this preset are not installed. Presets do not carry mod files yet, so
-                  install them from Forge or copy them in, then compare again.
+                  {report.counts.missing} mod(s) in this preset are not installed. <strong>Match this preset</strong>{" "}
+                  fetches them — from the preset's own files if its store is connected, otherwise from GitHub or Forge.
                 </p>
               )}
 

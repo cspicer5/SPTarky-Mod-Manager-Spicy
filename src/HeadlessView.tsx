@@ -527,6 +527,33 @@ function ParityGutter({ parity }: { parity: ParityReport | null }) {
         </li>
       </ul>
 
+      {/* Compatibility patches, which the plugin rows above cannot show: most live inside
+          their parent's folder, so the parent's row looks the same whether the patch is
+          there or not. A patch missing on one side breaks the pair it reconciles, and shows
+          up as a desync rather than as a missing mod. */}
+      {parity?.addons && parity.addons.length > 0 && (
+        <div className="hl-gutter-addons">
+          <div className="hl-gutter-title">Compatibility addons</div>
+          <ul>
+            {parity.addons.map((a) => (
+              <li key={`${a.name}:${a.parentName}`} className={`hl-addon-${a.status}`}>
+                <span className="hl-addon-name">{a.name}</span>
+                <span className="hl-addon-status">
+                  {a.status === "carried-with-parent"
+                    ? "on both"
+                    : a.status === "not-applicable"
+                      ? "server-side"
+                      : a.status === "parent-missing"
+                        ? "sync parent"
+                        : "check"}
+                </span>
+                <span className="hl-addon-detail">{a.detail}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {problems.length === 0 ? (
         <p className="hl-gutter-clear">
           Nothing to reconcile. Every mod that changes raid behaviour is present on both sides at the same version.

@@ -658,3 +658,61 @@
 .hl-install-btn:disabled {
   opacity: 0.4;
 }
+
+/* Compatibility addons in the parity gutter. The plugin rows above cannot show these: most
+   live inside their parent's folder, so the parent's row is identical whether the patch is
+   there or not. A patch present on one side only breaks the pair it reconciles, and surfaces
+   as a desync rather than as a missing mod. */
+.hl-gutter-addons {
+  margin: 10px 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.hl-gutter-addons ul {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.hl-gutter-addons li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+}
+
+.hl-addon-name {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.hl-addon-status {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  align-self: flex-start;
+  padding: 0 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+}
+
+.hl-addon-carried-with-parent .hl-addon-status {
+  color: var(--ok-strong);
+  border-color: var(--ok);
+}
+
+.hl-addon-parent-missing .hl-addon-status,
+.hl-addon-needs-attention .hl-addon-status {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+.hl-addon-detail {
+  color: var(--text-faint);
+  line-height: 1.4;
+}

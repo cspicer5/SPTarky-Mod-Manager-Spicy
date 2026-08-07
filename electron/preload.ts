@@ -53,6 +53,14 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   deletePreset: (id: string) => ipcRenderer.invoke("delete-preset", id),
   getPresetReport: (id: string) => ipcRenderer.invoke("get-preset-report", id),
   applyPresetState: (id: string) => ipcRenderer.invoke("apply-preset-state", id),
+  // What a sync WOULD do, so the user confirms against real numbers rather than a promise.
+  planPresetSync: (id: string, fromStore?: boolean) => ipcRenderer.invoke("plan-preset-sync", id, fromStore),
+  syncInstallToPreset: (id: string, fromStore?: boolean) => ipcRenderer.invoke("sync-install-to-preset", id, fromStore),
+  onPresetSyncProgress: (callback: (p: any) => void) => {
+    const handler = (_e: unknown, p: any) => callback(p);
+    ipcRenderer.on("preset-sync-progress", handler);
+    return () => ipcRenderer.removeListener("preset-sync-progress", handler);
+  },
 
   // --- the shared preset store (a folder: LAN share, VPN path, or synced directory) ---
   getPresetStoreStatus: () => ipcRenderer.invoke("get-preset-store-status"),

@@ -704,3 +704,17 @@
 .preset-addon-status-parent-missing {
   color: var(--text-faint);
 }
+
+/* Syncing an install to a preset: mods are downloaded and overwritten, so it says which one
+   and how far along, not just that something is happening. */
+.preset-sync-progress {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-wash);
+  font-size: 11px;
+}
