@@ -1043,6 +1043,21 @@ function forgeIdsByFolder(clientRoot: string): Record<string, string> {
 }
 
 /**
+ * Which catalogue mod each installed folder is, so the browse pane can say "you already have
+ * this" instead of offering a blind Install.
+ *
+ * Read from the match cache rather than re-derived by name. That cache records HOW each
+ * identity was established and never stores an unconfirmed guess, so this inherits the same
+ * guarantee — the alternative, matching browse results to installed mods by name, is exactly
+ * the guesswork that once mapped fika-server onto SVM.
+ */
+ipcMain.handle("get-installed-catalogue-ids", () => {
+  const roots = rootsFor("main");
+  if (!roots) return {};
+  return forgeIdsByFolder(roots.clientRoot);
+});
+
+/**
  * Addon ids already installed here, so the catalogue can say "you have this".
  *
  * Read from the ADDON LEDGER, not the mod registry. Most addons unpack into their parent's
@@ -1751,7 +1766,7 @@ ipcMain.handle(
       const result = await searchForgeMods(params);
       return { success: true, result };
     } catch (err: any) {
-      return { success: false, message: err?.message || "Failed to search mods on Forge." };
+      return { success: false, message: err?.message || "Failed to search the mod catalogue." };
     }
   }
 );

@@ -40,6 +40,10 @@
   --ok-strong: #9ab86e;
   --danger: #a8492f;
   --danger-strong: #c96a4c;
+  /* Reinstall — "same version again", which is neither progress nor risk. Desaturated to sit
+     alongside the existing earth tones rather than jumping out of them. */
+  --info: #45748f;
+  --info-strong: #5f92ae;
 
   --radius: 3px;
   --radius-lg: 5px;
@@ -136,6 +140,51 @@ button.primary:hover:not(:disabled) {
 button.danger:hover:not(:disabled) {
   border-color: var(--danger);
   color: var(--danger-strong);
+}
+
+/* ==========================================================================
+   Browse actions — the colour says what the button will DO to what you have.
+   Install keeps the default accent; the other three recolour it, because in a
+   version dropdown an older build looks exactly like a newer one and the label
+   alone is easy to skim past.
+     green = moving forward   blue = same version again   red = going backwards
+   ========================================================================== */
+button.primary.browse-action-upgrade {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: #0f1409;
+}
+
+button.primary.browse-action-upgrade:hover:not(:disabled) {
+  background: var(--ok-strong);
+  border-color: var(--ok-strong);
+  color: #0f1409;
+}
+
+button.primary.browse-action-reinstall {
+  background: var(--info);
+  border-color: var(--info);
+  color: #08131a;
+}
+
+button.primary.browse-action-reinstall:hover:not(:disabled) {
+  background: var(--info-strong);
+  border-color: var(--info-strong);
+  color: #08131a;
+}
+
+/* Red is the point here: a downgrade is a legitimate thing to want and also the
+   easiest to trigger by accident. */
+button.primary.browse-action-downgrade {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #1a0c07;
+}
+
+button.primary.browse-action-downgrade:hover:not(:disabled) {
+  background: var(--danger-strong);
+  border-color: var(--danger-strong);
+  color: #1a0c07;
 }
 
 .empty-state {
@@ -1028,11 +1077,24 @@ h2 {
   background: var(--bg-panel-raised);
 }
 
-/* Update button embedded in a row of the Forge results panel */
+/* Update button embedded in a row of the update-check panel */
 .inline-update-button {
   padding: 1px 9px;
   font-size: 11px;
   vertical-align: middle;
+}
+
+/* The "Updates available:" heading, with "Update all" sitting beside it */
+.update-all-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* A row whose update has already been installed in this session. Dimmed rather than removed:
+   it stays where the eye last saw it, so the list does not reflow mid-run. */
+.update-row-done {
+  opacity: 0.72;
 }
 
 /* ==========================================================================

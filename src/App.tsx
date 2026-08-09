@@ -31,6 +31,7 @@ import {
   BulkReinstallOutcome
 } from "./types";
 import { Lang, translate, translateBackendMessage } from "./i18n";
+import { browseInstallState, compareSemver } from "./browseInstallState";
 import InstancesView from "./HeadlessView";
 import PresetsPanel from "./PresetsPanel";
 import AddonsPanel from "./AddonsPanel";
@@ -61,21 +62,28 @@ function selectionKey(mod: ModInfo): string {
   return `${mod.type}:${mod.enabled ? "on" : "off"}:${mod.id}`;
 }
 
-/** Numeric semver comparison, so 0.10.0 sorts above 0.9.0 as it should. */
-function compareSemver(a: string, b: string): number {
-  const parse = (v: string) => v.replace(/^v/i, "").split(".").map((n) => parseInt(n, 10) || 0);
-  const pa = parse(a);
-  const pb = parse(b);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
-    if (diff !== 0) return diff > 0 ? 1 : -1;
-  }
-  return 0;
-}
-
 function formatBytes(n: number): string {
   return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
 }
+
+/**
+ * Orderings the catalogue can actually honour, checked one at a time against the live API.
+ *
+ * `-published_at` is "recently updated" rather than "newly added": a mod's published_at
+ * tracks its NEWEST version's date, confirmed on four mods whose first and last versions are
+ * years apart (BigBrain 2024-04-01 .. 2026-08-03).
+ *
+ * The site's own "Newest" is missing here deliberately. It sorts by descending id, and the
+ * API rejects `sort=id`; the only other route, `created_at`, is null on every mod. Both ways
+ * of expressing it are therefore unavailable, and the near-miss is dangerous rather than
+ * merely absent — `sort=-created_at` returns 200 and yields plain id-ASCENDING order, so a
+ * "Newest" built on it would confidently list the oldest mods in the catalogue.
+ */
+const BROWSE_SORTS: { value: string; labelKey: string }[] = [
+  { value: "-downloads", labelKey: "browse.sortDownloads" },
+  { value: "-published_at", labelKey: "browse.sortUpdated" },
+  { value: "name", labelKey: "browse.sortName" }
+];
 
 function ToastStack({ toasts }: { toasts: Toast[] }) {
   if (toasts.length === 0) return null;
@@ -145,6 +153,16 @@ export default function App() {
   const [browseCategory, setBrowseCategory] = useState("");
   const [browseCategories, setBrowseCategories] = useState<ForgeCategory[]>([]);
   const [browseOnlyCompatible, setBrowseOnlyCompatible] = useState(false);
+  /**
+   * Ordering, as a raw API sort expression.
+   *
+   * Only the three in BROWSE_SORTS are offered, because they are the only ones that WORK.
+   * The API also accepts sort=-created_at, -updated_at, -featured and -favourites_count and
+   * answers 200 for all of them — while returning the unsorted default, since every one of
+   * those columns is null for every mod. A "Newest" entry backed by -created_at would show
+   * the OLDEST mods first and look like it was working.
+   */
+  const [browseSort, setBrowseSort] = useState<string>("-downloads");
   const [browseResults, setBrowseResults] = useState<ForgeCatalogMod[]>([]);
   const [browsePage, setBrowsePage] = useState(1);
   const [browseLastPage, setBrowseLastPage] = useState(1);
@@ -152,6 +170,14 @@ export default function App() {
   const [browseError, setBrowseError] = useState<string | null>(null);
   const [selectedVersionByModId, setSelectedVersionByModId] = useState<Map<number, number>>(new Map());
   const [installingModId, setInstallingModId] = useState<number | null>(null);
+  /**
+   * Folder name -> catalogue mod id, from the match cache.
+   *
+   * Read from the cache rather than matched by name here: the cache only ever holds
+   * identities the app is confident about, so "you already have this" inherits that
+   * guarantee. Guessing by name is what once mapped fika-server onto SVM.
+   */
+  const [installedCatalogueIds, setInstalledCatalogueIds] = useState<Record<string, string>>({});
 
   interface QueueItem {
     id: string;
@@ -252,6 +278,28 @@ export default function App() {
       .then((s) => setRegistryHost(s.host))
       .catch(() => setRegistryHost(""));
   }, []);
+
+  // Re-read whenever the installed set changes, so a mod installed from the browse pane
+  // immediately reads as installed rather than still offering a plain "Install".
+  useEffect(() => {
+    window.modManagerAPI
+      .getInstalledCatalogueIds()
+      .then(setInstalledCatalogueIds)
+      .catch(() => setInstalledCatalogueIds({}));
+  }, [mods]);
+
+  /** Catalogue mod id -> the installed parts that are that mod (a mod can have two halves). */
+  const installedByCatalogueId = useMemo(() => {
+    const byId = new Map<number, ModInfo[]>();
+    for (const mod of mods) {
+      const catalogueId = Number(installedCatalogueIds[mod.originalName]);
+      if (!Number.isFinite(catalogueId) || catalogueId <= 0) continue;
+      const list = byId.get(catalogueId);
+      if (list) list.push(mod);
+      else byId.set(catalogueId, [mod]);
+    }
+    return byId;
+  }, [mods, installedCatalogueIds]);
 
   useEffect(() => {
     const unsubscribe = window.modManagerAPI.onDownloadProgress(({ jobId, receivedBytes, totalBytes }) => {
@@ -1486,6 +1534,8 @@ export default function App() {
       return;
     }
     setForgeResult(response.result);
+    // A fresh check supersedes anything settled against the previous one.
+    setUpdatedMods(new Map());
 
     const statusMap = new Map<string, { status: "update" | "blocked" | "incompatible" | "info"; version?: string }>();
     for (const u of response.result.updates) {
@@ -1543,31 +1593,77 @@ export default function App() {
     persistForgeStatus(next);
   }
 
-  async function runForgeSearch(page: number) {
-    setBrowseLoading(true);
-    setBrowseError(null);
-    const response = await window.modManagerAPI.searchForgeMods({
-      query: browseQuery.trim() || undefined,
-      categorySlug: browseCategory || undefined,
-      sptVersionConstraint: browseOnlyCompatible && sptVersionInput.trim() ? sptVersionInput.trim() : undefined,
-      page
-    });
-    setBrowseLoading(false);
-    if (!response.success || !response.result) {
-      setBrowseError(tMsg(response.message) || t("toast.forgeSearchFailed"));
-      return;
-    }
-    setBrowseResults(response.result.mods);
-    setBrowsePage(response.result.page);
-    setBrowseLastPage(response.result.lastPage);
-  }
+  /**
+   * The SPT version the browse results are being narrowed to, or undefined for "any".
+   *
+   * Derived rather than read at call time so it can be a dependency: the filters re-run the
+   * search on their own, and they need a value that changes exactly when the filtering does.
+   * Unticking the box or clearing the version both collapse to undefined.
+   */
+  const browseSptConstraint =
+    browseOnlyCompatible && sptVersionInput.trim() ? sptVersionInput.trim() : undefined;
 
-  async function handleOpenBrowse() {
+  /**
+   * Guards against an out-of-order response.
+   *
+   * The filters now fire a search on every change, so two can easily be in flight at once —
+   * tick the box, change the category. Without this the SLOWER request wins whenever it
+   * happens to land second, leaving the list showing results for filters that are no longer
+   * selected, with no error and nothing to click to correct it.
+   */
+  const browseRequestSeq = useRef(0);
+
+  const runForgeSearch = useCallback(
+    async (page: number) => {
+      const seq = ++browseRequestSeq.current;
+      setBrowseLoading(true);
+      setBrowseError(null);
+      const response = await window.modManagerAPI.searchForgeMods({
+        query: browseQuery.trim() || undefined,
+        categorySlug: browseCategory || undefined,
+        sptVersionConstraint: browseSptConstraint,
+        sort: browseSort,
+        page
+      });
+      // Superseded while this was in flight — drop it, including its loading state, which
+      // the newer request now owns.
+      if (seq !== browseRequestSeq.current) return;
+      setBrowseLoading(false);
+      if (!response.success || !response.result) {
+        setBrowseError(tMsg(response.message) || t("toast.forgeSearchFailed"));
+        return;
+      }
+      setBrowseResults(response.result.mods);
+      setBrowsePage(response.result.page);
+      setBrowseLastPage(response.result.lastPage);
+    },
+    [browseQuery, browseCategory, browseSptConstraint, browseSort, lang]
+  );
+
+  /**
+   * The filter controls apply on change; the text box does not.
+   *
+   * A checkbox and a dropdown read as "this is the state of the list", so leaving them
+   * pending until Search is pressed shows results that contradict the controls above them.
+   * Typing is different — a request per keystroke, and the query is not final until you say
+   * so — which is why the text box keeps Enter and the button.
+   *
+   * This also covers opening the panel: browseOpen flips true and the same effect runs the
+   * first search, so there is no separate call to keep in step with this one.
+   */
+  useEffect(() => {
+    if (!browseOpen) return;
+    runForgeSearch(1);
+    // Deliberately NOT depending on runForgeSearch itself: it is rebuilt whenever the query
+    // text changes, which would turn every keystroke into a search.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [browseOpen, browseCategory, browseSptConstraint, browseSort]);
+
+  function handleOpenBrowse() {
     setBrowseOpen(true);
     if (browseCategories.length === 0) {
       window.modManagerAPI.getForgeCategories().then(setBrowseCategories);
     }
-    runForgeSearch(1);
   }
 
   function handleSelectVersion(modId: number, versionId: number) {
@@ -1575,6 +1671,18 @@ export default function App() {
   }
 
   const [updatingModName, setUpdatingModName] = useState<string | null>(null);
+  /**
+   * Mods updated since this check ran, name -> the version now installed.
+   *
+   * The check result is a SNAPSHOT taken before any of it was acted on, so a row that has
+   * just been updated still reads "0.2.2 -> 0.2.3" with a live Update button next to it.
+   * That is not merely untidy: it invites updating the same mod twice, and re-offers
+   * "Already have it" for a version you now genuinely have. Re-running the whole check after
+   * every install would cost a network round trip per mod and reorder the list under the
+   * user's cursor, so the row is settled locally instead.
+   */
+  const [updatedMods, setUpdatedMods] = useState<Map<string, string>>(new Map());
+  const [updatingAll, setUpdatingAll] = useState(false);
 
   /**
    * "I already have this." Some authors ship a new build without bumping the version
@@ -1647,9 +1755,17 @@ export default function App() {
   }
 
   // Updates without leaving the app: the result's link is a direct download of the
-  // recommended version, so it can go through the same installer used by Forge search —
+  // recommended version, so it can go through the same installer used by catalogue search —
   // instead of opening a browser and leaving a .zip in Downloads to install by hand.
-  async function handleInstallUpdate(modName: string, downloadLink: string, version?: string, guid?: string) {
+  //
+  // Returns whether it worked, so "Update all" can report a real count rather than assuming.
+  async function handleInstallUpdate(
+    modName: string,
+    downloadLink: string,
+    version?: string,
+    guid?: string,
+    options: { quiet?: boolean } = {}
+  ): Promise<boolean> {
     setUpdatingModName(modName);
     const previousKeys = new Set(mods.map(selectionKey));
     const queueId = pushQueueItem(modName);
@@ -1659,11 +1775,43 @@ export default function App() {
     );
     markQueueDone(queueId, result.success, tMsg(result.message));
     setUpdatingModName(null);
-    pushToast(tMsg(result.message), result.success);
+    // Quiet during "Update all", which ends with one summary instead of N toasts. A FAILURE
+    // is still announced immediately either way — that is the part worth interrupting for.
+    if (!options.quiet || !result.success) pushToast(tMsg(result.message), result.success);
     if (result.success) {
+      // Settles this row: version shown, buttons gone. See the note on updatedMods.
+      setUpdatedMods((prev) => new Map(prev).set(modName, version ?? ""));
       const updated = await refreshMods();
       checkForgeForNewMods(previousKeys, updated);
     }
+    return result.success;
+  }
+
+  /** Updates still outstanding: has a download link, and not already done this session. */
+  const pendingUpdates = (forgeResult?.updates ?? []).filter((u) => u.downloadLink && !updatedMods.has(u.name));
+
+  /**
+   * Updates everything outstanding, one at a time.
+   *
+   * Sequential on purpose. These downloads are large (the mod that prompted this was 1.6 GB),
+   * they write into a shared instance and they all touch the same registry and version-ledger
+   * files — running them at once would race on those and make a failure impossible to
+   * attribute. It also keeps the progress bar meaningful.
+   *
+   * Re-read from `forgeResult` at the start rather than captured, and a mod that fails does
+   * not stop the rest: one bad download should not block the other nine.
+   */
+  async function handleUpdateAll() {
+    const queue = (forgeResult?.updates ?? []).filter((u) => u.downloadLink && !updatedMods.has(u.name));
+    if (queue.length === 0) return;
+    setUpdatingAll(true);
+    let done = 0;
+    for (const u of queue) {
+      const ok = await handleInstallUpdate(u.name, u.downloadLink!, u.recommendedVersion, u.guid, { quiet: true });
+      if (ok) done++;
+    }
+    setUpdatingAll(false);
+    pushToast(t("forge.updateAllDone", { done, total: queue.length }), done === queue.length);
   }
 
   async function handleInstallFromForge(mod: ForgeCatalogMod) {
@@ -2221,36 +2369,70 @@ export default function App() {
               </div>
               {forgeResult.updates.length > 0 && (
                 <>
-                  <p><strong>{t("forge.updatesAvailable")}</strong></p>
-                  {forgeResult.updates.map((u) => (
-                    <p key={`update-${u.name}`}>
-                      {u.name}: {u.currentVersion} → <strong>{u.recommendedVersion}</strong>
-                      {u.downloadLink && (
-                        <>
-                          {" "}
-                          <button
-                            className="primary inline-update-button"
-                            disabled={updatingModName === u.name}
-                            onClick={() => handleInstallUpdate(u.name, u.downloadLink!, u.recommendedVersion, u.guid)}
-                          >
-                            {updatingModName === u.name ? t("forge.updating") : t("forge.updateNow")}
-                          </button>
-                        </>
-                      )}
-                      {u.originalName && u.recommendedVersion && (
-                        <>
-                          {" "}
-                          <button
-                            className="inline-update-button"
-                            title={t("forge.dismissTitle")}
-                            onClick={() => dismissUpdate(u.originalName!, u.recommendedVersion!, u.name)}
-                          >
-                            {t("forge.dismiss")}
-                          </button>
-                        </>
-                      )}
-                    </p>
-                  ))}
+                  <p className="update-all-row">
+                    <strong>{t("forge.updatesAvailable")}</strong>
+                    {/* Only while more than one is outstanding — with a single update left it
+                        would just duplicate the button already on that row. */}
+                    {pendingUpdates.length > 1 && (
+                      <>
+                        {" "}
+                        <button
+                          className="primary inline-update-button"
+                          disabled={updatingAll || updatingModName !== null}
+                          title={t("forge.updateAllTitle")}
+                          onClick={handleUpdateAll}
+                        >
+                          {updatingAll
+                            ? t("forge.updatingAll", { done: updatedMods.size, total: updatedMods.size + pendingUpdates.length })
+                            : t("forge.updateAll", { count: pendingUpdates.length })}
+                        </button>
+                      </>
+                    )}
+                  </p>
+                  {forgeResult.updates.map((u) => {
+                    const doneVersion = updatedMods.get(u.name);
+                    // Settled: this one was installed since the check ran. Showing the old
+                    // version with a live Update button would invite doing it twice.
+                    if (doneVersion !== undefined) {
+                      return (
+                        <p key={`update-${u.name}`} className="update-row-done">
+                          {u.name}: <strong>{doneVersion || u.recommendedVersion}</strong>{" "}
+                          <span className="meta-chip forge-chip-update">{t("forge.updatedChip")}</span>
+                        </p>
+                      );
+                    }
+                    const busy = updatingModName === u.name;
+                    return (
+                      <p key={`update-${u.name}`}>
+                        {u.name}: {u.currentVersion} → <strong>{u.recommendedVersion}</strong>
+                        {u.downloadLink && (
+                          <>
+                            {" "}
+                            <button
+                              className="primary inline-update-button"
+                              disabled={busy || updatingAll}
+                              onClick={() => handleInstallUpdate(u.name, u.downloadLink!, u.recommendedVersion, u.guid)}
+                            >
+                              {busy ? t("forge.updating") : t("forge.updateNow")}
+                            </button>
+                          </>
+                        )}
+                        {u.originalName && u.recommendedVersion && (
+                          <>
+                            {" "}
+                            <button
+                              className="inline-update-button"
+                              disabled={busy || updatingAll}
+                              title={t("forge.dismissTitle")}
+                              onClick={() => dismissUpdate(u.originalName!, u.recommendedVersion!, u.name)}
+                            >
+                              {t("forge.dismiss")}
+                            </button>
+                          </>
+                        )}
+                      </p>
+                    );
+                  })}
                 </>
               )}
               {forgeResult.blocked.length > 0 && (
@@ -2480,6 +2662,11 @@ export default function App() {
                   <option key={c.slug} value={c.slug}>{c.title}</option>
                 ))}
               </select>
+              <select value={browseSort} onChange={(e) => setBrowseSort(e.target.value)} title={t("browse.sortTitle")}>
+                {BROWSE_SORTS.map((s) => (
+                  <option key={s.value} value={s.value}>{t(s.labelKey)}</option>
+                ))}
+              </select>
               <label className="forge-browse-checkbox" title={t("browse.compatibleOnlyTitle")}>
                 <input
                   type="checkbox"
@@ -2502,6 +2689,8 @@ export default function App() {
               )}
               {browseResults.map((mod) => {
                 const selectedId = selectedVersionByModId.get(mod.id) ?? mod.versions[0]?.id;
+                const selectedVersion = mod.versions.find((v) => v.id === selectedId)?.version;
+                const state = browseInstallState(installedByCatalogueId.get(mod.id), selectedVersion);
                 return (
                   <div key={mod.id} className="forge-mod-card">
                     {mod.thumbnail ? (
@@ -2537,6 +2726,15 @@ export default function App() {
                         </a>
                         {mod.category && <span className="meta-chip">{mod.category}</span>}
                         {mod.fikaCompatible && <span className="meta-chip forge-chip-update" title={t("browse.fikaCompatibleTitle")}>Fika</span>}
+                        {/* Says it once on the row, so the state is visible without having to
+                            read the button — and stays true whichever version is selected. */}
+                        {state.kind !== "install" && (
+                          <span className="meta-chip" title={t("browse.installedTitle")}>
+                            {state.kind === "installed-unknown"
+                              ? t("browse.installedChip")
+                              : t("browse.installedChipVersion", { version: state.installedVersion })}
+                          </span>
+                        )}
                       </div>
                       {mod.teaser && <p className="forge-mod-teaser">{mod.teaser}</p>}
                       <div className="forge-mod-meta">
@@ -2558,8 +2756,38 @@ export default function App() {
                               </option>
                             ))}
                           </select>
-                          <button onClick={() => handleInstallFromForge(mod)} disabled={installingModId === mod.id} className="primary">
-                            {installingModId === mod.id ? t("browse.installing") : t("browse.installButton")}
+                          {/* Colour-coded because the label alone is easy to skim past, and
+                              in a version dropdown an older build looks exactly like a newer
+                              one: green forward, blue same, red backwards. */}
+                          <button
+                            onClick={() => handleInstallFromForge(mod)}
+                            disabled={installingModId === mod.id}
+                            className={
+                              state.kind === "upgrade"
+                                ? "primary browse-action-upgrade"
+                                : state.kind === "downgrade"
+                                  ? "primary browse-action-downgrade"
+                                  : state.kind === "reinstall" || state.kind === "installed-unknown"
+                                    ? "primary browse-action-reinstall"
+                                    : "primary"
+                            }
+                            title={
+                              state.kind === "install"
+                                ? undefined
+                                : t("browse.actionTitle", { installed: (state as any).installedVersion ?? "?" })
+                            }
+                          >
+                            {installingModId === mod.id
+                              ? t("browse.installing")
+                              : state.kind === "install"
+                                ? t("browse.installButton")
+                                : state.kind === "reinstall"
+                                  ? t("browse.reinstallButton")
+                                  : state.kind === "upgrade"
+                                    ? t("browse.upgradeButton", { version: selectedVersion ?? "" })
+                                    : state.kind === "downgrade"
+                                      ? t("browse.downgradeButton", { version: selectedVersion ?? "" })
+                                      : t("browse.reinstallButton")}
                           </button>
                         </>
                       ) : (

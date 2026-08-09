@@ -3929,11 +3929,23 @@ function mapCatalogMod(m: any): ForgeCatalogMod {
   };
 }
 
-// Paginated search of Forge's catalogue. `query` uses their full-text search
-// (Meilisearch, over name/slug/description); `sptVersionConstraint` is optional and filters
-// by compatibility (Forge itself warns that this filters the MOD, not necessarily each
-// individual version — which is why we still show each mod's recent versions for the user
-// to choose from).
+/**
+ * Paginated search of the catalogue. `query` uses their full-text search (Meilisearch, over
+ * name/slug/description); `sptVersionConstraint` is optional.
+ *
+ * The API's `filter[spt_version]` filters the MOD, not each individual version: a mod is
+ * returned when ANY of its versions matches, and the versions it comes back with are still
+ * all of them. Left alone, that put SPT 4.1.x builds at the top of a list the user had
+ * explicitly narrowed to 4.0.13 — the newest version of a matching mod, offered first, and
+ * incompatible with the very version that was asked for. Choosing it installs a build that
+ * will not load, and the failure appears in-game rather than here.
+ *
+ * So the version LIST is filtered here too, with the same clause parser the compatibility
+ * badges use. A mod left with no compatible version is dropped entirely, since there is
+ * nothing on it that could be installed. Versions that declare no constraint are KEPT:
+ * "unknown" is not "incompatible", and dropping them would hide mods that simply never
+ * declared a target.
+ */
 export async function searchForgeMods(params: {
   query?: string;
   categorySlug?: string;
@@ -3957,12 +3969,36 @@ export async function searchForgeMods(params: {
     throw new Error(json?.message || `Forge responded ${res.status}`);
   }
 
+  const mods: ForgeCatalogMod[] = (json.data || []).map(mapCatalogMod);
   return {
-    mods: (json.data || []).map(mapCatalogMod),
+    mods: params.sptVersionConstraint ? filterVersionsForSpt(mods, params.sptVersionConstraint) : mods,
     page: json.meta?.current_page ?? 1,
     lastPage: json.meta?.last_page ?? 1,
     total: json.meta?.total ?? (json.data || []).length
   };
+}
+
+/**
+ * Keeps only the versions that fit the requested SPT version, dropping mods left with none.
+ *
+ * Exported for the test suite: the failure this prevents is silent — an incompatible build
+ * installs perfectly happily and only misbehaves once the game is running.
+ */
+export function filterVersionsForSpt(mods: ForgeCatalogMod[], sptVersion: string): ForgeCatalogMod[] {
+  const out: ForgeCatalogMod[] = [];
+  for (const mod of mods) {
+    // A mod with no published versions at all is passed through untouched, so it keeps
+    // reporting "no version published" rather than silently vanishing from the results.
+    if (mod.versions.length === 0) {
+      out.push(mod);
+      continue;
+    }
+    const versions = mod.versions.filter(
+      (v) => checkSptCompatibility(v.sptConstraint, sptVersion) !== "incompatible"
+    );
+    if (versions.length > 0) out.push({ ...mod, versions });
+  }
+  return out;
 }
 
 export async function getForgeCategories(): Promise<ForgeCategory[]> {

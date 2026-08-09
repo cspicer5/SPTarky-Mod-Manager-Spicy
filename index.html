@@ -1,10 +1,26 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<!-- lang was pt-BR, inherited from the upstream fork. This fork is English-only (see i18n.ts). -->
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: https://*.sp-tarkov.com" />
-    <link rel="preconnect" href="https://forge-static.sp-tarkov.com" />
-    <link rel="preconnect" href="https://forge.sp-tarkov.com" />
+    <!--
+      img-src is `https:` rather than a specific host, and that is deliberate.
+
+      It used to be `https://*.sp-tarkov.com`. When the catalogue moved, every thumbnail was
+      blocked — and blocked SILENTLY, because the <img> onError handler swaps in a placeholder,
+      so the browse list looked like a catalogue of mods that simply had no artwork.
+
+      Host-pinning cannot work here: the catalogue's address is a user setting, so the correct
+      host is not known when this file is written. A meta CSP is fixed at parse time and the
+      renderer is loaded from file://, which leaves no response header to rewrite either.
+
+      The loosening is confined to images. Everything else stays tight — in particular
+      connect-src inherits `self` from default-src, so the renderer still cannot make network
+      requests of its own; all catalogue traffic goes through the main process. The residual
+      risk is that a hostile catalogue could serve a tracking pixel, which reveals nothing it
+      does not already learn from serving the mod downloads themselves.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: https:" />
     <title>SPTarky Mod Manager Spicy Edition</title>
   </head>
   <body>

@@ -151,6 +151,8 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   clearForgeMatch: (originalName: string) => ipcRenderer.invoke("clear-forge-match", originalName),
   // A pasted mod page URL is now slug-based, so turning it into an id needs a lookup.
   resolveModRef: (input: string) => ipcRenderer.invoke("resolve-mod-ref", input),
+  // folder name -> catalogue mod id, from the match cache (confirmed identities only).
+  getInstalledCatalogueIds: () => ipcRenderer.invoke("get-installed-catalogue-ids"),
   getRegistrySource: () => ipcRenderer.invoke("get-registry-source"),
   setRegistrySource: (value: string | null) => ipcRenderer.invoke("set-registry-source", value),
   dismissForgeUpdate: (originalName: string, version: string) =>

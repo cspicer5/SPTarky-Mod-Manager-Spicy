@@ -872,6 +872,8 @@ export interface ModManagerAPI {
   /** Pins a mod to a Forge id by hand. Overrides automatic matching permanently. */
   setForgeMatch: (originalName: string, modId: number) => Promise<{ success: boolean; message?: string }>;
   resolveModRef: (input: string) => Promise<{ success: boolean; modId?: number; message?: string }>;
+  /** Folder name -> catalogue mod id, from the match cache (confirmed identities only). */
+  getInstalledCatalogueIds: () => Promise<Record<string, string>>;
   getRegistrySource: () => Promise<{ apiBase: string; siteBase: string; host: string; isDefault: boolean }>;
   setRegistrySource: (value: string | null) => Promise<{ success: boolean; message?: string }>;
   /** Removes a manual pin, returning the mod to automatic matching. */

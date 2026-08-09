@@ -295,7 +295,7 @@ With GUID batching working, a 54-mod install resolves in roughly 3 requests and 
 - **"Reinstall"** opens the file picker; the original archive is not retained (see the roadmap note on why).
 - **Conflict detection is file-level**, not semantic — it catches duplicate DLLs and duplicate GUIDs, not two mods fighting over the same loot table.
 - **Server-mod `Version` is not read directly.** SPT types it as a `SemanticVersioning.Version` object rather than a string, and the value is not recoverable from the constructor IL the way the other fields are. The sibling and assembly fallbacks cover this in practice, but a version obtained that way is inferred.
-- **Forge search filtering by SPT version filters the mod, not each version** — check the SPT constraint shown next to a version before installing.
+- **Catalogue search by SPT version filters the mod, not each version** — so the app re-filters each mod's version list itself, and drops mods left with nothing compatible. Without that, narrowing to 4.0.13 still offered each mod's newest 4.1.x build first.
 - **A borrowed sibling version assumes both halves ship together.** True in every case observed, but it is an inference.
 - Only tested on Windows.
 
