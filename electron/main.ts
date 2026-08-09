@@ -29,11 +29,21 @@ import {
   discardPendingInstall,
   setManualForgeMatch,
   clearManualForgeMatch,
+  resolveModRef,
   dismissForgeUpdate,
   undismissForgeUpdate,
   copyClientModToHeadless,
   removeModFromHeadless
 } from "./modManager";
+import {
+  DEFAULT_REGISTRY_API_BASE,
+  getRegistryApiBase,
+  getRegistryHost,
+  getRegistrySiteBase,
+  isRegistryPageUrl,
+  normaliseRegistryApiBase,
+  setRegistryApiBase
+} from "./registry";
 import {
   resolveHeadlessInstance,
   describeHeadlessRejection,
@@ -93,6 +103,8 @@ import {
 import { buildSyncPlan, describeSyncPlan } from "./presetSync";
 import {
   loadAddonCatalogue,
+  refreshAddonCatalogue,
+  isAddonCatalogueLive,
   suggestAddons,
   pickAddonVersionForParent,
   detectAddonLinks,
@@ -108,19 +120,24 @@ import {
 } from "./addons";
 import { InstanceConfig, InstanceId, ModInfo, ModType } from "./types";
 
-const MOD_HUB_URL = "https://hub.sp-tarkov.com/";
-
 /**
- * Whether Forge can still be treated as a source.
+ * Whether the registry can be treated as a source.
  *
- * Answered from the date rather than by probing, because this is consulted whenever a sync is
- * planned and a dead host would make that hang. Being wrong in either direction is cheap: the
- * install paths report an honest failure if Forge is gone early, and a GitHub source is
- * preferred over Forge anyway.
+ * This used to be answered from the calendar: Forge announced 2026-08-10, and the date was
+ * compared rather than the host probed, because this is consulted whenever a sync is planned
+ * and a dead host would make that hang.
+ *
+ * That gate is gone, and removing it was NOT cosmetic. Forge did shut down, but the
+ * catalogue moved to a live successor — so on 2026-08-10 the date check would have started
+ * reporting "no registry" while the registry was answering perfectly, silently downgrading
+ * every sync plan to GitHub-or-nothing. A date is a proxy for a fact that has since changed.
+ *
+ * Still not probed, for the original reason: the cost of being wrong is low. The install
+ * paths report an honest failure if the registry is unreachable, and a GitHub source is
+ * preferred over it anyway.
  */
-const FORGE_SHUTDOWN_DATE = Date.parse("2026-08-10T00:00:00Z");
-function isForgeShutDown(): boolean {
-  return Date.now() >= FORGE_SHUTDOWN_DATE;
+function registryAvailable(): boolean {
+  return true;
 }
 
 const store = new Store<InstanceConfig>({
@@ -135,9 +152,15 @@ const store = new Store<InstanceConfig>({
     forgeCheckedAt: null,
     presetStorePath: null,
     presetIdentity: null,
-    addonLinks: null
+    addonLinks: null,
+    registryApiBase: null
   }
 });
+
+// Applied before anything can query the registry. Null means the built-in default; the
+// setting exists because this catalogue has already changed address once, and a third move
+// should not require a release to follow.
+setRegistryApiBase(store.get("registryApiBase"));
 
 // The stored sptPath is always the CLIENT root. serverRoot equals sptPath in the vast
 // majority of instances; it only differs on a "split" install (the SPT 4.x installer can
@@ -229,8 +252,10 @@ ipcMain.handle("get-spt-path", () => {
   return { path, serverRoot, split: serverRoot !== path };
 });
 
+// Opens the registry's website. Was hub.sp-tarkov.com, which 301-redirects to Forge and so
+// died with it — pointing at the live catalogue keeps this button from being a dead link.
 ipcMain.handle("open-mod-hub", () => {
-  shell.openExternal(MOD_HUB_URL);
+  shell.openExternal(getRegistrySiteBase());
 });
 
 ipcMain.handle("select-spt-folder", async () => {
@@ -726,9 +751,10 @@ ipcMain.handle("plan-preset-sync", async (_event, id: string, fromStore?: boolea
   const storeConnected = !!storeDir && (await getStoreStatus(storeDir, presetIdentity())).connected;
   const plan = buildSyncPlan(preset, report, {
     storeConnected,
-    // Cached rather than probed: this runs on every panel open, and a dead Forge should not
-    // make the button hang. The install paths handle a failure honestly either way.
-    forgeAvailable: !isForgeShutDown()
+    // Assumed rather than probed: this runs on every panel open, and an unreachable host
+    // should not make the button hang. The install paths handle a failure honestly either
+    // way. See registryAvailable().
+    forgeAvailable: registryAvailable()
   });
 
   return { success: true, plan, summary: describeSyncPlan(plan), presetName: preset.name };
@@ -750,7 +776,7 @@ ipcMain.handle("sync-install-to-preset", async (_event, id: string, fromStore?: 
 
   const report = buildPresetReport(preset, scanInstance("main"), localSptVersion(), localPresetAddons());
   const storeConnected = !!storeDir && (await getStoreStatus(storeDir, presetIdentity())).connected;
-  const plan = buildSyncPlan(preset, report, { storeConnected, forgeAvailable: !isForgeShutDown() });
+  const plan = buildSyncPlan(preset, report, { storeConnected, forgeAvailable: registryAvailable() });
 
   payloadCancelled = false;
   const done: string[] = [];
@@ -1039,9 +1065,14 @@ function installedAddonIds(clientRoot: string): Set<number> {
   return ids;
 }
 
-ipcMain.handle("get-addon-suggestions", () => {
+ipcMain.handle("get-addon-suggestions", async () => {
   const roots = rootsFor("main");
   if (!roots) return { success: false, message: "No SPT instance configured." };
+  // Live first, harvest as the fallback. Not just for freshness: every download link in the
+  // harvest points at Forge's proxy and stopped resolving when Forge closed, so a harvest-only
+  // catalogue browses correctly and then fails at the download step. Awaited here rather than
+  // refreshed in the background so the links shown are the links that will be used.
+  await refreshAddonCatalogue();
   const catalogue = loadAddonCatalogue(addonCataloguePaths());
   if (catalogue.length === 0) {
     return { success: false, message: "The addon catalogue is missing from this build." };
@@ -1056,6 +1087,9 @@ ipcMain.handle("get-addon-suggestions", () => {
     success: true,
     suggestions,
     catalogueSize: catalogue.length,
+    // Lets the panel say which catalogue it is showing. The difference is not cosmetic:
+    // from the harvest, every download link is dead.
+    catalogueLive: isAddonCatalogueLive(),
     // Everything this app has installed as an addon, including the many that have no folder
     // of their own and are therefore invisible in the mod list. Each is flagged when a later
     // reinstall of its parent has silently wiped its files.
@@ -1176,6 +1210,10 @@ async function installCataloguedAddon(
   const roots = rootsFor("main");
   if (!roots) return { success: false, message: "No SPT instance configured." };
 
+  // Refreshed here too, not only when the panel opens: this is the path that actually
+  // DOWNLOADS, and the harvest's links are all dead Forge proxy URLs. Cheap in practice —
+  // the TTL means the panel's own refresh usually satisfies this one.
+  await refreshAddonCatalogue();
   const catalogue = loadAddonCatalogue(addonCataloguePaths());
   const addon = catalogue.find((a) => a.id === addonId);
   if (!addon) return { success: false, message: "That addon is not in the catalogue." };
@@ -1728,14 +1766,49 @@ ipcMain.handle("set-forge-match", (_event, originalName: string, modId: number) 
   const sptPath = store.get("sptPath");
   if (!sptPath) return { success: false, message: "No SPT instance configured." };
   if (!originalName || !Number.isFinite(modId) || modId <= 0) {
-    return { success: false, message: "A valid Forge mod ID is required." };
+    return { success: false, message: "A valid mod ID is required." };
   }
   try {
     setManualForgeMatch(sptPath, originalName, modId);
-    return { success: true, message: `Linked "${originalName}" to Forge mod ${modId}.` };
+    return { success: true, message: `Linked "${originalName}" to mod ${modId}.` };
   } catch (err: any) {
     return { success: false, message: err?.message || "Couldn't save the link." };
   }
+});
+
+/**
+ * Turns whatever the user pasted into a mod id.
+ *
+ * Split out from set-forge-match because a slug now needs a network lookup to become an id,
+ * and the pin itself must stay synchronous and local. A null id is reported as a plain
+ * failure: pinning is the one place where guessing is precisely what must not happen.
+ */
+ipcMain.handle("resolve-mod-ref", async (_event, input: string) => {
+  const modId = await resolveModRef(String(input ?? ""));
+  if (!modId) return { success: false, message: "That didn't match a mod on the catalogue." };
+  return { success: true, modId };
+});
+
+/** Where the catalogue is read from, and whether that is the built-in address. */
+ipcMain.handle("get-registry-source", () => ({
+  apiBase: getRegistryApiBase(),
+  siteBase: getRegistrySiteBase(),
+  host: getRegistryHost(),
+  isDefault: getRegistryApiBase() === DEFAULT_REGISTRY_API_BASE
+}));
+
+ipcMain.handle("set-registry-source", (_event, value: string | null) => {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) {
+    store.set("registryApiBase", null);
+    setRegistryApiBase(null);
+    return { success: true, message: "Catalogue address reset to the default." };
+  }
+  const normalised = normaliseRegistryApiBase(trimmed);
+  if (!normalised) return { success: false, message: "That didn't look like a valid address." };
+  store.set("registryApiBase", normalised);
+  setRegistryApiBase(normalised);
+  return { success: true, message: `Catalogue address set to ${normalised}.` };
 });
 
 // "I already have this" — see the note on dismissed updates in modManager.ts.
@@ -1813,13 +1886,16 @@ ipcMain.handle("open-release-page", (_event, url: string) => {
   // Allowlist, because the URL arrives from the renderer process, which is not trusted
   // enough to tell the OS to open arbitrary things in a browser.
   //
-  // Permits any Forge mod page (needed by the "needs confirmation" flow, which links to
-  // the mod a guess resolved to so it can be eyeballed) plus this fork's own repository.
-  // The upstream repo is deliberately no longer allowed — see the note on the self-update
-  // check in modManager.ts.
-  const allowed =
-    /^https:\/\/forge\.sp-tarkov\.com\/mod\/\d+/.test(url) ||
-    /^https:\/\/github\.com\/cspicer5\/SPTarky-Mod-Manager-Spicy(\/|$)/.test(url);
+  // Permits a mod or addon page on the CONFIGURED catalogue (needed by the "needs
+  // confirmation" flow, which links to the mod a guess resolved to so it can be eyeballed,
+  // and by the browse pane) plus this fork's own repository. The upstream repo is
+  // deliberately not allowed — see the note on the self-update check in modManager.ts.
+  //
+  // Derived from the configured registry rather than hardcoded. The previous version
+  // allowed only `forge.sp-tarkov.com/mod/<id>`; once the catalogue moved, NOTHING matched
+  // and every one of these links became a button that silently did nothing. Tying the rule
+  // to the same value the links are built from keeps the two from drifting apart again.
+  const allowed = isRegistryPageUrl(url) || /^https:\/\/github\.com\/cspicer5\/SPTarky-Mod-Manager-Spicy(\/|$)/.test(url);
   if (allowed) {
     shell.openExternal(url);
     return { success: true };

@@ -1,26 +1,29 @@
 /**
- * Harvests the full SPT Forge catalogue into a local directory file.
+ * Harvests the full mod catalogue into a local directory file.
  *
- * WHY THIS EXISTS AND WHY IT IS URGENT
- * ------------------------------------
- * SPT Forge shuts down on 2026-08-10 (brought forward from the 12th). The mapping from a
- * mod's identity (GUID / Forge id) to its source repository exists ONLY in the Forge API.
- * Once the API is gone, that mapping cannot be rebuilt at any cost.
- *
- * This captures it while it is still available, so update checking can move to GitHub
- * releases afterwards. See docs/FORGE-SHUTDOWN.md.
+ * WHY THIS EXISTS
+ * ---------------
+ * The mapping from a mod's identity (GUID / numeric id) to its SOURCE REPOSITORY is what
+ * lets update checking fall back to GitHub releases when the catalogue is unreachable — or
+ * gone. SPT Forge shut down on 2026-08-10 and proved the point; this file is what carried
+ * the app across that. See docs/FORGE-SHUTDOWN.md.
  *
  * No scraping and no authentication: the API returns source links directly via
  * `include=source_code_links`. Measured coverage across a 400-mod sample was 92% with a
  * source link, 97.6% of those on GitHub.
+ *
+ * KEEP THE FORGE-ERA ENTRIES. Re-running unions with the existing file rather than replacing
+ * it, and that is deliberate: the Forge harvest holds 2,389 mods while the successor lists
+ * 1,829. The 566 that are missing are almost entirely SPT 2.x/3.x-era (only 6 target 4.x),
+ * and nothing can re-collect them. Unlike the ADDON harvest, no download links are stored
+ * here, so the older rows have not rotted — they are simply history worth keeping.
  *
  * Usage:
  *   node scripts/harvest-forge-directory.js
  *   node scripts/harvest-forge-directory.js --out data/forge-directory.json
  *
  * The run is resumable. Progress is written after every page, so an interrupted or
- * rate-limited run can be restarted and will skip what it already has. That matters more
- * than it normally would: there is no second chance to collect this after the shutdown.
+ * rate-limited run can be restarted and will skip what it already has.
  */
 const fs = require("fs");
 const path = require("path");
@@ -29,11 +32,12 @@ const args = process.argv.slice(2);
 const outArg = args.indexOf("--out");
 const OUT = path.resolve(outArg !== -1 ? args[outArg + 1] : path.join(__dirname, "..", "data", "forge-directory.json"));
 
-const API = "https://forge.sp-tarkov.com/api/v0";
+// Overridable so this can follow a future address without an edit, like the app's own base.
+const API = process.env.SPTARKY_REGISTRY_API || "https://forge-alt.katrinfoxvr.com/api/v0";
 const PER_PAGE = 50; // the API caps here regardless of what is requested
-// Documented limits are 40 req/10s burst and 200/60s sustained. Probing harder than that
-// during development earned a Cloudflare 403 for the whole IP, not merely a 429 - so this
-// stays deliberately well under the burst limit.
+// The successor publishes ~300 req/60s. Forge documented 40 req/10s burst and 200/60s
+// sustained, and probing harder than that during development earned a Cloudflare 403 for the
+// whole IP rather than merely a 429 - so this stays at the more cautious interval.
 const REQUEST_INTERVAL_MS = 600;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -93,10 +97,11 @@ function condense(m) {
     name: m.name,
     slug: m.slug,
     owner: m.owner?.name ?? undefined,
-    // The category object keys its label as `title`, not `name`. Reading `.name` returned
-    // undefined for all 2389 mods on the first harvest and the loss was silent, because an
-    // absent optional field looks exactly like a mod with no category.
-    category: m.category?.title ?? undefined,
+    // The label's KEY differs between registries: Forge used `title`, the successor uses
+    // `name`. Reading only one of them returned undefined for all 2389 mods on the first
+    // harvest, and the loss was silent, because an absent optional field looks exactly like a
+    // mod with no category. Read both — whichever registry this is pointed at, one will hit.
+    category: m.category?.title ?? m.category?.name ?? undefined,
     // Forge's own Fika co-op compatibility flag. The only machine-readable statement
     // anywhere about how a mod behaves in multiplayer, and it dies with the API.
     //

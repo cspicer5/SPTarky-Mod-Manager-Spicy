@@ -43,11 +43,30 @@ Beyond that:
 
 ---
 
-## ⚠️ Forge is shutting down on 10 August 2026
+## Forge shut down on 10 August 2026 — the catalogue moved
 
-Every Forge-backed feature — update checking, catalogue browsing, one-click install, modlist restore — stops working on that date.
+SPT Forge closed. A successor at **`forge-alt.katrinfoxvr.com`** mirrors the same database, and as of **v1.3.0** the app reads from it. This was a change of address, not a migration: the numeric mod ids, the GUIDs and the whole `/api/v0` surface carried over unchanged.
 
-The mapping from an installed mod to its source repository exists **only** in the Forge API and cannot be rebuilt afterwards, so it has been captured: [`data/forge-directory.json`](data/forge-directory.json) holds all **2,389 mods** with their Forge id, GUID, owner, category, Fika flag and source URL.
+Verified against both APIs on 9 August 2026, while a comparison was still possible:
+
+| Check | Result |
+|---|---|
+| Pinned ids on the reference install (`D:\SPT`) | **61 / 61** still resolve |
+| Pinned ids on the 4.1.x install (`D:\SPT41`) | **18 / 18** still resolve |
+| Live match run against `D:\SPT` | **62 / 62**, 0 needing confirmation |
+| Endpoints this app calls | all answer, same shapes |
+
+So nothing had to be re-matched, and no existing install needed repairing. If the catalogue ever moves again, the address is a setting rather than a release — see `electron/registry.ts`.
+
+Three differences are handled rather than assumed away, each pinned by `npm run test:registry`:
+
+- **Mod pages are addressed by slug.** `/mods/<slug>` answers; `/mod/<id>` is a 404, the reverse of Forge. Nothing builds a page URL out of an id.
+- **The inline category object keys its label `name`, not `title`.** Reading the wrong one is indistinguishable from "no category" — and it had already been happening: the browse pane read `.name` while Forge sent `title`, so every mod showed a blank category. Both keys are now read.
+- **The external-link allowlist follows the configured address.** It used to hardcode `forge.sp-tarkov.com`, which would have made every "open this mod's page" button silently do nothing.
+
+The archive stays regardless. [`data/forge-directory.json`](data/forge-directory.json) holds **2,389 mods** with their id, GUID, owner, category, Fika flag and source URL — 560 more than the successor lists, almost entirely SPT 2.x/3.x-era mods that nothing can re-collect. The mod → source-repository mapping it records is what lets update checking fall back to GitHub releases when no catalogue is reachable at all.
+
+> **The addon archive had to be repaired, not just kept.** All 166 version links in the original harvest were Forge *proxy* URLs (`forge.sp-tarkov.com/addon/download/...`) and every one died with Forge — leaving a file that browsed perfectly and then failed at the download step. Re-harvested from the successor, which returns each version's original upstream link: **80 addons, 168 versions, 0 dead links** (149 GitHub). The app reads this catalogue live and uses the bundled copy only as an offline fallback, saying which one you are looking at.
 
 Measured coverage (full harvest, re-run 2026-08-06):
 
@@ -118,16 +137,17 @@ Setting the headless side requires a real headless install — the app identifie
 - Export/import mod lists, with a diff against what's installed and optional auto-download of what's missing
 - Loose files with no folder of their own are tracked through a manifest and remain cleanly removable
 
-**Forge integration**
+**Catalogue integration**
 - Update checking with per-mod status: update available, blocked by a dependency conflict, incompatible with your SPT version, or needs confirmation
-- Search/browse the Forge catalogue in-app and install in one click
-- SPT version picker sourced from Forge's own list
+- Search/browse the catalogue in-app and install in one click
+- SPT version picker sourced from the catalogue's own list
 - Resolved identifiers cached per instance, so later checks are near-instant
+- The catalogue's address is a setting, so a future move needs no new release
 
 **Reliability**
 - Conflict detection: duplicate DLL names across client mods, and duplicate GUIDs across server mods
 - SPT version detection from the instance itself
-- Local SPT-compatibility checking read from each mod's own files — works with no network at all, and keeps working after Forge is gone
+- Local SPT-compatibility checking read from each mod's own files — works with no network at all, whatever happens to the catalogue
 - Archive entries validated before extraction (`.7z`, `.rar`) or sanitised during it (`.zip`), rejecting anything trying to write outside the target
 - SPT's own core client files are never listed or touched as if they were mods, even under "select all + remove"
 
@@ -196,7 +216,9 @@ SPTarky-Mod-Manager-Spicy/
 ├── electron/
 │   ├── main.ts          # Electron window + IPC handlers
 │   ├── preload.ts       # exposes window.modManagerAPI (contextIsolation)
-│   ├── modManager.ts    # filesystem logic, Forge integration, matching
+│   ├── modManager.ts    # filesystem logic, catalogue integration, matching
+│   ├── registry.ts      # WHERE the catalogue lives + how its URLs differ
+│   ├── addons.ts        # addon catalogue (live, harvest as fallback) + ledger
 │   ├── peMetadata.ts    # PE/CLI metadata reader (mod identity from assemblies)
 │   └── types.ts         # shared types, Electron side
 ├── src/
@@ -206,11 +228,14 @@ SPTarky-Mod-Manager-Spicy/
 │   └── types.ts         # types + the preload API surface
 ├── scripts/
 │   ├── audit-forge-match.js       # measures match rate against a real install
-│   └── harvest-forge-directory.js # captures the Forge catalogue
+│   ├── test-registry.js           # pins the catalogue contract (no network)
+│   ├── harvest-forge-directory.js # captures the mod catalogue
+│   └── harvest-forge-addons.js    # captures the addon catalogue
 ├── data/
-│   └── forge-directory.json       # 2,389 mods, archived pre-shutdown
+│   ├── forge-directory.json       # 2,389 mods (includes 560 Forge-era only)
+│   └── forge-addons.json          # 80 addons — the offline fallback
 └── docs/
-    └── FORGE-SHUTDOWN.md          # what breaks, what survives, V2 options
+    └── FORGE-SHUTDOWN.md          # what broke, what survived, how it moved
 ```
 
 ---
@@ -258,7 +283,7 @@ SPT 4.0 moved mod metadata out of `package.json` and into the assembly. Version 
 
 ### Rate limits
 
-Forge allows 40 requests / 10s (burst) and 200 / 60s (sustained), per IP. The app paces under that and honours `Retry-After`. These limits are real — probing harder during development earned a Cloudflare block on the whole IP, not merely a 429.
+The catalogue allows roughly 300 requests / 60s per IP and answers `429` with `Retry-After`, which the app honours. Pacing is inherited from Forge's stricter limits (40 / 10s burst, 200 / 60s sustained) and deliberately left alone: it fits comfortably inside the newer budget, and those limits were real — probing harder during development earned a Cloudflare block on the whole IP, not merely a 429.
 
 With GUID batching working, a 54-mod install resolves in roughly 3 requests and about 16 seconds.
 

@@ -1,27 +1,41 @@
 /**
- * Harvests the SPT Forge ADDON catalogue into a local file.
+ * Harvests the ADDON catalogue into a local file.
  *
- * WHY THIS EXISTS AND WHY IT IS URGENT
- * ------------------------------------
- * Forge shuts down on 2026-08-10. Addons are a first-class Forge entity with their own
- * `/addon/` namespace, and they are the only place a mod-to-mod COMPATIBILITY relationship is
- * written down anywhere machine-readable:
+ * WHY THIS EXISTS
+ * ---------------
+ * Addons are a first-class registry entity with their own `/addons` endpoint, and they are
+ * the only place a mod-to-mod COMPATIBILITY relationship is written down anywhere
+ * machine-readable:
  *
  *   - `mod_id`                 the parent mod this addon attaches to
  *   - `mod_version_constraint` which versions of that parent it works with
  *
  * Nothing else has this. The mods themselves do not declare it (0 of 27 server mods on the
  * reference install declare any dependency), and the mod API has no dependency field at all —
- * checked directly against `/mod/<id>` and its versions on 2026-08-06. So once the API is
- * gone, "which patch makes these two mods work together" cannot be rebuilt at any cost.
+ * checked directly against `/mod/<id>` and its versions on 2026-08-06.
  *
- * 78 addons across 39 parent mods at the time of writing — small, quick, and irreplaceable.
+ * The app now reads this catalogue LIVE and only falls back to the harvested file, so this
+ * script produces the offline fallback rather than the primary source.
+ *
+ * THE LINKS ARE THE POINT
+ * -----------------------
+ * The first harvest was taken from Forge, and all 166 of its version links were Forge proxy
+ * URLs (forge.sp-tarkov.com/addon/download/...). Every one died with Forge, which made that
+ * file browsable but un-installable — a failure that only showed up at the download step,
+ * after a user had already picked a version. The successor returns each version's ORIGINAL
+ * upstream link (overwhelmingly GitHub releases), which is what survives.
+ *
+ * So re-running this against the successor is not a refresh, it is a repair.
+ *
+ * Re-running UNIONS with the existing file by default: it loads what is already there, keyed
+ * by id, and overwrites only the entries it fetched. An addon that existed on Forge but not
+ * on the successor therefore survives a re-run rather than being silently dropped. That is
+ * also what makes the harvest resumable. Pass --fresh to discard the old file instead.
  *
  * Usage:
  *   node scripts/harvest-forge-addons.js
  *   node scripts/harvest-forge-addons.js --out data/forge-addons.json
- *
- * Resumable in the same way as the mod harvest: progress is written after every page.
+ *   node scripts/harvest-forge-addons.js --fresh     (do not union with the existing file)
  */
 const fs = require("fs");
 const path = require("path");
@@ -29,10 +43,14 @@ const path = require("path");
 const args = process.argv.slice(2);
 const outArg = args.indexOf("--out");
 const OUT = path.resolve(outArg !== -1 ? args[outArg + 1] : path.join(__dirname, "..", "data", "forge-addons.json"));
+const FRESH = args.includes("--fresh");
 
-const API = "https://forge.sp-tarkov.com/api/v0";
-// Documented limits are 40 req/10s burst and 200/60s sustained. Probing harder than that
-// during development earned a Cloudflare 403 for the whole IP, not merely a 429.
+// Overridable so this can be pointed at a future address without an edit, exactly like the
+// app's own registry base.
+const API = process.env.SPTARKY_REGISTRY_API || "https://forge-alt.katrinfoxvr.com/api/v0";
+// The successor publishes ~300 req/60s. Forge documented 40 req/10s burst and 200/60s
+// sustained, and probing harder than that during development earned a Cloudflare 403 for the
+// whole IP rather than merely a 429 — so this interval is left at the more cautious value.
 const REQUEST_INTERVAL_MS = 600;
 const FORGE_SHUTDOWN = "2026-08-10";
 
@@ -100,7 +118,7 @@ function condense(a) {
 }
 
 function load() {
-  if (!fs.existsSync(OUT)) return { addons: {} };
+  if (FRESH || !fs.existsSync(OUT)) return { addons: {} };
   try {
     const prior = JSON.parse(fs.readFileSync(OUT, "utf-8"));
     const addons = {};
@@ -120,10 +138,13 @@ function save(state, meta) {
       {
         harvestedAt: new Date().toISOString(),
         forgeShutdownDate: FORGE_SHUTDOWN,
-        source: "https://forge.sp-tarkov.com/api/v0/addons?include=versions",
+        source: `${API}/addons?include=versions`,
         note:
-          "Forge addons are compatibility/companion mods. modId is the parent mod; " +
-          "versions[].modConstraint is the range of PARENT versions each addon build fits.",
+          "Addons are compatibility/companion mods. modId is the parent mod; " +
+          "versions[].modConstraint is the range of PARENT versions each addon build fits. " +
+          "This file is the OFFLINE FALLBACK — the app reads the same endpoint live and only " +
+          "uses this when that fails. Entries harvested from Forge before 2026-08-10 carry " +
+          "forge.sp-tarkov.com download links, which no longer resolve.",
         count: list.length,
         ...meta,
         addons: list

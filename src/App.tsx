@@ -242,6 +242,17 @@ export default function App() {
   }, []);
   const appVersionRunning = appUpdate?.currentVersion ?? "";
 
+  // The catalogue's host, so tooltips can name the site actually being queried instead of
+  // hardcoding one. The address is configurable and has already changed once; a hardcoded
+  // name in a tooltip is exactly the kind of thing that quietly goes stale.
+  const [registryHost, setRegistryHost] = useState("");
+  useEffect(() => {
+    window.modManagerAPI
+      .getRegistrySource()
+      .then((s) => setRegistryHost(s.host))
+      .catch(() => setRegistryHost(""));
+  }, []);
+
   useEffect(() => {
     const unsubscribe = window.modManagerAPI.onDownloadProgress(({ jobId, receivedBytes, totalBytes }) => {
       setDownloadQueue((prev) => prev.map((q) => (q.id === jobId ? { ...q, receivedBytes, totalBytes } : q)));
@@ -619,6 +630,7 @@ export default function App() {
   const [addonLinks, setAddonLinks] = useState<AddonLink[]>([]);
   const [addonIntegrations, setAddonIntegrations] = useState<AddonIntegration[]>([]);
   const [addonCatalogueSize, setAddonCatalogueSize] = useState(0);
+  const [addonCatalogueLive, setAddonCatalogueLive] = useState(false);
   const [addonLedger, setAddonLedger] = useState<InstalledAddonRecord[]>([]);
   const [addonsScanned, setAddonsScanned] = useState(false);
   const [addonBusy, setAddonBusy] = useState(false);
@@ -628,6 +640,7 @@ export default function App() {
     if (result.success) {
       setAddonSuggestions(result.suggestions ?? []);
       setAddonCatalogueSize(result.catalogueSize ?? 0);
+      setAddonCatalogueLive(result.catalogueLive === true);
       setAddonLedger(result.ledger ?? []);
     } else if (result.message) {
       pushToast(result.message, false);
@@ -872,7 +885,7 @@ export default function App() {
     if (
       !window.confirm(
         `Install the ${carried} mod(s) this preset carries?\n\n` +
-          `Files are copied straight from the store — no Forge, no downloads. Mods you already have are overwritten with the preset's copies; mods not in the preset are left alone.`
+          `Files are copied straight from the store — no catalogue, no downloads. Mods you already have are overwritten with the preset's copies; mods not in the preset are left alone.`
       )
     )
       return;
@@ -1612,23 +1625,25 @@ export default function App() {
   }
 
   /**
-   * Accepts either a bare numeric id or a Forge URL pasted straight from the browser,
-   * because a URL is what someone actually has to hand after looking a mod up.
+   * Accepts a mod page URL pasted straight from the browser, or a bare numeric id, because
+   * a URL is what someone actually has to hand after looking a mod up.
+   *
+   * Parsing moved to the main process: catalogue pages are addressed by SLUG, so the id a
+   * pin is stored against is no longer present in the URL and has to be looked up. Old
+   * Forge /mod/<id> links and bare ids still resolve without a request.
    */
   async function submitRelink() {
     if (!relinkTarget) return;
     const trimmed = relinkInput.trim();
     if (!trimmed) return;
-    // "https://forge.sp-tarkov.com/mod/791/sain" -> 791, and a bare "791" -> 791
-    const fromUrl = /forge\.sp-tarkov\.com\/mod\/(\d+)/i.exec(trimmed);
-    const modId = Number(fromUrl ? fromUrl[1] : trimmed);
-    if (!Number.isFinite(modId) || modId <= 0) {
-      pushToast(t("forge.relinkInvalid"), false);
-      return;
-    }
     const target = relinkTarget;
     setRelinkTarget(null);
-    await confirmForgeMatch(target.originalName, modId, String(modId));
+    const resolved = await window.modManagerAPI.resolveModRef(trimmed);
+    if (!resolved.success || !resolved.modId) {
+      pushToast(tMsg(resolved.message) || t("forge.relinkInvalid"), false);
+      return;
+    }
+    await confirmForgeMatch(target.originalName, resolved.modId, String(resolved.modId));
   }
 
   // Updates without leaving the app: the result's link is a direct download of the
@@ -2112,7 +2127,7 @@ export default function App() {
             <button
               onClick={handleCheckForgeUpdates}
               disabled={checkingForgeUpdates}
-              title={t("filters.forgeCheckTitle")}
+              title={t("filters.forgeCheckTitle", { host: registryHost })}
             >
               {checkingForgeUpdates
                 ? forgeProgress && forgeProgress.total > 0
@@ -2289,13 +2304,20 @@ export default function App() {
                       <div className="unconfirmed-info">
                         <span className="unconfirmed-mod">{u.name}</span>
                         <span className="unconfirmed-arrow">→</span>
-                        <button
-                          className="link-button"
-                          onClick={() => window.modManagerAPI.openReleasePage(u.detailUrl)}
-                          title={t("forge.unconfirmedOpenTitle")}
-                        >
-                          {u.forgeName ?? `#${u.modId}`}
-                        </button>
+                        {/* No link when the match carried no slug: catalogue pages are
+                            addressed by slug, so an id alone cannot build a URL that
+                            resolves. Showing the name unlinked beats a button that 404s. */}
+                        {u.detailUrl ? (
+                          <button
+                            className="link-button"
+                            onClick={() => window.modManagerAPI.openReleasePage(u.detailUrl!)}
+                            title={t("forge.unconfirmedOpenTitle")}
+                          >
+                            {u.forgeName ?? `#${u.modId}`}
+                          </button>
+                        ) : (
+                          <span className="unconfirmed-mod">{u.forgeName ?? `#${u.modId}`}</span>
+                        )}
                         <span className="package-chip">{u.method}</span>
                       </div>
                       <div className="unconfirmed-actions">
@@ -2342,6 +2364,7 @@ export default function App() {
               busy={addonBusy}
               scanned={addonsScanned}
               catalogueSize={addonCatalogueSize}
+              catalogueLive={addonCatalogueLive}
               ledger={addonLedger}
               onForgetAddon={handleForgetAddon}
               onInstallForgeAddon={handleInstallForgeAddon}
@@ -2497,7 +2520,19 @@ export default function App() {
                     <div className={`forge-mod-thumb forge-mod-thumb-placeholder ${mod.thumbnail ? "forge-mod-thumb-hidden" : ""}`} />
                     <div className="forge-mod-info">
                       <div className="forge-mod-title-row">
-                        <a href={mod.detailUrl} onClick={(e) => { e.preventDefault(); window.modManagerAPI.openModHub(); }} title={t("browse.viewOnForgeTitle")}>
+                        {/* Opens THIS mod's page. It used to call openModHub(), which sent
+                            every mod's link to the catalogue's front page regardless of
+                            which one was clicked; detail_url comes from the API, so the
+                            right page is already to hand. */}
+                        <a
+                          href={mod.detailUrl}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            if (mod.detailUrl) window.modManagerAPI.openReleasePage(mod.detailUrl);
+                            else window.modManagerAPI.openModHub();
+                          }}
+                          title={t("browse.viewOnForgeTitle")}
+                        >
                           {mod.name}
                         </a>
                         {mod.category && <span className="meta-chip">{mod.category}</span>}
@@ -2869,7 +2904,7 @@ export default function App() {
               type="text"
               autoFocus
               value={relinkInput}
-              placeholder="https://forge.sp-tarkov.com/mod/791/sain    or    791"
+              placeholder={t("forge.relinkPlaceholder")}
               onChange={(e) => setRelinkInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") submitRelink();

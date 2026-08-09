@@ -149,6 +149,10 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   getForgeCategories: () => ipcRenderer.invoke("get-forge-categories"),
   setForgeMatch: (originalName: string, modId: number) => ipcRenderer.invoke("set-forge-match", originalName, modId),
   clearForgeMatch: (originalName: string) => ipcRenderer.invoke("clear-forge-match", originalName),
+  // A pasted mod page URL is now slug-based, so turning it into an id needs a lookup.
+  resolveModRef: (input: string) => ipcRenderer.invoke("resolve-mod-ref", input),
+  getRegistrySource: () => ipcRenderer.invoke("get-registry-source"),
+  setRegistrySource: (value: string | null) => ipcRenderer.invoke("set-registry-source", value),
   dismissForgeUpdate: (originalName: string, version: string) =>
     ipcRenderer.invoke("dismiss-forge-update", originalName, version),
   undismissForgeUpdate: (originalName: string) => ipcRenderer.invoke("undismiss-forge-update", originalName),

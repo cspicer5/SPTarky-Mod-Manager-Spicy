@@ -6,6 +6,7 @@ import { path7za } from "7zip-bin";
 import { createExtractorFromFile } from "node-unrar-js";
 import { ModInfo, ModType, RegistryEntry, ModListComparison, ModFingerprint, VersionOrigin } from "./types";
 import { readAssemblyModMetadata } from "./peMetadata";
+import { getRegistryApiBase, modPageUrl, parseModRef, readCategoryLabel } from "./registry";
 
 /**
  * Reads the SPT version from SPT_Data/Server/configs/core.json — the same file SPT's own
@@ -2467,15 +2468,23 @@ function verifyCopyRecursive(
 }
 
 /* ==========================================================================
- * Integration with the Forge API (forge.sp-tarkov.com) — SPT's official mod
- * platform. Public, read-only, no key required; the API is documented as open
- * and does not support authentication at all, so there is no "logged in" mode
- * that would raise the limits. Documented limits: 40 requests/10s burst and
- * 200/60s sustained — which is why the name lookups below run one at a time
- * with an interval between them instead of firing all at once.
+ * Integration with the mod registry API — the catalogue SPT mods are published
+ * to. Public, read-only, no key required; the API does not support
+ * authentication at all, so there is no "logged in" mode that would raise the
+ * limits. This is why the name lookups below run one at a time with an interval
+ * between them instead of firing all at once.
+ *
+ * The address moved when Forge shut down on 2026-08-10. It is deliberately NOT
+ * hardcoded here any more — see registry.ts for where it lives, what carried
+ * over (ids, guids, the whole /api/v0 surface) and the handful of response
+ * differences. The `forge*` names below are kept: they are this codebase's word
+ * for "the registry", they appear in persisted files (the match cache, the
+ * version ledger's `forge` origin) that must keep parsing, and renaming them
+ * would be a large diff with no behavioural gain.
  * ========================================================================== */
 
-const FORGE_API_BASE = "https://forge.sp-tarkov.com/api/v0";
+/** Read through a function, not a constant: the base is overridable at runtime. */
+const registryApi = (): string => getRegistryApiBase();
 
 export interface ForgeUpdateItem {
   name: string;
@@ -2494,7 +2503,8 @@ export interface ForgeUnconfirmedMatch {
   modId: number;
   forgeName?: string;
   method: string;
-  detailUrl: string;
+  /** Absent when the match carried no slug — see modPageUrl. */
+  detailUrl?: string;
 }
 
 export interface ForgeUpdateCheckResult {
@@ -2524,7 +2534,7 @@ export async function getForgeSptVersions(): Promise<ForgeSptVersion[]> {
   // Endpoint path verified against the live API: /spt/versions returns 200 with real data.
   // (The published docs list this as /spt-versions; that path does not answer. Trust this
   // one — it is what actually works.)
-  const url = `${FORGE_API_BASE}/spt/versions?per_page=50&fields=version,mod_count,version_major,version_minor,version_patch`;
+  const url = `${registryApi()}/spt/versions?per_page=50&fields=version,mod_count,version_major,version_minor,version_patch`;
   try {
     const res = await fetch(url, { headers: { Accept: "application/json" } });
     if (!res.ok) return [];
@@ -2829,6 +2839,13 @@ interface ForgeMatch {
   needsConfirmation: boolean;
   /** The guid published on Forge, when present — used to confirm the match. */
   forgeGuid?: string;
+  /**
+   * How to LINK to this mod. Carried because the registry addresses mod pages
+   * by slug, not by id: a page URL can no longer be built from `modId` alone.
+   * `detailUrl` is the API's own answer and is preferred over both.
+   */
+  slug?: string;
+  detailUrl?: string;
 }
 
 function toForgeMatch(entry: any, method: ForgeMatchMethod, groupTrusted = true): ForgeMatch {
@@ -2849,16 +2866,25 @@ function toForgeMatch(entry: any, method: ForgeMatchMethod, groupTrusted = true)
     confidence: needsConfirmation ? "derived" : "exact",
     method,
     needsConfirmation,
-    forgeGuid: typeof entry.guid === "string" ? entry.guid : undefined
+    forgeGuid: typeof entry.guid === "string" ? entry.guid : undefined,
+    slug: typeof entry.slug === "string" ? entry.slug : undefined,
+    detailUrl: typeof entry.detail_url === "string" ? entry.detail_url : undefined
   };
 }
 
-/* Documented Forge API limits: 40 req/10s (burst) and 200 req/60s (sustained).
- * 40/10s = one request every 250ms at best; we use 320ms of headroom to stay off the
- * limit (it was 120ms before, giving ~83 req/10s — double what is allowed, which is why
- * the check fell into a 429 -> wait -> 429 loop that looked like a hang).
- * These limits are real: probing the API hard enough during development earned a
- * Cloudflare 403 for the whole IP, not just a 429. */
+/* Pacing, inherited from Forge's limits and deliberately not relaxed.
+ *
+ * Forge documented 40 req/10s (burst) and 200 req/60s (sustained). 40/10s = one request
+ * every 250ms at best; we use 320ms of headroom to stay off the limit (it was 120ms
+ * before, giving ~83 req/10s — double what is allowed, which is why the check fell into a
+ * 429 -> wait -> 429 loop that looked like a hang). Those limits were real: probing the
+ * API hard enough during development earned a Cloudflare 403 for the whole IP, not just
+ * a 429.
+ *
+ * The successor publishes ~300 req/60s per IP with no separate burst rule — MORE headroom
+ * than this pacing assumes, so it stays correct without retuning. Left as-is on purpose:
+ * 320ms is comfortably inside both budgets, and going faster would buy a few seconds on
+ * an operation that is already batched, at the risk of re-earning an IP ban. */
 const FORGE_MIN_REQUEST_INTERVAL_MS = 320;
 let lastForgeRequestAt = 0;
 
@@ -2957,7 +2983,7 @@ async function forgeFetchJson(url: string, budget: ForgeBudget, retriedAfter429 
  * wrong is worse than not matching.
  */
 async function fetchForgeByFuzzyFilter(filterKey: "slug" | "name", value: string, budget: ForgeBudget): Promise<any[]> {
-  const url = new URL(`${FORGE_API_BASE}/mods`);
+  const url = new URL(`${registryApi()}/mods`);
   url.searchParams.set(`filter[${filterKey}]`, value);
   url.searchParams.set("per_page", "10");
   url.searchParams.set("include", "versions");
@@ -2975,7 +3001,7 @@ async function fetchForgeByFuzzyFilter(filterKey: "slug" | "name", value: string
  * the only way to reach a legacy mod (the id/guid filters cannot see them).
  */
 async function fetchForgeByQuery(term: string, budget: ForgeBudget, perPage = 10): Promise<any[]> {
-  const url = new URL(`${FORGE_API_BASE}/mods`);
+  const url = new URL(`${registryApi()}/mods`);
   url.searchParams.set("query", term);
   url.searchParams.set("per_page", String(perPage));
   url.searchParams.set("include", "versions");
@@ -2992,7 +3018,7 @@ async function fetchForgeByIds(ids: string[], budget: ForgeBudget): Promise<any[
   const results: any[] = [];
   const CHUNK = 25;
   for (let i = 0; i < ids.length; i += CHUNK) {
-    const url = new URL(`${FORGE_API_BASE}/mods`);
+    const url = new URL(`${registryApi()}/mods`);
     url.searchParams.set("filter[id]", ids.slice(i, i + CHUNK).join(","));
     url.searchParams.set("per_page", "50");
     url.searchParams.set("include", "versions");
@@ -3008,7 +3034,7 @@ async function fetchForgeByGuids(guids: string[], budget: ForgeBudget): Promise<
   const results: any[] = [];
   const CHUNK = 25;
   for (let i = 0; i < guids.length; i += CHUNK) {
-    const url = new URL(`${FORGE_API_BASE}/mods`);
+    const url = new URL(`${registryApi()}/mods`);
     url.searchParams.set("filter[guid]", guids.slice(i, i + CHUNK).join(","));
     url.searchParams.set("per_page", "50");
     url.searchParams.set("include", "versions");
@@ -3176,6 +3202,43 @@ export function setManualForgeMatch(root: string, folderName: string, modId: num
   const cache = loadForgeMatchCache(root);
   cache[folderName] = { modId: String(modId), method: "manual", verifiedAt: new Date().toISOString() };
   saveForgeMatchCache(root, cache);
+}
+
+/**
+ * Turns a pasted mod reference into a numeric id.
+ *
+ * Needed because the registry addresses mod pages by SLUG — the URL someone
+ * copies out of the browser no longer contains the id that a manual pin is
+ * stored against. A bare id and an old Forge /mod/<id> link still resolve
+ * without a request; only a slug costs a lookup.
+ *
+ * Returns null when the reference is unparseable OR when the slug matches
+ * nothing, and those are deliberately the same answer to the caller: both mean
+ * "this did not identify a mod", and pinning on a guess is what the manual
+ * override exists to prevent.
+ */
+export async function resolveModRef(input: string): Promise<number | null> {
+  const ref = parseModRef(input);
+  if (!ref) return null;
+  if (ref.kind === "id") return ref.id;
+
+  const url = new URL(`${registryApi()}/mods`);
+  url.searchParams.set("filter[slug]", ref.slug);
+  url.searchParams.set("per_page", "2");
+  url.searchParams.set("fields", "id,name,slug");
+  try {
+    const res = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+    if (!res.ok) return null;
+    const json: any = await res.json();
+    const rows: any[] = Array.isArray(json?.data) ? json.data : [];
+    // filter[slug] is a filter, not a guarantee of equality — the same lesson as
+    // filter[name]. Require an exact slug match rather than trusting the first row.
+    const hit = rows.find((r) => String(r?.slug || "").toLowerCase() === ref.slug.toLowerCase());
+    const id = Number(hit?.id);
+    return Number.isFinite(id) && id > 0 ? id : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Undoes the manual link, returning the mod to the automatic path. */
@@ -3471,7 +3534,7 @@ async function findForgeModInfo(
   sptVersion?: string
 ): Promise<{ identifier: string; latestVersion?: string; latestVersionLink?: string; forgeName?: string } | null> {
   try {
-    const url = new URL(`${FORGE_API_BASE}/mods`);
+    const url = new URL(`${registryApi()}/mods`);
     url.searchParams.set("filter[name]", name);
     url.searchParams.set("per_page", "1");
     url.searchParams.set("include", "versions");
@@ -3585,7 +3648,7 @@ export async function findForgeDownloadsForNames(
     // Matched the mod on Forge, but the response carried no download link. Rather than
     // giving up silently (the symptom was "imports, shows the difference, downloads
     // nothing"), fetch that mod's versions directly by identifier.
-    const url = new URL(`${FORGE_API_BASE}/mods`);
+    const url = new URL(`${registryApi()}/mods`);
     url.searchParams.set("filter[guid]", info.identifier);
     url.searchParams.set("per_page", "1");
     url.searchParams.set("include", "versions");
@@ -3677,7 +3740,9 @@ export async function checkForgeUpdates(
         modId: info.modId,
         forgeName: info.forgeName,
         method: info.method,
-        detailUrl: `https://forge.sp-tarkov.com/mod/${info.modId}`
+        // May be undefined: the registry addresses pages by slug, so a match
+        // that arrived without one gets no link rather than a link that 404s.
+        detailUrl: modPageUrl({ detailUrl: info.detailUrl, slug: info.slug })
       });
     }
   }
@@ -3718,7 +3783,7 @@ export async function checkForgeUpdates(
   };
   if (pairs.length === 0) return empty;
 
-  const url = `${FORGE_API_BASE}/mods/updates?mods=${encodeURIComponent(pairs.join(","))}&spt_version=${encodeURIComponent(trimmedVersion)}`;
+  const url = `${registryApi()}/mods/updates?mods=${encodeURIComponent(pairs.join(","))}&spt_version=${encodeURIComponent(trimmedVersion)}`;
   let json: any;
   try {
     const res = await fetch(url, { headers: { Accept: "application/json" } });
@@ -3845,7 +3910,10 @@ function mapCatalogMod(m: any): ForgeCatalogMod {
     thumbnail: m.thumbnail || undefined,
     downloads: m.downloads ?? 0,
     author: m.owner?.name,
-    category: m.category?.name,
+    // Not `m.category?.name`: the label's key differs between registries, and
+    // reading the wrong one showed a blank category for every mod. See
+    // readCategoryLabel.
+    category: readCategoryLabel(m.category),
     fikaCompatible: typeof m.fika_compatibility === "boolean" ? m.fika_compatibility : undefined,
     detailUrl: m.detail_url,
     versions: Array.isArray(m.versions)
@@ -3874,7 +3942,7 @@ export async function searchForgeMods(params: {
   page?: number;
   perPage?: number;
 }): Promise<ForgeSearchResult> {
-  const url = new URL(`${FORGE_API_BASE}/mods`);
+  const url = new URL(`${registryApi()}/mods`);
   url.searchParams.set("include", "category,versions");
   url.searchParams.set("sort", params.sort || "-downloads");
   url.searchParams.set("page", String(params.page || 1));
@@ -3898,7 +3966,7 @@ export async function searchForgeMods(params: {
 }
 
 export async function getForgeCategories(): Promise<ForgeCategory[]> {
-  const url = `${FORGE_API_BASE}/mod-categories?per_page=100&fields=id,title,slug`;
+  const url = `${registryApi()}/mod-categories?per_page=100&fields=id,title,slug`;
   try {
     const res = await fetch(url, { headers: { Accept: "application/json" } });
     if (!res.ok) return [];

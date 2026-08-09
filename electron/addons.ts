@@ -35,6 +35,7 @@ import fs from "fs";
 import path from "path";
 import { ModInfo, ModType } from "./types";
 import { checkSptCompatibility } from "./modManager";
+import { getRegistryApiBase } from "./registry";
 
 export const ADDON_CATALOGUE_FILE = "forge-addons.json";
 
@@ -107,6 +108,107 @@ export function loadAddonCatalogue(searchPaths: string[] = []): ForgeAddon[] {
 /** Test seam, and lets a redeployed catalogue be picked up without a restart. */
 export function resetAddonCatalogue(): void {
   cachedCatalogue = null;
+  liveCatalogueFetchedAt = 0;
+}
+
+/* --------------------------------------------------------------------------
+ * The LIVE catalogue
+ *
+ * The harvest was captured while Forge was the only source, and every one of its 166
+ * download links is a Forge-proxied URL of the form
+ * forge.sp-tarkov.com/addon/download/<id>/<slug>/<version>. All 166 stopped resolving when
+ * Forge went dark — so a catalogue that still worked for BROWSING would have failed on
+ * every INSTALL, and failed at the download step, after the user had already picked a
+ * version. Nothing in the harvest itself reveals this: the entries look complete.
+ *
+ * The live API answers with each version's ORIGINAL upstream link (overwhelmingly GitHub
+ * releases), which is both what survives and what the app would rather have anyway.
+ *
+ * So: prefer live, fall back to the harvest. The harvest keeps its original job — the
+ * mod-to-mod relationships and parent version constraints that exist nowhere else — and
+ * stays the answer when the network or the registry is down.
+ * ----------------------------------------------------------------------- */
+
+let liveCatalogueFetchedAt = 0;
+
+/** Re-fetched at most this often; the catalogue changes on the order of days. */
+const LIVE_CATALOGUE_TTL_MS = 30 * 60 * 1000;
+
+function mapLiveAddon(raw: any): ForgeAddon | null {
+  const id = Number(raw?.id);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  const versions: AddonVersion[] = Array.isArray(raw?.versions)
+    ? raw.versions
+        .map((v: any) => ({
+          version: String(v?.version ?? ""),
+          link: typeof v?.link === "string" ? v.link : undefined,
+          bytes: typeof v?.content_length === "number" ? v.content_length : undefined,
+          // The field that exists nowhere else: which PARENT versions this build fits.
+          modConstraint: typeof v?.mod_version_constraint === "string" ? v.mod_version_constraint : undefined,
+          publishedAt: typeof v?.published_at === "string" ? v.published_at : undefined
+        }))
+        .filter((v: AddonVersion) => v.version)
+    : [];
+  return {
+    id,
+    name: String(raw?.name ?? `Addon ${id}`),
+    slug: typeof raw?.slug === "string" ? raw.slug : undefined,
+    teaser: typeof raw?.teaser === "string" ? raw.teaser : undefined,
+    owner: typeof raw?.owner?.name === "string" ? raw.owner.name : undefined,
+    downloads: typeof raw?.downloads === "number" ? raw.downloads : undefined,
+    detailUrl: typeof raw?.detail_url === "string" ? raw.detail_url : undefined,
+    modId: Number.isFinite(Number(raw?.mod_id)) ? Number(raw.mod_id) : undefined,
+    isDetached: raw?.is_detached === true,
+    publishedAt: typeof raw?.published_at === "string" ? raw.published_at : undefined,
+    updatedAt: typeof raw?.updated_at === "string" ? raw.updated_at : undefined,
+    versions
+  };
+}
+
+/**
+ * Fetches the catalogue from the registry, replacing the harvest for this session.
+ *
+ * Returns the number of addons on success and null on any failure — a failure is NOT an
+ * error to show. The harvest stays loaded and browsing carries on; only the download links
+ * are older. Bounded by `maxPages` so a paginating bug cannot spin.
+ */
+export async function refreshAddonCatalogue(options: { force?: boolean; maxPages?: number } = {}): Promise<number | null> {
+  if (!options.force && liveCatalogueFetchedAt && Date.now() - liveCatalogueFetchedAt < LIVE_CATALOGUE_TTL_MS) {
+    return cachedCatalogue?.length ?? null;
+  }
+  const maxPages = options.maxPages ?? 20;
+  const collected: ForgeAddon[] = [];
+  try {
+    for (let page = 1; page <= maxPages; page++) {
+      const url = new URL(`${getRegistryApiBase()}/addons`);
+      url.searchParams.set("include", "versions");
+      url.searchParams.set("per_page", "50");
+      url.searchParams.set("page", String(page));
+      const res = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      const rows: any[] = Array.isArray(json?.data) ? json.data : [];
+      for (const row of rows) {
+        const mapped = mapLiveAddon(row);
+        if (mapped) collected.push(mapped);
+      }
+      const lastPage = Number(json?.meta?.last_page ?? 1);
+      if (!Number.isFinite(lastPage) || page >= lastPage) break;
+    }
+  } catch {
+    return null;
+  }
+  // An empty answer is treated as a failure rather than as "there are no addons": replacing
+  // a working harvest with nothing would silently empty the panel.
+  if (collected.length === 0) return null;
+  cachedCatalogue = collected;
+  liveCatalogueFetchedAt = Date.now();
+  return collected.length;
+}
+
+/** Whether the catalogue in memory came from the registry rather than the harvest. */
+export function isAddonCatalogueLive(): boolean {
+  return liveCatalogueFetchedAt > 0;
 }
 
 /**

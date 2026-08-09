@@ -1,10 +1,42 @@
 # SPT Forge shutdown — 2026-08-10
 
-SPT Forge is scheduled to shut down on **10 August 2026**. Every Forge-backed feature in
-this app stops working on that date. This note records what breaks, what still works, and
-what the options are afterwards.
+> ## RESOLVED in v1.3.0 — the catalogue moved, it did not die
+>
+> A successor at `forge-alt.katrinfoxvr.com` mirrors Forge's database, and the app switched
+> to it entirely on 2026-08-09. **The ids carried over**, which is the fact everything below
+> was written in fear of losing: `data/forge-directory.json`, `data/forge-addons.json` and
+> every install's `.spt-mod-manager-forge-match.json` are keyed by Forge ids, and all of them
+> still resolve. Measured before the switch: 61/61 pinned ids on `D:\SPT`, 18/18 on
+> `D:\SPT41`, and a full live match run of 62/62 with nothing needing confirmation.
+>
+> So the contingency planning below was **not** what saved this — the successor was. Kept as
+> written because the reasoning still holds for the next time, and because two of its
+> conclusions turned out to matter more than expected:
+>
+> - **GitHub as a second source was the right investment.** It is what makes a catalogue
+>   outage survivable rather than fatal, independent of who is hosting.
+> - **The harvests were worth taking.** `forge-directory.json` holds 560 mods the successor
+>   does not list (almost all SPT 2.x/3.x-era), and nothing can re-collect them.
+>
+> One prediction was wrong in a way worth recording. The addon harvest was treated as a
+> complete rescue; it was not. Every one of its 166 version links was a Forge *proxy* URL,
+> so the file browsed perfectly and could not install anything once Forge went dark — a
+> failure that only surfaced at the download step. **Archiving metadata is not the same as
+> archiving reachability.** It was re-harvested from the successor, which returns each
+> version's original upstream link (0 dead links, 149 of 168 on GitHub).
+>
+> A date-based gate, `isForgeShutDown()`, would also have caused the opposite failure: on
+> 2026-08-10 it would have started reporting "no registry" while the registry was answering
+> fine, silently downgrading every preset sync to GitHub-or-nothing. Removed. **A date is a
+> proxy for a fact, and facts change.**
+>
+> Where the address lives now: `electron/registry.ts`, overridable as a setting so a third
+> move needs no release. The response differences are pinned by `npm run test:registry`.
 
-It is a planning document, not a work item. The current milestone is deliberately still
+SPT Forge was scheduled to shut down on **10 August 2026**. This note records what breaks,
+what still works, and what the options were afterwards.
+
+It is a planning document, not a work item. The milestone at the time was deliberately still
 "make the Forge integration correct" — see the reasoning under *Why finish the Forge work
 anyway*.
 

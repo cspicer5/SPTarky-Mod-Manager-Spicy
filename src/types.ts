@@ -752,6 +752,8 @@ export interface ModManagerAPI {
     success: boolean;
     suggestions?: AddonSuggestion[];
     catalogueSize?: number;
+    /** False = the bundled harvest, whose download links no longer resolve. */
+    catalogueLive?: boolean;
     /** Everything installed as an addon, including those with no folder of their own. */
     ledger?: InstalledAddonRecord[];
     message?: string;
@@ -869,6 +871,9 @@ export interface ModManagerAPI {
   ) => Promise<{ success: boolean; result?: ForgeUpdateCheckResult; message?: string }>;
   /** Pins a mod to a Forge id by hand. Overrides automatic matching permanently. */
   setForgeMatch: (originalName: string, modId: number) => Promise<{ success: boolean; message?: string }>;
+  resolveModRef: (input: string) => Promise<{ success: boolean; modId?: number; message?: string }>;
+  getRegistrySource: () => Promise<{ apiBase: string; siteBase: string; host: string; isDefault: boolean }>;
+  setRegistrySource: (value: string | null) => Promise<{ success: boolean; message?: string }>;
   /** Removes a manual pin, returning the mod to automatic matching. */
   clearForgeMatch: (originalName: string) => Promise<{ success: boolean; message?: string }>;
   /** "I already have this version" — stops this exact version being offered again. */

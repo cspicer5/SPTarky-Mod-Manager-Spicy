@@ -3,13 +3,19 @@
  *
  * Three sections, because they answer three different questions:
  *
- *   Available   what could I add to the mods I already have? (the Forge catalogue, frozen)
+ *   Available   what could I add to the mods I already have? (the live catalogue)
  *   Installed   what is here, and what is it attached to? (read from the files, forever)
  *   Integrations what would light up extra behaviour in something I already run?
  *
- * The catalogue half stops being able to grow when Forge shuts down; the other two do not
- * depend on it at all. The panel says which is which rather than letting the distinction be
- * discovered on the 11th.
+ * Only the first needs a network. The other two are read from the installed files and do not
+ * depend on any site existing, which is why they are kept separate rather than derived from
+ * the catalogue — and the panel says which is which rather than letting the distinction be
+ * discovered the day the site goes down.
+ *
+ * "Available" reads the registry live and falls back to the harvest bundled in data/. The
+ * fallback is degraded on purpose-to-say-so: every link in the harvest is a Forge proxy URL
+ * that stopped resolving when Forge closed, so from the fallback you can browse but not
+ * install.
  */
 import { useState } from "react";
 import { AddonSuggestion, AddonLink, AddonIntegration, InstalledAddonRecord, ModInfo, ModType } from "./types";
@@ -74,7 +80,7 @@ function SuggestionRow({
         </button>
         {s.addon.detailUrl && (
           <a className="addon-link" href={s.addon.detailUrl} target="_blank" rel="noreferrer">
-            Forge page
+            Addon page
           </a>
         )}
       </div>
@@ -90,6 +96,7 @@ export default function AddonsPanel({
   busy,
   scanned,
   catalogueSize,
+  catalogueLive,
   ledger,
   onForgetAddon,
   onInstallForgeAddon,
@@ -105,6 +112,8 @@ export default function AddonsPanel({
   busy: boolean;
   scanned: boolean;
   catalogueSize: number;
+  /** False = showing the bundled harvest, whose download links no longer resolve. */
+  catalogueLive?: boolean;
   ledger: InstalledAddonRecord[];
   onForgetAddon: (forgeAddonId?: number, name?: string) => void;
   onInstallForgeAddon: (addonId: number) => void;
@@ -156,12 +165,23 @@ export default function AddonsPanel({
 
       {tab === "available" && (
         <div className="addon-body">
-          {/* Said plainly rather than discovered later: this list is a snapshot and will not
-              grow. Worded so it reads correctly both before and after 2026-08-10 — an earlier
-              draft said Forge "shut down" while it was still up. */}
+          {/* Which catalogue this is, said plainly rather than discovered at the download
+              step. The offline case is the one that matters: the bundled harvest browses
+              perfectly and every one of its download links is a dead Forge proxy URL, so
+              "Install" fails after the user has already chosen a version. */}
           <p className="addon-note">
-            A snapshot of {catalogueSize} addons taken from Forge on 6 August 2026, before it closes on the 10th. This
-            list does not grow: anything published later has to come from a file or GitHub.
+            {catalogueLive ? (
+              <>
+                {catalogueSize} addons, read live from the catalogue. An addon published after this list was fetched
+                appears on the next refresh; anything not in the catalogue can still be installed from a file or GitHub.
+              </>
+            ) : (
+              <>
+                The catalogue couldn't be reached, so this is the bundled snapshot of {catalogueSize} addons taken on 6
+                August 2026. Browsing works, but <strong>installing will not</strong> — its download links point at
+                Forge, which has closed. Reopen this panel once you're online, or install from a file or GitHub.
+              </>
+            )}
           </p>
 
           {suggestions.length === 0 ? (
@@ -273,8 +293,8 @@ export default function AddonsPanel({
               {scanned ? "Re-scan" : "Scan installed mods"}
             </button>
             <span className="addon-note">
-              Reads each plugin's own assembly for the dependencies it declares. Works with no Forge and no running
-              server, so this keeps working after the shutdown.
+              Reads each plugin's own assembly for the dependencies it declares. Works with no catalogue and no running
+              server, so it keeps working whatever happens to the site.
             </span>
           </div>
 

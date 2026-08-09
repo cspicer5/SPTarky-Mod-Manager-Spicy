@@ -101,6 +101,10 @@ export interface InstanceConfig {
   // Addon-to-parent links the user set by hand, keyed "<type>:<lowercased folder>". Their
   // judgement outranks anything derived, exactly as a manual Forge pin does.
   addonLinks: Record<string, string> | null;
+  // Overrides where the mod catalogue is read from. Null = the address built into this
+  // release. Stored rather than compiled in because the catalogue moved once already (Forge
+  // -> its successor), and a further move would otherwise strand every existing install.
+  registryApiBase: string | null;
   presetStorePath: string | null;
   // The name this client publishes under. Presets are shared between people, so "who wrote
   // this" has to be a name a human chose, not a machine account or a folder path.
