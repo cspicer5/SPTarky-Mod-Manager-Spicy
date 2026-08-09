@@ -4,43 +4,7 @@
   "description": "A Mod Manager for Single Player Tarkov (SPT). Fork of SPT Mod Manager by Matheus Guida (TioEmir).",
   "license": "MIT",
   "author": "cspicer5",
-  "contributors": [
-    "Matheus Guida (TioEmir) — original SPT Mod Manager"
-  ],
-  "keywords": [
-    "spt",
-    "single-player-tarkov",
-    "mod-manager",
-    "electron",
-    "tarkov"
-  ],
   "main": "dist-electron/main.js",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build && tsc -p electron/tsconfig.json",
-    "electron:dev": "npm run build && electron .",
-    "electron:build": "npm run build && electron-builder",
-    "audit:forge": "npm run build && node scripts/audit-forge-match.js",
-    "audit:headless": "npm run build && node scripts/audit-headless.js",
-    "audit:server": "npm run build && node scripts/audit-server.js",
-    "test:parity": "tsc -p electron/tsconfig.json && node scripts/test-parity.js",
-    "test:sync": "tsc -p electron/tsconfig.json && node scripts/test-headless-sync.js",
-    "test:update": "tsc -p electron/tsconfig.json && node scripts/test-update-swap.js",
-    "test:ledger": "tsc -p electron/tsconfig.json && node scripts/test-version-ledger.js",
-    "test:presets": "tsc -p electron/tsconfig.json && node scripts/test-presets.js",
-    "test:store": "tsc -p electron/tsconfig.json && node scripts/test-preset-store.js",
-    "test:payloads": "tsc -p electron/tsconfig.json && node scripts/test-preset-payloads.js",
-    "test:addons": "tsc -p electron/tsconfig.json && node scripts/test-addons.js",
-    "test:presetsync": "tsc -p electron/tsconfig.json && node scripts/test-preset-sync.js",
-    "test:asar": "set ELECTRON_RUN_AS_NODE=1&& electron scripts/test-asar-extract.js",
-    "test:bulk": "tsc -p electron/tsconfig.json && node scripts/test-bulk-reinstall.js",
-    "test:sptpick": "tsc -p electron/tsconfig.json && node scripts/test-spt-version-pick.js",
-    "test:constraints": "tsc -p electron/tsconfig.json && node scripts/test-spt-constraints.js",
-    "test:layout": "tsc -p electron/tsconfig.json && node scripts/test-spt-layout.js",
-    "test": "npm run test:parity && npm run test:sync && npm run test:update && npm run test:ledger && npm run test:presets && npm run test:store && npm run test:payloads && npm run test:addons && npm run test:presetsync && npm run test:bulk && npm run test:sptpick && npm run test:constraints && npm run test:layout && npm run test:registry && npm run test:browse && npm run test:asar",
-    "test:registry": "tsc -p electron/tsconfig.json && node scripts/test-registry.js",
-    "test:browse": "node scripts/test-browse-state.js"
-  },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
@@ -52,67 +16,6 @@
     "node-unrar-js": "^2.0.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
-  },
-  "devDependencies": {
-    "@types/adm-zip": "^0.5.5",
-    "@types/node": "^20.14.0",
-    "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.1",
-    "electron": "^31.0.0",
-    "electron-builder": "^24.13.3",
-    "typescript": "^5.5.0",
-    "vite": "^5.3.1"
-  },
-  "build": {
-    "appId": "com.cspicer5.sptarkymodmanagerspicy",
-    "productName": "SPTarky Mod Manager Spicy",
-    "copyright": "Copyright © 2026 cspicer5. Based on SPT Mod Manager © 2026 Matheus Guida (TioEmir), MIT.",
-    "files": [
-      "dist/**/*",
-      "dist-electron/**/*",
-      "data/headless-rules.json",
-      "data/forge-directory.json",
-      "data/forge-addons.json"
-    ],
-    "asarUnpack": [
-      "node_modules/7zip-bin/**/*"
-    ],
-    "directories": {
-      "buildResources": "build",
-      "output": "release"
-    },
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "build/icon.ico",
-      "artifactName": "SPTarky-Mod-Manager-Spicy-${version}-${os}-${arch}.${ext}"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": false,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "SPTarky Mod Manager Spicy",
-      "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico",
-      "installerHeaderIcon": "build/icon.ico",
-      "license": "LICENSE",
-      "deleteAppDataOnUninstall": false
-    }
   },
   "allowScripts": {
     "electron@31.7.7": true,
