@@ -39,7 +39,7 @@ public class SptarkyRouter : StaticRouter
     /// than comparing version numbers, so routes can ship one at a time without the client
     /// having to know this mod's release history.
     /// </summary>
-    private static readonly List<string> Capabilities = ["manifest"];
+    private static readonly List<string> Capabilities = ["manifest", "files"];
 
     public SptarkyRouter(
         JsonUtil jsonUtil,
@@ -79,7 +79,7 @@ public class SptarkyRouter : StaticRouter
         // the server's own log rather than by probing it from somewhere else.
         logger.Success(
             $"[Spicy's Tarky Mod Manager Companion] active — v{CompanionVersion}, protocol {Protocol}. " +
-            $"Serving /sptarky/version, /sptarky/manifest");
+            $"Serving /sptarky/version, /sptarky/manifest, {SptarkyFileRouter.ListRoute}, {SptarkyFileRouter.DataRoute}");
     }
 }
 
