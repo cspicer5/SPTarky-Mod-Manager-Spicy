@@ -110,6 +110,131 @@ export function readCapabilities(status: number, body: unknown): CompanionCapabi
   };
 }
 
+/* ---------------------------------------------------------------------------------------- *
+ * The manifest — what the server actually has installed.
+ * ---------------------------------------------------------------------------------------- */
+
+/** A mod on the server, after its declared version has been reconciled against the ledger. */
+export interface RemoteMod {
+  /** Folder name — the identity the manager matches on, the same as it uses locally. */
+  id: string;
+  type: "server" | "client";
+  /** The version to believe. See `versionSource` for where it came from. */
+  version?: string;
+  /** What the mod says about itself. Kept even when overridden, so a disagreement can be shown. */
+  declaredVersion?: string;
+  /**
+   * `ledger` means that machine's manager recorded the install, which beats the mod's own
+   * claim; `declared` means the mod's word is all there is. Never inferred from the version
+   * string itself.
+   */
+  versionSource: "ledger" | "declared" | "unknown";
+  guid?: string;
+  name?: string;
+  /** False for anything in mods.disabled / plugins.disabled — present but not running. */
+  enabled: boolean;
+  /**
+   * Present on disk but not in SPT's loaded list: it failed validation or threw on load.
+   * Server mods only; the server cannot tell whether a client plugin loaded.
+   */
+  failedToLoad?: boolean;
+}
+
+export interface RemoteManifest {
+  serverMods: RemoteMod[];
+  clientMods: RemoteMod[];
+  /** Addon ledger entries, verbatim, for parity checks the manager already knows how to do. */
+  addons: unknown[];
+  /**
+   * False when that machine has no BepInEx beside the server. Its client list is then EMPTY
+   * BECAUSE UNKNOWN, and no parity check may treat it as "the server has no client mods".
+   */
+  clientKnown: boolean;
+  /** True when no ledger was found, so every version is only what the mods claim. */
+  versionsAreDeclaredOnly: boolean;
+  warnings: string[];
+}
+
+/**
+ * Turns the companion's answer into something the app can compare against a local install.
+ *
+ * The reconciling happens HERE rather than on the server, which is why the companion ships the
+ * ledger verbatim. The rule it applies is the one that motivated the whole companion: a version
+ * the remote manager RECORDED at install time beats the version the mod declares about itself,
+ * because authors forget to bump manifests and the ledger cannot.
+ *
+ * Returns null only when the payload is not a manifest at all. Everything softer — a missing
+ * ledger, an unreadable BepInEx, a truncated list — comes back as a manifest that says so,
+ * because refusing the whole thing over one absent field would throw away the parts that were
+ * fine.
+ */
+export function readManifest(body: unknown): RemoteManifest | null {
+  if (!body || typeof body !== "object") return null;
+  const raw = body as Record<string, unknown>;
+  if (!Array.isArray(raw.serverMods) || !Array.isArray(raw.clientMods)) return null;
+
+  const warnings = Array.isArray(raw.warnings) ? raw.warnings.map(String) : [];
+
+  // The ledger is the remote machine's registry file as text. A corrupt one is not fatal: fall
+  // back to declared versions and SAY so, rather than losing the mod list along with it.
+  let ledger: Record<string, { installedVersion?: string }> = {};
+  let ledgerParsed = false;
+  if (typeof raw.registryJson === "string" && raw.registryJson.trim()) {
+    try {
+      const entries = JSON.parse(raw.registryJson);
+      if (Array.isArray(entries)) {
+        for (const e of entries) {
+          if (e && typeof e.id === "string") ledger[e.id] = e;
+        }
+        ledgerParsed = true;
+      }
+    } catch {
+      warnings.push("The server's version ledger could not be read, so only declared versions are available.");
+    }
+  }
+
+  let addons: unknown[] = [];
+  if (typeof raw.addonsJson === "string" && raw.addonsJson.trim()) {
+    try {
+      const parsed = JSON.parse(raw.addonsJson);
+      if (Array.isArray(parsed)) addons = parsed;
+    } catch {
+      warnings.push("The server's addon ledger could not be read.");
+    }
+  }
+
+  const reconcile = (entry: Record<string, unknown>, type: "server" | "client"): RemoteMod => {
+    const id = String(entry.folder ?? entry.name ?? "");
+    const declared = typeof entry.declaredVersion === "string" ? entry.declaredVersion : undefined;
+    // Exact first. The stripped form is only a FALLBACK: checked against the live install, the
+    // registry stores a loose client plugin under its full filename ("DrakiaXYZ-BigBrain.dll",
+    // 6 of them), so stripping first would miss precisely those.
+    const recorded = (ledger[id] ?? ledger[id.replace(/\.dll$/i, "")])?.installedVersion;
+    return {
+      id,
+      type,
+      version: recorded ?? declared,
+      declaredVersion: declared,
+      versionSource: recorded ? "ledger" : declared ? "declared" : "unknown",
+      guid: typeof entry.guid === "string" ? entry.guid : undefined,
+      name: typeof entry.name === "string" ? entry.name : undefined,
+      enabled: entry.enabled !== false,
+      ...(entry.loaded === false ? { failedToLoad: true } : {})
+    };
+  };
+
+  return {
+    serverMods: (raw.serverMods as Record<string, unknown>[]).map((m) => reconcile(m, "server")).filter((m) => m.id),
+    // The name is kept EXACTLY as it appears on disk, extension and all, because that is the
+    // identity the manager's own registry uses for a client plugin.
+    clientMods: (raw.clientMods as Record<string, unknown>[]).map((m) => reconcile(m, "client")).filter((m) => m.id),
+    addons,
+    clientKnown: raw.clientRootFound === true,
+    versionsAreDeclaredOnly: !ledgerParsed,
+    warnings
+  };
+}
+
 /**
  * One line for the UI.
  *

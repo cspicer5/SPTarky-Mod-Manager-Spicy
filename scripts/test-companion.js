@@ -99,5 +99,96 @@ console.log("\neverything else degrades quietly");
   check("403 is treated the same", C.readCapabilities(403, null).unauthorised, true);
 }
 
-console.log(`\n${failures === 0 ? "all checks passed" : `${failures} check(s) failed`}`);
+/* ------------------------------------------------------------------------------------------ *
+ * The manifest — reconciling what the server reports against what its ledger recorded.
+ * ------------------------------------------------------------------------------------------ */
+
+// Trimmed from a REAL response captured off a live 4.0.13 server, not invented. WTT-Artem is
+// the case the companion exists for: it declares 3.0.0 forever because its author never bumped
+// the manifest, while 3.0.1 is what is on disk.
+const liveish = {
+  protocol: 1,
+  companionVersion: "1.0.0",
+  serverRootFound: true,
+  clientRootFound: true,
+  split: true,
+  serverMods: [
+    { folder: "WTT-Artem", guid: "com.crackbone.artem-wtt", declaredVersion: "3.0.0", loaded: true, enabled: true },
+    { folder: "fika-server", guid: "Fika", declaredVersion: "2.3.5", loaded: true, enabled: true },
+    { folder: "tacticaltoaster-untargohome", loaded: false, enabled: false }
+  ],
+  clientMods: [
+    { name: "DrakiaXYZ-BigBrain.dll", kind: "file", area: "plugins", enabled: true },
+    { name: "AmandsGraphics", kind: "folder", area: "plugins", enabled: true }
+  ],
+  registryJson: JSON.stringify([
+    { id: "WTT-Artem", type: "server", installedVersion: "3.0.1", versionOrigin: "forge" },
+    // Note the ".dll": checked against the live registry, a loose client plugin is stored under
+    // its full filename. An earlier version of this fixture dropped the extension and made a
+    // broken lookup look correct.
+    { id: "DrakiaXYZ-BigBrain.dll", type: "client", installedVersion: "1.4.0", versionOrigin: "forge" },
+    { id: "AmandsGraphics", type: "client", installedVersion: "1.7.0", versionOrigin: "forge" }
+  ]),
+  addonsJson: JSON.stringify([{ id: "some-addon", addonOf: "WTT-Artem" }]),
+  warnings: []
+};
+
+console.log("\nthe manifest, reconciled");
+{
+  const m = C.readManifest(liveish);
+  const artem = m.serverMods.find((x) => x.id === "WTT-Artem");
+  // The whole reason the companion exists.
+  check("the ledger beats what the mod declares", artem.version, "3.0.1");
+  check("and the declared version is kept for showing the disagreement", artem.declaredVersion, "3.0.0");
+  check("with its source named, not guessed", artem.versionSource, "ledger");
+
+  const fika = m.serverMods.find((x) => x.id === "fika-server");
+  check("a mod the ledger never recorded falls back to declared", fika.version, "2.3.5");
+  check("and says so rather than implying it was recorded", fika.versionSource, "declared");
+
+  const broken = m.serverMods.find((x) => x.id === "tacticaltoaster-untargohome");
+  check("a disabled mod is reported, not dropped", broken !== undefined, true);
+  check("as not enabled", broken.enabled, false);
+  check("and as having failed to load", broken.failedToLoad, true);
+
+  // A loose client plugin keeps its ".dll", because that is how the registry stores it.
+  const bb = m.clientMods.find((x) => x.id === "DrakiaXYZ-BigBrain.dll");
+  check("a loose client dll keeps its extension as its identity", bb !== undefined, true);
+  check("and matches the ledger entry stored under that name", bb.version, "1.4.0");
+  const folderMod = m.clientMods.find((x) => x.id === "AmandsGraphics");
+  check("a folder plugin matches too", folderMod.version, "1.7.0");
+  check("addons come through", m.addons.length, 1);
+  check("the client half is known", m.clientKnown, true);
+  check("and versions are not declared-only", m.versionsAreDeclaredOnly, false);
+}
+
+console.log("\nwhat a server-only box reports");
+{
+  // No BepInEx beside the server. The client list is empty BECAUSE UNKNOWN.
+  const m = C.readManifest({ ...liveish, clientRootFound: false, clientMods: [], warnings: ["No BepInEx folder was found beside the server, so client mods cannot be read from this machine."] });
+  check("client mods are empty", m.clientMods.length, 0);
+  // The flag is the whole point: an empty list plus clientKnown:false must never be read as
+  // "the server has no client mods", which is what would have someone delete mods they need.
+  check("but that is flagged as unknown, not as none", m.clientKnown, false);
+  check("and the reason survives for the UI", /cannot be read/.test(m.warnings[0]), true);
+}
+
+console.log("\ndegrading without losing the useful part");
+{
+  const m = C.readManifest({ ...liveish, registryJson: "{ this is not json" });
+  check("a corrupt ledger does not lose the mod list", m.serverMods.length, 3);
+  check("versions fall back to declared", m.serverMods.find((x) => x.id === "WTT-Artem").version, "3.0.0");
+  check("and it is marked declared-only", m.versionsAreDeclaredOnly, true);
+  check("with the cause reported", m.warnings.some((w) => /ledger could not be read/.test(w)), true);
+
+  const noLedger = C.readManifest({ ...liveish, registryJson: null });
+  check("no ledger at all is also declared-only", noLedger.versionsAreDeclaredOnly, true);
+
+  check("a body that is not a manifest is refused", C.readManifest({ hello: 1 }), null);
+  check("as is null", C.readManifest(null), null);
+}
+
+
+console.log(`
+${failures === 0 ? "all checks passed" : `${failures} check(s) failed`}`);
 process.exit(failures === 0 ? 0 : 1);
