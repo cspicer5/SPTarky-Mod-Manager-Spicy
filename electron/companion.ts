@@ -73,6 +73,16 @@ export function readCapabilities(status: number, body: unknown): CompanionCapabi
   }
 
   const raw = body as Record<string, unknown>;
+
+  // SPT answers a route that IS registered but returned null with HTTP 200 and
+  // {"err":404,"errmsg":"UNHANDLED RESPONSE: /url"}. That is a BROKEN companion, not an absent
+  // one — an absent route 404s with an empty body and never reaches here. Worth telling apart,
+  // because "not installed" and "installed and misbehaving" call for opposite responses from
+  // whoever reads the message.
+  if (raw.err !== undefined && raw.err !== 0) {
+    return { ...NO_COMPANION, reason: "The server companion is installed but its routes are not answering. It may need updating." };
+  }
+
   const protocol = Number(raw.protocol);
   if (!Number.isFinite(protocol)) {
     return { ...NO_COMPANION, reason: "The server companion did not say which contract it speaks." };

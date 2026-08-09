@@ -37,6 +37,18 @@ console.log("an ordinary SPT server");
   check("and does not claim it has none", /no client mods\b/.test(said), false);
 }
 
+console.log("\na companion whose routes are broken");
+{
+  // Measured against a live 4.0.13 server: a route that IS registered but whose action returns
+  // null comes back HTTP 200 with this envelope, NOT a 404. An absent route 404s with an empty
+  // body and never gets here. Conflating the two would tell somebody to install a mod they
+  // already have.
+  const caps = C.readCapabilities(200, { err: 404, errmsg: "UNHANDLED RESPONSE: /sptarky/version" });
+  check("is not treated as present", caps.present, false);
+  check("and says the mod is there but not answering", /installed but its routes are not answering/.test(caps.reason), true);
+  check("rather than blaming the contract", /which contract/.test(caps.reason ?? ""), false);
+}
+
 console.log("\na companion that answers");
 {
   const caps = C.readCapabilities(200, { version: "1.0.0", protocol: 1, capabilities: ["manifest", "files"] });

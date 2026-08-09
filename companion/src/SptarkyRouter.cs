@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
 using SPTarkov.Server.Core.Utils;
@@ -13,24 +14,11 @@ namespace SptarkyCompanion;
 /// but an absence of anything to call.
 ///
 /// <para>
-/// UNFINISHED: the router loads and is constructed, but its routes are never matched — the
-/// server answers <c>UNHANDLED RESPONSE</c>. Decompiling settled most of the surrounding
-/// questions: <c>Router.CanHandle</c> is an exact string match so the route is fine;
-/// <c>HttpRouter</c> is Scoped and takes <c>IEnumerable&lt;StaticRouter&gt;</c>; and
-/// <c>DependencyInjectionHandler</c> already registers a component under every base type, so
-/// a plain <c>[Injectable]</c> should be enough.
-/// </para>
-/// <para>
-/// The measurement that narrows it: this constructor runs ONCE PER SERVER START, not per
-/// request. Since <c>HttpRouter</c> is Scoped, anything in its collection would be built on
-/// every request — so this is registered somewhere, but not there. The remaining unknown is
-/// <c>DependencyInjectionHandler.RegisterComponent</c>.
-/// </para>
-/// <para>
-/// Two dead ends, recorded so they are not retried. <c>typeOverride</c> means REPLACE, not
-/// "also register as" — <c>InjectAll</c> excludes every type named as an override. And the
-/// injection type is already <c>Scoped</c> by default, so passing it explicitly changes
-/// nothing.
+/// A route action MUST return an already-serialized JSON <c>string</c>. SPT's
+/// <c>HttpRouter.HandleRoute</c> takes the action's result and casts it with <c>as string</c>;
+/// return a POCO and that cast silently yields null, which the listener reports as
+/// <c>UNHANDLED RESPONSE</c> — indistinguishable from a route that was never registered.
+/// Serialize through <see cref="HttpResponseUtil"/> and return the string.
 /// </para>
 /// </summary>
 [Injectable]
@@ -45,29 +33,27 @@ public class SptarkyRouter : StaticRouter
 
     private const string CompanionVersion = "1.0.0";
 
-    public SptarkyRouter(JsonUtil jsonUtil, ISptLogger<SptarkyRouter> logger) : base(
-        jsonUtil,
-        [
-            new RouteAction(
-                "/singleplayer/sptarky/version",
-                // Signature fixed by SPT: (url, body, sessionId, output) -> object.
-                // This route takes no input at all.
-                (_, _, _, _) => new ValueTask<object>(new VersionResponse
-                {
-                    Version = CompanionVersion,
-                    Protocol = Protocol,
-                    Capabilities = []
-                }),
-                typeof(object)),
-            new RouteAction(
-                "/sptarky/version",
-                (_, _, _, _) => new ValueTask<object>(new VersionResponse { Version = CompanionVersion, Protocol = Protocol, Capabilities = [] }),
-                typeof(object)),
-            new RouteAction(
-                "/client/sptarky/version",
-                (_, _, _, _) => new ValueTask<object>(new VersionResponse { Version = CompanionVersion, Protocol = Protocol, Capabilities = [] }),
-                typeof(object))
-        ])
+    public SptarkyRouter(JsonUtil jsonUtil, HttpResponseUtil httpResponseUtil, ISptLogger<SptarkyRouter> logger)
+        : base(
+            jsonUtil,
+            [
+                new RouteAction(
+                    "/sptarky/version",
+                    // Signature fixed by SPT: (url, IRequestData info, MongoId sessionId, string? output).
+                    // This route takes no input at all, hence the discards.
+                    //
+                    // NoBody serializes the object plainly. The alternative, GetBody, wraps it as
+                    // {err, errmsg, data} — the shape the game client expects. Plain is the right
+                    // choice here because SPT answers an UNKNOWN route with HTTP 200 and a body of
+                    // {"err":404,...}. Keeping `err` out of a real response means the manager can
+                    // tell "no companion installed" from "companion answered" by shape alone.
+                    (_, _, _, _) => new ValueTask<object>(httpResponseUtil.NoBody(new VersionResponse
+                    {
+                        Version = CompanionVersion,
+                        Protocol = Protocol,
+                        Capabilities = []
+                    })))
+            ])
     {
         // Said out loud at startup, so "is the companion actually running?" is answered by
         // the server's own log rather than by probing it from somewhere else.
@@ -83,10 +69,18 @@ public class SptarkyRouter : StaticRouter
 /// <c>Capabilities</c> is a list of names rather than booleans or an inference from the
 /// version number, so the manager asks "can you do X" instead of "are you new enough to do X"
 /// — which keeps this mod's release history out of the client entirely.
+///
+/// Names are pinned with <see cref="JsonPropertyNameAttribute"/> so the wire format does not
+/// depend on whatever casing policy SPT's shared serializer happens to be configured with.
 /// </summary>
 public class VersionResponse
 {
-    public string Version { get; set; }
+    [JsonPropertyName("version")]
+    public string Version { get; set; } = "";
+
+    [JsonPropertyName("protocol")]
     public int Protocol { get; set; }
+
+    [JsonPropertyName("capabilities")]
     public List<string> Capabilities { get; set; } = [];
 }
