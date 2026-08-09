@@ -37,9 +37,10 @@
     "test:sptpick": "tsc -p electron/tsconfig.json && node scripts/test-spt-version-pick.js",
     "test:constraints": "tsc -p electron/tsconfig.json && node scripts/test-spt-constraints.js",
     "test:layout": "tsc -p electron/tsconfig.json && node scripts/test-spt-layout.js",
-    "test": "npm run test:parity && npm run test:sync && npm run test:update && npm run test:ledger && npm run test:presets && npm run test:store && npm run test:payloads && npm run test:addons && npm run test:presetsync && npm run test:bulk && npm run test:sptpick && npm run test:constraints && npm run test:layout && npm run test:registry && npm run test:browse && npm run test:asar",
+    "test": "npm run test:parity && npm run test:sync && npm run test:update && npm run test:ledger && npm run test:presets && npm run test:store && npm run test:payloads && npm run test:addons && npm run test:presetsync && npm run test:bulk && npm run test:sptpick && npm run test:constraints && npm run test:layout && npm run test:registry && npm run test:browse && npm run test:deps && npm run test:asar",
     "test:registry": "tsc -p electron/tsconfig.json && node scripts/test-registry.js",
-    "test:browse": "node scripts/test-browse-state.js"
+    "test:browse": "node scripts/test-browse-state.js",
+    "test:deps": "tsc -p electron/tsconfig.json && node scripts/test-dependencies.js"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
