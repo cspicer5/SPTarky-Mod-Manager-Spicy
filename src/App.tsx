@@ -141,6 +141,30 @@ export default function App() {
   const [conflictReport, setConflictReport] = useState<ConflictReport | null>(null);
   const [checkingConflicts, setCheckingConflicts] = useState(false);
   const [sptVersionInput, setSptVersionInput] = useState("");
+  /**
+   * The SPT version READ FROM THE INSTANCE, as opposed to whatever is currently selected.
+   *
+   * Kept separately so the two can disagree visibly. The instance's own version is the
+   * truth — everything downstream (which mods are offered, which builds are installed, what
+   * a dependency resolves to) is answered against it — so choosing a different one is a
+   * deliberate act and is shown as one rather than silently accepted.
+   */
+  const [detectedSptVersion, setDetectedSptVersion] = useState("");
+
+  /**
+   * Changing the SPT version away from the instance's own.
+   *
+   * Warned about once, not blocked: there are real reasons to look at another version's
+   * catalogue. But installing against the wrong one produces mods that load and then
+   * misbehave in game, far from here, so it must not happen by accident.
+   */
+  function handleSptVersionChange(next: string) {
+    setSptVersionInput(next);
+    window.modManagerAPI.setSptVersionOverride(next);
+    if (detectedSptVersion && next && next !== detectedSptVersion) {
+      pushToast(t("toast.sptVersionOverridden", { chosen: next, detected: detectedSptVersion }), false);
+    }
+  }
   const [forgeResult, setForgeResult] = useState<ForgeUpdateCheckResult | null>(null);
   const [checkingForgeUpdates, setCheckingForgeUpdates] = useState(false);
   const [forgeError, setForgeError] = useState<string | null>(null);
@@ -154,7 +178,12 @@ export default function App() {
   const [browseQuery, setBrowseQuery] = useState("");
   const [browseCategory, setBrowseCategory] = useState("");
   const [browseCategories, setBrowseCategories] = useState<ForgeCategory[]>([]);
-  const [browseOnlyCompatible, setBrowseOnlyCompatible] = useState(false);
+  /**
+   * On by default. The overwhelmingly common intent is "show me mods I can actually install",
+   * and the failure of the opposite default is silent: a build for another SPT installs
+   * happily and then misbehaves in game, far from here. It can still be turned off.
+   */
+  const [browseOnlyCompatible, setBrowseOnlyCompatible] = useState(true);
   /**
    * Ordering, as a raw API sort expression.
    *
@@ -1341,12 +1370,16 @@ export default function App() {
       if (instance?.path) {
         refreshMods();
         setSptVersion(await window.modManagerAPI.getSptVersion());
+        // The instance's own version is the default and the thing everything downstream is
+        // answered against, so it is adopted on selection rather than left for the user to
+        // set. An override is still honoured, but it is now visible AS an override.
         const semver = await window.modManagerAPI.getSptSemver();
-        if (semver) {
+        const override = await window.modManagerAPI.getSptVersionOverride();
+        setDetectedSptVersion(semver || "");
+        if (override) setSptVersionInput(override);
+        else if (semver) {
           setSptVersionInput(semver);
-        } else {
-          const override = await window.modManagerAPI.getSptVersionOverride();
-          if (override) setSptVersionInput(override);
+          window.modManagerAPI.setSptVersionOverride(semver);
         }
 
         window.modManagerAPI.getForgeSptVersions().then(setForgeSptVersions);
@@ -2514,13 +2547,16 @@ export default function App() {
             </button>
             <span className="filter-separator"></span>
             <select
-              className="version-input"
+              className={`version-input${detectedSptVersion && sptVersionInput !== detectedSptVersion ? " version-overridden" : ""}`}
               value={sptVersionInput}
-              onChange={(e) => {
-                setSptVersionInput(e.target.value);
-                window.modManagerAPI.setSptVersionOverride(e.target.value);
-              }}
-              title={t("filters.sptVersionTitle")}
+              onChange={(e) => handleSptVersionChange(e.target.value)}
+              title={
+                detectedSptVersion
+                  ? sptVersionInput === detectedSptVersion
+                    ? t("filters.sptVersionLockedTitle", { version: detectedSptVersion })
+                    : t("filters.sptVersionOverriddenTitle", { version: detectedSptVersion })
+                  : t("filters.sptVersionTitle")
+              }
             >
               <option value="">{t("filters.sptVersionPlaceholder")}</option>
               {forgeSptVersions.map((v) => (

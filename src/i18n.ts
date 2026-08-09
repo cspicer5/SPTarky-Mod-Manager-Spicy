@@ -21,6 +21,10 @@ const en: Dict = {
   "toast.noConflictsFound": "No obvious conflicts found.",
   "toast.conflictsFound": "{count} possible conflict(s) found.",
   "toast.enterSptVersion": "Enter the SPT version before checking.",
+  // A warning, not a block: looking at another version's catalogue is legitimate, but
+  // installing against it produces mods that load and then misbehave in game.
+  "toast.sptVersionOverridden":
+    "Showing SPT {chosen}, but this instance is {detected}. Mods installed from here may not run.",
   "toast.forgeUpdateCheckFailed": "Failed to check for updates.",
   "toast.forgeAllUpToDate": "Everything up to date (or not found in the catalogue).",
   "toast.forgeUpdatesAvailable": "{count} update(s) available.",
@@ -94,6 +98,10 @@ const en: Dict = {
   "filters.sptVersionTitle": "SPT version used when checking for updates — the list comes straight from the catalogue",
   "filters.sptVersionPlaceholder": "select the SPT version...",
   "filters.sptVersionNotListed": "(not listed in the catalogue)",
+  "filters.sptVersionLockedTitle":
+    "Read from this instance: SPT {version}. Everything — which mods are offered, which build gets installed, what a dependency resolves to — is answered against it.",
+  "filters.sptVersionOverriddenTitle":
+    "OVERRIDDEN. This instance is SPT {version}. Mods offered here may not run on it.",
   "filters.forgeCheckTitle": "Queries the mod catalogue's public API ({host}) for updates to installed mods",
   "filters.forgeChecking": "Checking for updates...",
   "filters.forgeCheckingProgress": "Checking for updates... ({done}/{total})",

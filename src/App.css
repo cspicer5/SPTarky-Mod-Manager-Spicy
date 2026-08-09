@@ -1495,3 +1495,10 @@ button:hover > .btn-scope {
   color: var(--text-dim);
   margin-top: 2px;
 }
+
+/* The SPT version differs from the one read out of the instance. Amber, not red: it is a
+   legitimate thing to do deliberately and a bad thing to do by accident. */
+.version-input.version-overridden {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
