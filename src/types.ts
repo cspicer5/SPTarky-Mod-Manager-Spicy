@@ -974,10 +974,12 @@ export interface ModManagerAPI {
   findForgeDownloadsForNames: (
     entries: { name: string; guid?: string }[]
   ) => Promise<Record<string, { downloadLink: string; version?: string; forgeName?: string; guid?: string }>>;
+  /** Pass the guid when there is one: a folder name is not the published name. */
   findForgeDownloadForName: (
     name: string,
-    sptVersion?: string
-  ) => Promise<{ found: boolean; downloadLink?: string; version?: string; forgeName?: string }>;
+    sptVersion?: string,
+    guid?: string
+  ) => Promise<{ found: boolean; downloadLink?: string; version?: string; forgeName?: string; guessed?: boolean }>;
   installForgeMod: (
     jobId: string,
     downloadLink: string,

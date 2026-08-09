@@ -178,8 +178,8 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   openReleasePage: (url: string) => ipcRenderer.invoke("open-release-page", url),
   findForgeDownloadsForNames: (entries: { name: string; guid?: string }[]) =>
     ipcRenderer.invoke("find-forge-downloads-for-names", entries),
-  findForgeDownloadForName: (name: string, sptVersion?: string) =>
-    ipcRenderer.invoke("find-forge-download-for-name", name, sptVersion),
+  findForgeDownloadForName: (name: string, sptVersion?: string, guid?: string) =>
+    ipcRenderer.invoke("find-forge-download-for-name", name, sptVersion, guid),
   installForgeMod: (
     jobId: string,
     downloadLink: string,

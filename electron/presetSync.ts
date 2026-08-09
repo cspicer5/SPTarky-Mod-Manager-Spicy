@@ -38,6 +38,16 @@ export interface SyncStep {
   wantEnabled?: boolean;
   payloadKey?: string;
   sourceUrl?: string;
+  /**
+   * The mod's own GUID, carried from the preset.
+   *
+   * Load-bearing, not decoration. Without it the catalogue lookup falls back to searching by
+   * FOLDER name, which is not the published name: "BorkelRNVG", "WTT-Artem" and
+   * "tacticaltoaster-untargohome" all resolve to nothing, and "fika-server" resolves to the
+   * WRONG MOD — Fika Headless Launcher rather than Project Fika - Server. All five are exact
+   * with the GUID.
+   */
+  guid?: string;
   forgeAddonId?: number;
   parentName?: string;
   /** Set when nothing can supply this, so the UI can say why rather than just fail. */
@@ -137,6 +147,8 @@ export function buildSyncPlan(preset: Preset, report: PresetReport, opts: SyncOp
       wantEnabled: row.presetEnabled,
       payloadKey: want?.payload,
       sourceUrl: want?.sourceUrl,
+      // Carried so the install can match exactly instead of guessing from a folder name.
+      guid: want?.guid,
       blockedReason
     });
   }

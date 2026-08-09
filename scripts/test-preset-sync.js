@@ -292,6 +292,42 @@ function main() {
     check("a standalone patch needs checking", by["Standalone"].status, "needs-attention");
   }
 
+  /*
+   * The GUID must survive from the preset into the step.
+   *
+   * It did not, and the whole chain looked fine: presets recorded a guid for all 65 mods,
+   * the matcher accepted guids, and the step in between dropped it — so the install fell back
+   * to searching the catalogue by FOLDER name. A friend syncing a preset got four "not found"
+   * (BorkelRNVG, WTT-Artem, tacticaltoaster-untargohome, SAIN's server half) and one unusable
+   * archive: "fika-server" matched Fika Headless Launcher instead of Project Fika - Server and
+   * downloaded the WRONG MOD. All five resolve exactly by guid.
+   *
+   * The wrong-mod case is why this is checked rather than trusted. It only failed because the
+   * Headless Launcher is not a server mod; had the archive shapes matched, it would have
+   * installed silently.
+   */
+  console.log("\nthe mod's GUID reaches the install step");
+  {
+    const preset = {
+      id: "p",
+      name: "P",
+      mods: [
+        presetMod("BorkelRNVG", { guid: "com.borkel.nvgmasks" }),
+        presetMod("NoGuidHere")
+      ]
+    };
+    const report = makeReport([row("BorkelRNVG", "missing"), row("NoGuidHere", "missing")]);
+    const plan = buildSyncPlan(preset, report, { storeConnected: false, forgeAvailable: true });
+
+    const borkel = plan.steps.find((s) => s.name === "BorkelRNVG");
+    check("the guid is carried through", borkel.guid, "com.borkel.nvgmasks");
+    check("and the step still resolves to the catalogue", borkel.source, "forge");
+    // Absence is preserved rather than invented: a preset from an older build, or a mod that
+    // declares none, must not be given a guid that was never recorded.
+    const none = plan.steps.find((s) => s.name === "NoGuidHere");
+    check("a mod with no guid carries none", none.guid, undefined);
+  }
+
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
   process.exit(failures === 0 ? 0 : 1);
 }

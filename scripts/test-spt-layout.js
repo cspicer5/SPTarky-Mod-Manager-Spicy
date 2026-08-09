@@ -143,6 +143,75 @@ async function main() {
     check("and not beside its client root", fs.existsSync(path.join(t, "user")), false);
   }
 
+  /*
+   * The same mod installed under a DIFFERENT folder name.
+   *
+   * Mods rename their own folders between releases — DynamicMaps shipped as `DynamicMaps`
+   * and later as `DynamicMaps-1.1.3`. Nothing matched by folder name, so the new copy landed
+   * beside the old one and BepInEx loaded BOTH plugins: same GUID, twice. That presents as
+   * the mod misbehaving rather than as being installed twice, which is why it went unnoticed.
+   *
+   * Identity is the GUID and nothing else — it is the only thing that survives a rename.
+   */
+  console.log("\nan older copy under a different folder name is found by GUID");
+  {
+    const { client, server } = makeInstall("dupes", "SPT");
+    const guid = "com.mpstark.dynamicmaps";
+    // The scan is SUPPLIED rather than forged on disk: GUIDs come out of PE/CLI metadata, so
+    // a hand-written .dll declares none, and building this fixture on disk would exercise the
+    // assembly reader (covered elsewhere) instead of the grouping, which is the new part.
+    const mod = (id, extra) => ({
+      id,
+      name: id,
+      originalName: id,
+      type: "client",
+      enabled: true,
+      installedManually: false,
+      loadOrder: 1,
+      ...extra
+    });
+    const installed = [
+      mod("DynamicMaps", { guid, version: "1.0.0" }),
+      mod("DynamicMaps-1.1.3", { guid, version: "1.1.3" }),
+      mod("SomethingElse", { guid: "com.other.mod", version: "2.0.0" }),
+      mod("NoGuidAtAll", {})
+    ];
+
+    const found = M.findSupersededByGuid(client, server, [{ id: "DynamicMaps-1.1.3", type: "client" }], installed);
+    check("the older folder is reported", found.length, 1);
+    check("naming the one just installed", found[0] && found[0].installed.id, "DynamicMaps-1.1.3");
+    check("and the one it supersedes", found[0] && found[0].superseded.id, "DynamicMaps");
+    check("on the evidence of a shared GUID", found[0] && found[0].guid, guid);
+    check("carrying its version, so it can be named", found[0] && found[0].superseded.version, "1.0.0");
+
+    // A mod that is genuinely alone must stay silent, or every install would nag.
+    check(
+      "a mod with no duplicate reports nothing",
+      M.findSupersededByGuid(client, server, [{ id: "SomethingElse", type: "client" }], installed).length,
+      0
+    );
+    // No guid is no claim of identity. Guessing from the folder name here would be the same
+    // mistake that matched "fika-server" to the wrong mod entirely.
+    check(
+      "a mod declaring no guid is never matched",
+      M.findSupersededByGuid(client, server, [{ id: "NoGuidAtAll", type: "client" }], installed).length,
+      0
+    );
+
+    // Both folders arriving from ONE archive share a guid and are not duplicates of each
+    // other - flagging that would make every two-part mod look broken.
+    const together = M.findSupersededByGuid(
+      client,
+      server,
+      [
+        { id: "DynamicMaps", type: "client" },
+        { id: "DynamicMaps-1.1.3", type: "client" }
+      ],
+      installed
+    );
+    check("two folders from the same install are not flagged", together.length, 0);
+  }
+
   fs.rmSync(root, { recursive: true, force: true });
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
   process.exit(failures === 0 ? 0 : 1);

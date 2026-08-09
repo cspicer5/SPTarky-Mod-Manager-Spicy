@@ -961,9 +961,30 @@ ipcMain.handle("sync-install-to-preset", async (_event, id: string, fromStore?: 
       }
 
       if (step.source === "forge") {
-        const found = await findForgeDownloadForName(step.name, localSptVersion());
+        /*
+         * The GUID is what makes this exact. Without it the lookup searches by FOLDER name,
+         * which is not the published name: a friend syncing a preset got four "not found"
+         * (BorkelRNVG, WTT-Artem, tacticaltoaster-untargohome, SAIN's server half) and one
+         * unusable archive — that last one being the WRONG MOD, Fika Headless Launcher
+         * downloaded in place of Project Fika - Server. All five resolve exactly by GUID.
+         *
+         * allowGuess: false because nobody is watching. A match the matcher itself flags as
+         * needing confirmation is refused here rather than installed: reporting a failure is
+         * recoverable, and silently installing the wrong mod is not.
+         */
+        const found = await findForgeDownloadForName(step.name, localSptVersion(), {
+          guid: step.guid,
+          allowGuess: false
+        });
         if (!found.found || !found.downloadLink) {
-          failed.push({ name: step.name, message: "Not found on Forge." });
+          failed.push({
+            name: step.name,
+            message: found.guessed
+              ? `Only an uncertain match was found${found.forgeName ? ` ("${found.forgeName}")` : ""} — not installed. Link it by hand to be sure.`
+              : step.guid
+                ? "Not found in the catalogue."
+                : "Not found in the catalogue, and this preset records no GUID for it."
+          });
         } else {
           const r = await installForgeModVersion(
             roots.clientRoot,
@@ -2147,9 +2168,12 @@ ipcMain.handle("find-forge-downloads-for-names", async (_event, entries: { name:
   }
 });
 
-ipcMain.handle("find-forge-download-for-name", async (_event, name: string, sptVersion?: string) => {
+// A guid may be supplied; when it is, the match is exact rather than a name search. A guess
+// is still allowed here — unlike the unattended preset sync, this one is a person asking
+// about a single mod and reading the answer.
+ipcMain.handle("find-forge-download-for-name", async (_event, name: string, sptVersion?: string, guid?: string) => {
   try {
-    return await findForgeDownloadForName(name, sptVersion);
+    return await findForgeDownloadForName(name, sptVersion, { guid });
   } catch (err: any) {
     return { found: false };
   }

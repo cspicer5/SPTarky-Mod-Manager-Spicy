@@ -756,6 +756,74 @@ export function recordPayloadInstall(
   } as RegistryEntry);
 }
 
+export interface SupersededMod {
+  /** The GUID both copies declare — the evidence that they are one mod. */
+  guid: string;
+  /** The folder that just arrived. */
+  installed: { id: string; type: ModType };
+  /** The older folder that is now a duplicate of it. */
+  superseded: { id: string; type: ModType; version?: string };
+}
+
+/**
+ * Finds an older copy of a mod that has just been installed under a DIFFERENT folder name.
+ *
+ * Mods rename their own folders between releases — DynamicMaps shipped as `DynamicMaps` and
+ * later as `DynamicMaps-1.1.3`. An install matches nothing by folder name, so the new copy
+ * lands beside the old one and BepInEx loads both: two plugins, same GUID, and behaviour that
+ * looks like the mod being broken rather than being installed twice.
+ *
+ * Identity here is the GUID and nothing else. It is the same evidence `detectConflicts`
+ * already trusts for duplicates, and the only thing that survives a folder rename.
+ *
+ * This REPORTS; it does not delete. Removing files the user did not ask to remove, during an
+ * install, is a different and much worse failure than leaving a duplicate — especially since
+ * a mod may legitimately ship two folders in one archive, which is why anything installed by
+ * the same operation is excluded rather than flagged against itself.
+ */
+export function findSupersededByGuid(
+  clientRoot: string,
+  serverRoot: string,
+  justInstalled: { id: string; type: ModType }[],
+  /**
+   * The installed set, when the caller already has one. Supplied by the tests so the
+   * GROUPING can be exercised without forging real .NET assemblies — GUIDs are read from
+   * PE/CLI metadata, and reading them is covered separately.
+   */
+  scanned?: ModInfo[]
+): SupersededMod[] {
+  if (justInstalled.length === 0) return [];
+  const mods = scanned ?? scanMods(clientRoot, serverRoot);
+  const fresh = new Set(justInstalled.map((m) => `${m.type}:${m.id.toLowerCase()}`));
+
+  const byGuid = new Map<string, ModInfo[]>();
+  for (const mod of mods) {
+    if (!mod.guid) continue; // no guid, no claim of identity — never guess from a name here
+    const key = mod.guid.toLowerCase();
+    const list = byGuid.get(key);
+    if (list) list.push(mod);
+    else byGuid.set(key, [mod]);
+  }
+
+  const out: SupersededMod[] = [];
+  for (const [guid, group] of byGuid) {
+    if (group.length < 2) continue;
+    const arrived = group.filter((m) => fresh.has(`${m.type}:${m.id.toLowerCase()}`));
+    const older = group.filter((m) => !fresh.has(`${m.type}:${m.id.toLowerCase()}`));
+    // Both halves of one archive sharing a guid is normal; only an OLD folder that the new
+    // install has replaced in spirit but not on disk is worth reporting.
+    if (arrived.length === 0 || older.length === 0) continue;
+    for (const stale of older) {
+      out.push({
+        guid,
+        installed: { id: arrived[0].id, type: arrived[0].type },
+        superseded: { id: stale.id, type: stale.type, version: stale.version }
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * Refreshes a mod's fingerprint without touching what was recorded about its version.
  *
@@ -1465,6 +1533,11 @@ export interface InstallResult {
   tmpDir?: string;
   rootEntries?: string[];
   archivePath?: string;
+  /**
+   * Older copies of the same mod, identified by GUID, still installed under a different
+   * folder name. Reported so they can be removed; never removed automatically.
+   */
+  superseded?: SupersededMod[];
 }
 
 export async function installModFromArchive(
@@ -1811,13 +1884,36 @@ function performMerge(
       linkedModIds: allNamedModIds
     });
   }
+  /*
+   * An older copy of this same mod, under a different folder name, is now sitting beside the
+   * one just installed. Mods rename their own folders between releases (DynamicMaps ->
+   * DynamicMaps-1.1.3), nothing matches by name, and BepInEx then loads both plugins — which
+   * presents as the mod misbehaving rather than as being installed twice.
+   *
+   * Reported, never removed. Deleting files during an install that the user did not ask to
+   * have deleted is a worse failure than the duplicate it would prevent.
+   */
+  const superseded = findSupersededByGuid(
+    clientRoot,
+    serverRoot,
+    [...serverModNames.map((id) => ({ id, type: "server" as ModType })), ...clientModNames.map((id) => ({ id, type: "client" as ModType }))]
+  );
+  const supersededNote = superseded.length
+    ? ` An older copy of the same mod is still installed under a different folder name: ${superseded
+        .map((s) => `"${s.superseded.id}"${s.superseded.version ? ` (v${s.superseded.version})` : ""}`)
+        .join(", ")}. Remove it — both would load at once.`
+    : "";
+
   if (skippedCoreFiles.length > 0) {
     return {
       success: true,
-      message: `Mod installed. ${skippedCoreFiles.length} SPT core file(s) shipped inside the package were skipped, to avoid breaking the installation.`
+      superseded,
+      message:
+        `Mod installed. ${skippedCoreFiles.length} SPT core file(s) shipped inside the package were skipped, to avoid breaking the installation.` +
+        supersededNote
     };
   }
-  return { success: true, message: "Mod installed and verified (full structure detected)." };
+  return { success: true, superseded, message: "Mod installed and verified (full structure detected)." + supersededNote };
 }
 
 /**
@@ -3689,21 +3785,46 @@ export async function findForgeDownloadsForNames(
   return out;
 }
 
+/**
+ * Resolves one mod to a download.
+ *
+ * **Pass the guid whenever there is one.** A folder name is not the published name, so a
+ * name-only lookup fails for most mods and — worse — occasionally succeeds on the wrong one.
+ * Measured against the live catalogue: by name alone, "BorkelRNVG", "WTT-Artem",
+ * "tacticaltoaster-untargohome" and "Solarint-SAIN-ServerMod" all resolve to NOTHING, and
+ * "fika-server" resolves to Fika Headless Launcher instead of Project Fika - Server. With the
+ * guid, all five are exact. This shipped in preset sync, where a friend's install reported
+ * four "not found" and one unusable archive — the unusable archive being the wrong mod.
+ *
+ * `allowGuess` exists for the same reason. In an UNATTENDED bulk run, a match the matcher
+ * itself flags as needing confirmation must not be acted on: failing is recoverable, and
+ * quietly installing the wrong mod is not.
+ */
 export async function findForgeDownloadForName(
   name: string,
-  sptVersion?: string
-): Promise<{ found: boolean; downloadLink?: string; version?: string; forgeName?: string }> {
+  sptVersion?: string,
+  options: { guid?: string; allowGuess?: boolean } = {}
+): Promise<{ found: boolean; downloadLink?: string; version?: string; forgeName?: string; guessed?: boolean }> {
   // Uses the same multi-strategy matcher as the update check, so restoring a modlist finds
-  // as much as the update check does.
-  const matches = await matchForgeMods([name]);
+  // as much as the update check does. The guid turns that into an exact, batched lookup.
+  const matches = await matchForgeMods([{ folderName: name, guid: options.guid }]);
   const info = matches.get(name);
-  if (!info || !info.latestVersionLink) {
-    // Fallback: exact name match with the SPT version filter applied.
-    const exact = await findForgeModInfo(name, sptVersion);
-    if (!exact || !exact.latestVersionLink) return { found: false };
-    return { found: true, downloadLink: exact.latestVersionLink, version: exact.latestVersion, forgeName: exact.forgeName };
+  if (info?.latestVersionLink) {
+    if (info.needsConfirmation && options.allowGuess === false) {
+      return { found: false, guessed: true, forgeName: info.forgeName };
+    }
+    return {
+      found: true,
+      downloadLink: info.latestVersionLink,
+      version: info.latestVersion,
+      forgeName: info.forgeName,
+      guessed: info.needsConfirmation
+    };
   }
-  return { found: true, downloadLink: info.latestVersionLink, version: info.latestVersion, forgeName: info.forgeName };
+  // Fallback: exact name match with the SPT version filter applied.
+  const exact = await findForgeModInfo(name, sptVersion);
+  if (!exact || !exact.latestVersionLink) return { found: false };
+  return { found: true, downloadLink: exact.latestVersionLink, version: exact.latestVersion, forgeName: exact.forgeName };
 }
 
 export async function checkForgeUpdates(
