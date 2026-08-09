@@ -3,3 +3,6 @@ dist/
 dist-electron/
 release/
 *.log
+# .NET build output for the server companion
+companion/bin/
+companion/obj/
