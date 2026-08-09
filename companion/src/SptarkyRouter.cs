@@ -13,21 +13,27 @@ namespace SptarkyCompanion;
 /// but an absence of anything to call.
 ///
 /// <para>
-/// REGISTERED AS <see cref="StaticRouter"/>, NOT AS ITSELF. <c>HttpRouter</c> is constructed
-/// with <c>IEnumerable&lt;StaticRouter&gt;</c>, so a router registered only under its own
-/// concrete type is never in the collection that gets asked to handle a request. The failure
-/// is silent and misleading: the mod loads, <c>ModValidator</c> reports it happily, the
-/// request is logged as received — and the server answers
-/// <c>UNHANDLED RESPONSE: /sptarky/version</c> with nothing anywhere explaining why.
+/// UNFINISHED: the router loads and is constructed, but its routes are never matched — the
+/// server answers <c>UNHANDLED RESPONSE</c>. Decompiling settled most of the surrounding
+/// questions: <c>Router.CanHandle</c> is an exact string match so the route is fine;
+/// <c>HttpRouter</c> is Scoped and takes <c>IEnumerable&lt;StaticRouter&gt;</c>; and
+/// <c>DependencyInjectionHandler</c> already registers a component under every base type, so
+/// a plain <c>[Injectable]</c> should be enough.
 /// </para>
 /// <para>
-/// Note the injection type is left at its default. SPT's own routers are all
-/// <c>[Injectable]</c> with no arguments, and <c>Injectable</c>'s first parameter already
-/// defaults to <c>Scoped</c> — passing it explicitly changes nothing, which cost one
-/// build-and-restart cycle to discover.
+/// The measurement that narrows it: this constructor runs ONCE PER SERVER START, not per
+/// request. Since <c>HttpRouter</c> is Scoped, anything in its collection would be built on
+/// every request — so this is registered somewhere, but not there. The remaining unknown is
+/// <c>DependencyInjectionHandler.RegisterComponent</c>.
+/// </para>
+/// <para>
+/// Two dead ends, recorded so they are not retried. <c>typeOverride</c> means REPLACE, not
+/// "also register as" — <c>InjectAll</c> excludes every type named as an override. And the
+/// injection type is already <c>Scoped</c> by default, so passing it explicitly changes
+/// nothing.
 /// </para>
 /// </summary>
-[Injectable(typeOverride: typeof(StaticRouter))]
+[Injectable]
 public class SptarkyRouter : StaticRouter
 {
     /// <summary>
