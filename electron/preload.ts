@@ -193,5 +193,17 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
     const handler = (_event: unknown, data: { jobId: string; receivedBytes: number; totalBytes: number }) => callback(data);
     ipcRenderer.on("download-progress", handler);
     return () => ipcRenderer.removeListener("download-progress", handler);
+  },
+
+  // Bundle sync: verifying the cache and pulling what is missing.
+  checkBundles: () => ipcRenderer.invoke("check-bundles"),
+  syncBundles: () => ipcRenderer.invoke("sync-bundles"),
+  cancelBundleSync: () => ipcRenderer.invoke("cancel-bundle-sync"),
+  onBundleProgress: (
+    callback: (data: { phase: "verify" | "download"; done: number; total: number; bytes?: number; current?: string }) => void
+  ) => {
+    const handler = (_event: unknown, data: any) => callback(data);
+    ipcRenderer.on("bundle-progress", handler);
+    return () => ipcRenderer.removeListener("bundle-progress", handler);
   }
 });

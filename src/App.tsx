@@ -360,6 +360,86 @@ export default function App() {
   const [headlessData, setHeadlessData] = useState<HeadlessViewData | null>(null);
   const [headlessOverrides, setHeadlessOverrides] = useState<Record<string, HeadlessClass>>({});
   const [serverUrl, setServerUrl] = useState<string | null>(null);
+  /**
+   * Bundle sync state.
+   *
+   * `outOfSync` is null until a check has run — which is NOT the same as zero. The button
+   * says "Check bundles" until it knows, rather than implying everything is fine before
+   * anything has been looked at.
+   */
+  const [bundleBusy, setBundleBusy] = useState(false);
+  const [bundleOutOfSync, setBundleOutOfSync] = useState<number>(0);
+  const [bundleChecked, setBundleChecked] = useState(false);
+  const [bundleProgress, setBundleProgress] = useState<string>("");
+
+  useEffect(() => {
+    return window.modManagerAPI.onBundleProgress((p) => {
+      if (p.phase === "verify") {
+        setBundleProgress(`Verifying ${p.done}/${p.total}`);
+      } else {
+        const mb = p.bytes ? ` — ${(p.bytes / 1048576).toFixed(0)} MB` : "";
+        setBundleProgress(`Downloading ${p.done}/${p.total}${mb}`);
+      }
+    });
+  }, []);
+
+  const bundleLabel = bundleBusy
+    ? bundleProgress || "Working…"
+    : !bundleChecked
+      ? "Check bundles"
+      : bundleOutOfSync > 0
+        ? `Sync ${bundleOutOfSync} bundle(s)`
+        : "Bundles in sync";
+
+  const bundleTitle =
+    "Compares your bundle cache against the server's, by checksum, and downloads what is missing or out of date — " +
+    "instead of the game fetching them one at a time during play.";
+
+  /**
+   * One button, two jobs: check first, then sync once it knows what is wrong.
+   *
+   * Deliberately not a single "just sync" action. Verifying 16 GB takes a few seconds and
+   * downloading can be many gigabytes, so the size of the job is shown before it starts.
+   */
+  async function handleBundleButton() {
+    setBundleBusy(true);
+    setBundleProgress("");
+    try {
+      if (!bundleChecked || bundleOutOfSync === 0) {
+        const res = await window.modManagerAPI.checkBundles();
+        if (!res.success) {
+          pushToast(tMsg(res.message) || "Couldn't check bundles.", false);
+          return;
+        }
+        const out = (res.missing?.length ?? 0) + (res.stale?.length ?? 0);
+        setBundleChecked(true);
+        setBundleOutOfSync(out);
+        const orphanNote =
+          (res.orphans ?? 0) > 0
+            ? ` ${res.orphans} local bundle(s) (${((res.orphanBytes ?? 0) / 1048576).toFixed(0)} MB) are not on the server — left alone.`
+            : "";
+        pushToast((res.summary ?? "") + orphanNote, out === 0);
+        return;
+      }
+
+      const res = await window.modManagerAPI.syncBundles();
+      if (!res.success) {
+        pushToast(tMsg(res.message) || "Bundle sync failed.", false);
+        return;
+      }
+      pushToast(res.message ?? "Bundle sync finished.", (res.failed ?? 0) === 0);
+      for (const f of res.failures ?? []) pushToast(`${f.fileName}: ${f.message ?? "failed"}`, false);
+      // Re-checked rather than assumed: the count shown next must reflect the disk, not a
+      // prediction of what the downloads did.
+      const after = await window.modManagerAPI.checkBundles();
+      if (after.success) setBundleOutOfSync((after.missing?.length ?? 0) + (after.stale?.length ?? 0));
+    } finally {
+      setBundleBusy(false);
+      setBundleProgress("");
+    }
+  }
+
+  const [syncingAllFromServer, setSyncingAllFromServer] = useState(false);
   const [serverSync, setServerSync] = useState<ServerSyncReport | null>(null);
   const [serverPrompt, setServerPrompt] = useState(false);
   const [serverInput, setServerInput] = useState("");
@@ -1018,7 +1098,15 @@ export default function App() {
    * agree on a version. The Forge lookup leads with the GUID the server reported, since that
    * is an exact identifier — falling back to the name is what produced wrong matches in V1.
    */
-  async function handleInstallFromServer(row: ServerSyncRow) {
+  /**
+   * Takes one mod from the server. Shared by the per-row button and "Match server", so the
+   * two can never drift into behaving differently.
+   *
+   * `quiet` suppresses the per-mod success toast during a bulk run, which ends with one
+   * summary instead of N. A FAILURE is still announced either way — that is the part worth
+   * interrupting for, and a bulk run that swallowed them would look like it worked.
+   */
+  async function installOneFromServer(row: ServerSyncRow, options: { quiet?: boolean } = {}): Promise<boolean> {
     const lookupName = row.serverName ?? row.name;
     setInstallingFromServer(row.key);
     try {
@@ -1026,11 +1114,11 @@ export default function App() {
       const hit = found[lookupName];
       if (!hit) {
         pushToast(
-          `Couldn't find "${lookupName}" on Forge.` +
+          `Couldn't find "${lookupName}" in the catalogue.` +
             (row.url ? " It does list a source repository — open it from the row." : ""),
           false
         );
-        return;
+        return false;
       }
       const queueId = pushQueueItem(hit.forgeName ?? lookupName);
       markQueueActive(queueId);
@@ -1042,14 +1130,64 @@ export default function App() {
         })
       );
       markQueueDone(queueId, result.success, tMsg(result.message));
-      pushToast(tMsg(result.message), result.success);
-      if (result.success) {
-        await refreshMods();
-        await refreshMulti();
-      }
+      if (!options.quiet || !result.success) pushToast(tMsg(result.message), result.success);
+      return result.success;
     } finally {
       setInstallingFromServer(null);
     }
+  }
+
+  async function handleInstallFromServer(row: ServerSyncRow) {
+    const ok = await installOneFromServer(row);
+    if (ok) {
+      await refreshMods();
+      await refreshMulti();
+    }
+  }
+
+  /**
+   * Installs or updates every mod the server has that this install does not, in one go.
+   *
+   * Only `missing-locally` and `outdated-locally` are acted on. The other issue kinds are
+   * deliberately left alone: `newer-locally` means you are AHEAD of the server and matching
+   * it would be a downgrade; `not-on-server` is a local extra the server never had, so there
+   * is nothing to fetch; `unknown-local-version` means the comparison could not be made, and
+   * acting on a comparison that failed is how you overwrite something that was fine.
+   *
+   * Sequential, like every other bulk action here: each one downloads, extracts and writes
+   * the shared registry and version-ledger files, so running them at once would race on
+   * those and make a failure impossible to attribute.
+   */
+  async function handleSyncAllFromServer() {
+    const rows = (serverSync?.rows ?? []).filter(
+      (r) => r.issue === "missing-locally" || r.issue === "outdated-locally"
+    );
+    if (rows.length === 0) {
+      pushToast("Nothing to take from the server — every mod it has is already here.", true);
+      return;
+    }
+    if (
+      !window.confirm(
+        `Install or update ${rows.length} mod(s) to match the server?\n\n` +
+          `Each is looked up in the catalogue and installed the same way the per-mod button does. ` +
+          `Mods you have that the server does not, and mods where you are already newer, are left alone.`
+      )
+    )
+      return;
+
+    setSyncingAllFromServer(true);
+    let done = 0;
+    try {
+      for (const row of rows) {
+        const ok = await installOneFromServer(row, { quiet: true });
+        if (ok) done++;
+      }
+      await refreshMods();
+      await refreshMulti();
+    } finally {
+      setSyncingAllFromServer(false);
+    }
+    pushToast(`${done} of ${rows.length} mod(s) taken from the server.`, done === rows.length);
   }
 
   async function handleSyncMod(mod: ModInfo) {
@@ -2757,6 +2895,13 @@ export default function App() {
               headlessConfigured={!!headlessPath}
               onInstallFromServer={handleInstallFromServer}
               installingFromServer={installingFromServer}
+              onSyncAllFromServer={handleSyncAllFromServer}
+              syncingAllFromServer={syncingAllFromServer}
+              onSyncBundles={handleBundleButton}
+              bundleLabel={bundleLabel}
+              bundleTitle={bundleTitle}
+              bundleBusy={bundleBusy}
+              bundleOutOfSync={bundleOutOfSync}
             />
           ) : (
             <>

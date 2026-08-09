@@ -610,7 +610,14 @@ export default function InstancesView({
   syncing,
   headlessConfigured,
   onInstallFromServer,
-  installingFromServer
+  installingFromServer,
+  onSyncBundles,
+  bundleLabel,
+  bundleTitle,
+  bundleBusy,
+  bundleOutOfSync,
+  onSyncAllFromServer,
+  syncingAllFromServer
 }: {
   mainPath: string | null;
   headlessPath: string | null;
@@ -641,7 +648,24 @@ export default function InstancesView({
   headlessConfigured: boolean;
   onInstallFromServer: (row: ServerSyncRow) => void;
   installingFromServer: string | null;
+  /** Bundle sync — see the toolbar button. Only meaningful with a server configured. */
+  onSyncBundles: () => void;
+  bundleLabel: string;
+  bundleTitle: string;
+  bundleBusy: boolean;
+  bundleOutOfSync: number;
+  onSyncAllFromServer: () => void;
+  syncingAllFromServer: boolean;
 }) {
+  /**
+   * How many mods this install is BEHIND the server on.
+   *
+   * Only the two states a download can fix. `newer-locally` is not a problem to solve — the
+   * server is behind, and "matching" it would roll the local install backwards.
+   */
+  const serverBehind = (server?.rows ?? []).filter(
+    (r) => r.issue === "missing-locally" || r.issue === "outdated-locally"
+  ).length;
   // Collapsed panes are remembered per session so a chosen comparison stays put across a
   // rescan. Server starts collapsed when nothing is connected — an empty invitation should
   // not cost a third of the width.
@@ -664,6 +688,24 @@ export default function InstancesView({
           {headlessConfigured && (
             <button onClick={onSyncAll} disabled={syncing || outOfStep === 0} className={outOfStep > 0 ? "primary" : ""}>
               {syncing ? "Syncing…" : outOfStep > 0 ? `Sync headless (${outOfStep})` : "Headless in sync"}
+            </button>
+          )}
+          {/* Takes everything the server has that this install lacks or has an older copy of.
+              Counts only those two: being NEWER than the server is not a thing to fix, and a
+              local extra the server never had is not available to fetch. */}
+          {serverUrl && (
+            <button
+              onClick={onSyncAllFromServer}
+              disabled={syncingAllFromServer || serverBehind === 0}
+              className={serverBehind > 0 ? "primary" : ""}
+              title="Installs or updates every mod the server has that you are missing or behind on. Mods where you are ahead, or that the server does not have, are left alone."
+            >
+              {syncingAllFromServer ? "Matching…" : serverBehind > 0 ? `Match server (${serverBehind})` : "Matches server"}
+            </button>
+          )}
+          {serverUrl && (
+            <button onClick={onSyncBundles} disabled={bundleBusy} className={bundleOutOfSync > 0 ? "primary" : ""} title={bundleTitle}>
+              {bundleLabel}
             </button>
           )}
           <button onClick={onRefresh} disabled={refreshing}>

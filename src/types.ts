@@ -910,6 +910,36 @@ export interface ModManagerAPI {
     modId: number,
     version: string
   ) => Promise<{ success: boolean; check?: DependencyCheck; message?: string }>;
+  checkBundles: () => Promise<{
+    success: boolean;
+    summary?: string;
+    cacheDir?: string;
+    serverBundleCount?: number;
+    ok?: number;
+    missing?: { fileName: string; modPath: string }[];
+    stale?: { fileName: string; modPath: string }[];
+    orphans?: number;
+    orphanBytes?: number;
+    message?: string;
+  }>;
+  syncBundles: () => Promise<{
+    success: boolean;
+    downloaded?: number;
+    failed?: number;
+    cancelled?: boolean;
+    failures?: { fileName: string; message?: string }[];
+    message?: string;
+  }>;
+  cancelBundleSync: () => Promise<{ success: boolean }>;
+  onBundleProgress: (
+    callback: (data: {
+      phase: "verify" | "download";
+      done: number;
+      total: number;
+      bytes?: number;
+      current?: string;
+    }) => void
+  ) => () => void;
   checkAllDependencies: () => Promise<{
     success: boolean;
     rows?: { mod: string; reports: DependencyReport[] }[];

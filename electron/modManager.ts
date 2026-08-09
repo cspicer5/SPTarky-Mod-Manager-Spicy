@@ -756,6 +756,32 @@ export function recordPayloadInstall(
   } as RegistryEntry);
 }
 
+/**
+ * Refreshes a mod's fingerprint without touching what was recorded about its version.
+ *
+ * For when a mod's FOLDER changed but the mod did not. An addon that merges into its parent
+ * adds files to the parent's directory, which changes the parent's stat fingerprint, so the
+ * ledger concludes its record no longer describes what is on disk and downgrades it to
+ * `stale-record` — falling back to whatever the mod declares about itself, which is exactly
+ * what the ledger exists to stop trusting. Measured on the reference install: installing four
+ * addons left ManimalIcebreaker and SAIN stale, both at the correct version.
+ *
+ * The version, its origin and its evidence are kept deliberately. Nothing about the parent's
+ * identity changed — only the bytes beside it — so re-deriving them would discard good
+ * evidence to describe an event that did not happen.
+ *
+ * A no-op when there is no existing record: inventing one from an addon install would claim
+ * an install this app never performed.
+ */
+export function refreshFingerprint(sptPath: string, id: string, type: ModType, installedPath: string): boolean {
+  const existing = loadRegistry(sptPath).find((e) => e.id === id && e.type === type);
+  if (!existing) return false;
+  const fingerprint = fingerprintPath(installedPath);
+  if (!fingerprint) return false;
+  addToRegistry(sptPath, { ...existing, fingerprint });
+  return true;
+}
+
 function addToRegistry(sptPath: string, entry: RegistryEntry) {
   const reg = loadRegistry(sptPath);
   // An entry's identity is id + type, not id alone: one package can install a server part

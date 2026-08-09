@@ -30,6 +30,9 @@ import {
   setManualForgeMatch,
   clearManualForgeMatch,
   resolveModRef,
+  refreshFingerprint,
+  SERVER_MODS_DIR,
+  CLIENT_PLUGINS_DIR,
   dismissForgeUpdate,
   undismissForgeUpdate,
   copyClientModToHeadless,
@@ -64,6 +67,13 @@ import {
   HeadlessClass
 } from "./headless";
 import { fetchServerSnapshot, buildServerSyncReport, normaliseServerUrl } from "./sptServer";
+import {
+  bundleCacheDir,
+  describeBundlePlan,
+  fetchBundleManifest,
+  planBundleSync,
+  syncBundles
+} from "./bundles";
 import { listAppReleases, prepareUpdate } from "./selfUpdate";
 import {
   listPresets,
@@ -1391,6 +1401,24 @@ async function installCataloguedAddon(
     mergedIntoParent: added.length === 0
   });
 
+  /*
+   * A merged addon adds files to the PARENT's folder, which changes the parent's stat
+   * fingerprint — so without this the ledger decides its record no longer describes what is
+   * on disk and downgrades a perfectly good version to `stale-record`. Measured: installing
+   * four addons on the reference install left ManimalIcebreaker and SAIN stale, both at the
+   * right version.
+   *
+   * Only the fingerprint is refreshed. The parent did not change version, so its recorded
+   * version, origin and evidence are all still true and are kept.
+   */
+  if (added.length === 0) {
+    const parentRoot = parent.type === "server" ? roots.serverRoot : roots.clientRoot;
+    const parentDir = parent.type === "server"
+      ? path.join(parentRoot, ...SERVER_MODS_DIR, parent.id)
+      : path.join(parentRoot, ...CLIENT_PLUGINS_DIR, parent.id);
+    refreshFingerprint(roots.clientRoot, parent.id, parent.type, parentDir);
+  }
+
   return {
     ...result,
     message:
@@ -1784,6 +1812,97 @@ ipcMain.handle("get-server-sync", async () => {
 
   const snapshot = await fetchServerSnapshot(serverUrl);
   return { configured: true, report: buildServerSyncReport(snapshot, localMods, localSpt ?? undefined) };
+});
+
+/* ==========================================================================
+ * Bundle sync (v1.3.3)
+ *
+ * Bundles are cached under the SERVER root, not the client root — `user/cache/bundles` sits
+ * beside `user/mods`. On a split install those differ, and writing to the client root would
+ * put 16 GB somewhere the game never reads.
+ * ========================================================================== */
+
+let bundleSyncCancelled = false;
+
+ipcMain.handle("check-bundles", async () => {
+  const serverUrl = store.get("serverUrl");
+  if (!serverUrl) return { success: false, message: "No SPT server is configured." };
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+
+  try {
+    const manifest = await fetchBundleManifest(serverUrl);
+    const cacheDir = bundleCacheDir(roots.serverRoot);
+    // Every present bundle is CRC-checked; about 6 seconds for 16 GB, and the only way to
+    // notice a bundle whose content changed server-side while keeping its path.
+    const plan = planBundleSync(manifest, cacheDir, (done, total) => {
+      mainWindow?.webContents.send("bundle-progress", { phase: "verify", done, total });
+    });
+    return {
+      success: true,
+      summary: describeBundlePlan(plan),
+      cacheDir,
+      serverBundleCount: plan.serverBundleCount,
+      ok: plan.ok.length,
+      missing: plan.missing.map((s) => ({ fileName: s.entry.fileName, modPath: s.entry.modPath })),
+      stale: plan.stale.map((s) => ({ fileName: s.entry.fileName, modPath: s.entry.modPath })),
+      orphans: plan.orphans.length,
+      orphanBytes: plan.orphanBytes
+    };
+  } catch (err: any) {
+    return { success: false, message: err?.message ?? "Couldn't read the server's bundle list." };
+  }
+});
+
+/** Downloads whatever the last check found missing or out of date. */
+ipcMain.handle("sync-bundles", async () => {
+  const serverUrl = store.get("serverUrl");
+  if (!serverUrl) return { success: false, message: "No SPT server is configured." };
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+
+  bundleSyncCancelled = false;
+  try {
+    const manifest = await fetchBundleManifest(serverUrl);
+    const cacheDir = bundleCacheDir(roots.serverRoot);
+    const plan = planBundleSync(manifest, cacheDir, (done, total) => {
+      mainWindow?.webContents.send("bundle-progress", { phase: "verify", done, total });
+    });
+    // Re-planned rather than trusting what the UI last saw: the cache can change underneath
+    // a stale plan, and re-downloading 16 GB because of one is the expensive mistake.
+    const wanted = [...plan.missing, ...plan.stale].map((s) => s.entry);
+    if (wanted.length === 0) {
+      return { success: true, downloaded: 0, failed: 0, cancelled: false, message: describeBundlePlan(plan) };
+    }
+    const { results, cancelled } = await syncBundles(serverUrl, wanted, cacheDir, {
+      concurrency: 4,
+      shouldCancel: () => bundleSyncCancelled,
+      onProgress: (p) =>
+        mainWindow?.webContents.send("bundle-progress", {
+          phase: "download",
+          done: p.done,
+          total: p.total,
+          bytes: p.bytes,
+          current: p.current
+        })
+    });
+    const failed = results.filter((r) => !r.ok);
+    return {
+      success: true,
+      downloaded: results.filter((r) => r.ok).length,
+      failed: failed.length,
+      cancelled,
+      failures: failed.slice(0, 20).map((f) => ({ fileName: f.fileName, message: f.message })),
+      message: `${results.filter((r) => r.ok).length} of ${wanted.length} bundle(s) downloaded${cancelled ? " before cancelling" : ""}.`
+    };
+  } catch (err: any) {
+    return { success: false, message: err?.message ?? "Bundle sync failed." };
+  }
+});
+
+ipcMain.handle("cancel-bundle-sync", () => {
+  bundleSyncCancelled = true;
+  return { success: true };
 });
 
 // The user's judgement outranks every rule — the same escape hatch the Forge matcher has.
