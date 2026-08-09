@@ -235,7 +235,18 @@ export async function prepareUpdate(opts: ApplyUpdateOptions): Promise<{ success
     const child = spawn("wscript.exe", ["//B", "//Nologo", shim], {
       detached: true,
       stdio: "ignore",
-      windowsHide: true
+      windowsHide: true,
+      /*
+       * Started from the install's PARENT, never from inside the install.
+       *
+       * Without this the child inherits this process's working directory, which for an app
+       * launched from Explorer is the exe's own folder — and a folder cannot be moved while
+       * it is any process's working directory. wscript exits almost immediately, but it
+       * overlaps with the cmd it starts, which is long enough to lose the race. The script
+       * also does `cd /d "%~dp0"` for itself; both are needed, since each process holds the
+       * directory independently.
+       */
+      cwd: parent
     });
     child.unref();
 
@@ -273,10 +284,31 @@ export function buildSwapScript(o: {
 }): string {
   return `@echo off
 setlocal
+
+rem STEP OUT OF THE INSTALL FOLDER BEFORE TOUCHING IT. This must come first.
+rem
+rem A process cannot move the directory that is its own working directory: Windows answers
+rem "The process cannot access the file because it is being used by another process". spawn()
+rem hands the child the PARENT's working directory, and an app started from Explorer has that
+rem set to its own exe folder -- so this script was standing inside the folder it was trying
+rem to move, and the move could never succeed no matter how long it waited. It retried 90
+rem times, gave up, deleted itself and relaunched the OLD version, leaving nothing behind to
+rem explain why. %~dp0 is this script's own folder, which is the install's parent.
+cd /d "%~dp0"
+
 set "INSTALL=${o.installDir}"
 set "STAGING=${o.staging}"
 set "BACKUP=${o.backup}"
 set "EXE=${o.exeName}"
+set "LOG=%~dp0sptarky-update.log"
+
+rem A log, because this script deletes itself and runs in a hidden window: three failures in
+rem a row were diagnosed by guesswork for want of one. Small, overwritten each run, and kept
+rem afterwards so a failed update can still be explained.
+echo [%DATE% %TIME%] update starting >"%LOG%"
+echo   working dir : %CD% >>"%LOG%"
+echo   install     : %INSTALL% >>"%LOG%"
+echo   staging     : %STAGING% >>"%LOG%"
 
 rem Retry the MOVE rather than polling for the app process id.
 rem The move fails exactly while the folder is locked and succeeds the moment it is not,
@@ -290,7 +322,7 @@ rem CMD parses redirection before rem swallows the line, so a pipe in a comment 
 rem executed. One in this very block split the line, left INSTALL empty, and broke the swap.
 set /a TRIES=0
 :wait
-move "%INSTALL%" "%BACKUP%" >nul 2>&1
+move "%INSTALL%" "%BACKUP%" >>"%LOG%" 2>&1
 if not errorlevel 1 goto ready
 set /a TRIES+=1
 if %TRIES% GEQ 90 goto giveup
@@ -298,29 +330,35 @@ ping -n 2 127.0.0.1 >nul 2>&1
 goto wait
 
 :ready
-move "%STAGING%" "%INSTALL%" >nul 2>&1
+echo [%TIME%] install moved aside after %TRIES% retry(ies) >>"%LOG%"
+move "%STAGING%" "%INSTALL%" >>"%LOG%" 2>&1
 if errorlevel 1 goto rollback
 
 if not exist "%INSTALL%\\%EXE%" goto rollback
 
+echo [%TIME%] swapped, starting %EXE% >>"%LOG%"
 start "" "%INSTALL%\\%EXE%"
 rem Only remove the backup once the new version is in place and launching.
 rd /s /q "%BACKUP%" >nul 2>&1
 goto done
 
 :rollback
+echo [%TIME%] FAILED after moving the install aside - restoring the backup >>"%LOG%"
 if exist "%INSTALL%" rd /s /q "%INSTALL%" >nul 2>&1
-move "%BACKUP%" "%INSTALL%" >nul 2>&1
+move "%BACKUP%" "%INSTALL%" >>"%LOG%" 2>&1
 start "" "%INSTALL%\\%EXE%"
 goto done
 
 :giveup
 rem Never got the chance to touch anything; just start what is already there.
+echo [%TIME%] GAVE UP: could not move the install after %TRIES% tries. >>"%LOG%"
+echo   Something still has that folder open. The app was NOT updated. >>"%LOG%"
 if exist "%INSTALL%\\%EXE%" start "" "%INSTALL%\\%EXE%"
 
 :done
 rd /s /q "%STAGING%" >nul 2>&1
-rem The VBScript shim that launched this, removed alongside it.
+echo [%TIME%] done >>"%LOG%"
+rem The VBScript shim that launched this, removed alongside it. The log is deliberately kept.
 del "%~dp0sptarky-apply-update.vbs" >nul 2>&1
 del "%~f0" >nul 2>&1
 `;

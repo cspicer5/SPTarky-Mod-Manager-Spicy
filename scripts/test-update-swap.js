@@ -226,6 +226,79 @@ check("script deletes itself", good.scriptLeftBehind, false);
   fs.rmSync(root2, { recursive: true, force: true });
 }
 
+/*
+ * The script is STARTED FROM INSIDE the folder it has to move.
+ *
+ * This is what actually broke a real update, and it is a different lock from the one above:
+ * not an open file handle, but the working directory itself. Windows will not move a
+ * directory that is any process's cwd — "The process cannot access the file because it is
+ * being used by another process" — and spawn() hands a child the parent's cwd, which for an
+ * app launched from Explorer is its own exe folder. So the script stood inside the folder it
+ * was moving, retried 90 times, gave up, deleted itself and relaunched the OLD version.
+ *
+ * Every other scenario in this file runs the script from a neutral directory, which is
+ * precisely why they all passed while the real thing failed. The fix is `cd /d "%~dp0"` as
+ * the script's first act; this proves it works by reproducing the exact condition.
+ */
+{
+  const exeName = "fake-app.cmd";
+  const root3 = fs.mkdtempSync(path.join(os.tmpdir(), "sptarky-swap-cwd-"));
+  const install3 = path.join(root3, "app");
+  const staging3 = path.join(root3, ".staging");
+  fs.mkdirSync(install3, { recursive: true });
+  fs.writeFileSync(path.join(install3, exeName), "@echo off\r\nexit /b 0\r\n");
+  fs.writeFileSync(path.join(install3, "version.txt"), "OLD");
+  fs.mkdirSync(staging3, { recursive: true });
+  fs.writeFileSync(path.join(staging3, exeName), "@echo off\r\nexit /b 0\r\n");
+  fs.writeFileSync(path.join(staging3, "version.txt"), "NEW");
+
+  const script3 = path.join(root3, "apply.cmd");
+  fs.writeFileSync(
+    script3,
+    buildSwapScript({
+      installDir: install3,
+      staging: staging3,
+      backup: path.join(root3, ".backup"),
+      exeName,
+      pid: 1,
+      script: script3
+    }),
+    "utf-8"
+  );
+
+  console.log("\nthe script is launched from inside the install folder");
+  try {
+    // cwd IS the install directory — exactly what the app passed on before the fix.
+    execFileSync("cmd.exe", ["/c", script3], { stdio: "ignore", timeout: 120000, cwd: install3 });
+  } catch {
+    /* the script relaunches the dummy app; a non-zero exit is not meaningful */
+  }
+
+  const version3 = fs.existsSync(path.join(install3, "version.txt"))
+    ? fs.readFileSync(path.join(install3, "version.txt"), "utf-8")
+    : "(gone)";
+  check("the swap still completed", version3, "NEW");
+  check("the executable is present", fs.existsSync(path.join(install3, exeName)), true);
+  check("staging cleaned up", fs.existsSync(staging3), false);
+  // The log is the other half of the fix: three failures were diagnosed blind for want of it.
+  check("a log was written", fs.existsSync(path.join(root3, "sptarky-update.log")), true);
+
+  try {
+    execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        `Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" | Where-Object { $_.CommandLine -like '*${path.basename(root3)}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`
+      ],
+      { stdio: "ignore", timeout: 20000 }
+    );
+  } catch {
+    /* best effort */
+  }
+  fs.rmSync(root3, { recursive: true, force: true });
+}
+
 // The safety net. If the swapped-in folder has no executable the app would be unlaunchable,
 // so the script must put the old one back rather than leave an empty install.
 const bad = scenario("rollback when the new version has no executable", { stagingHasExe: false });

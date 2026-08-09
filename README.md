@@ -201,6 +201,8 @@ npx electron-builder --win dir "-c.win.signAndEditExecutable=false"   # portable
 
 The `zip` target writes `release/SPTarky-Mod-Manager-Spicy-win-x64.zip` — deliberately **without** the version in the filename. That is the file the in-app updater downloads, and a stable name means the matcher cannot drift as versions change, and `releases/latest/download/SPTarky-Mod-Manager-Spicy-win-x64.zip` is a permanent link. The NSIS installer keeps its version, since a person downloads that one and files it somewhere.
 
+> **Check `git diff package.json` after any build.** electron-builder writes a trimmed `package.json` into the package — and it has been observed overwriting the **source** file with that trimmed copy, silently removing `scripts`, `devDependencies` and the whole `build` block. The packaged app is unaffected (it only needs `main` and `version`), so nothing looks wrong until `npm test` reports *"Missing script: test"*. Restore with `git checkout package.json`.
+
 **Why not `npm run electron:build`?** On Windows, electron-builder extracts a `winCodeSign` bundle containing macOS `.dylib` symlinks, which Windows refuses to create without Developer Mode or elevation — the build fails there before it reaches packaging. The commands above skip the signing path entirely. Icon and version metadata can then be applied directly:
 
 ```bash
