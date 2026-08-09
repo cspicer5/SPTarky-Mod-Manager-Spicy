@@ -1084,6 +1084,78 @@ h2 {
   vertical-align: middle;
 }
 
+/* ==========================================================================
+   Dependencies — what a mod needs that you do not have.
+   Only actionable entries are ever listed, so every row here is a thing to do.
+   ========================================================================== */
+.dep-modal {
+  max-width: 720px;
+}
+
+.dep-group {
+  margin-top: 12px;
+}
+
+.dep-group-title {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.dep-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dep-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  margin-bottom: 6px;
+}
+
+.dep-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dep-name {
+  font-weight: 600;
+}
+
+.dep-chip-missing {
+  border-color: var(--danger);
+  color: var(--danger-strong);
+}
+
+/* Present, just behind — a smaller problem than absent, and coloured to say so. */
+.dep-chip-outdated {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+/* Installing cannot fix this one, so it must not look like the actionable ones. */
+.dep-chip-blocked {
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+
+.dep-chip-ok {
+  border-color: var(--ok);
+  color: var(--ok-strong);
+}
+
+.dep-chip-conflict {
+  border-color: var(--info);
+  color: var(--info-strong);
+}
+
 /* The "Updates available:" heading, with "Update all" sitting beside it */
 .update-all-row {
   display: flex;

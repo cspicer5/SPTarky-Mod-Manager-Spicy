@@ -7,6 +7,7 @@ import {
   ForgeSptVersion,
   ForgeStatusCacheEntry,
   ForgeCatalogMod,
+  DependencyReport,
   ForgeCategory,
   InstallResult,
   AppUpdateInfo,
@@ -32,6 +33,7 @@ import {
 } from "./types";
 import { Lang, translate, translateBackendMessage } from "./i18n";
 import { browseInstallState, compareSemver } from "./browseInstallState";
+import DependencyPanel from "./DependencyPanel";
 import InstancesView from "./HeadlessView";
 import PresetsPanel from "./PresetsPanel";
 import AddonsPanel from "./AddonsPanel";
@@ -677,6 +679,17 @@ export default function App() {
   const [addonSuggestions, setAddonSuggestions] = useState<AddonSuggestion[]>([]);
   const [addonLinks, setAddonLinks] = useState<AddonLink[]>([]);
   const [addonIntegrations, setAddonIntegrations] = useState<AddonIntegration[]>([]);
+  /**
+   * Dependency findings, shown after a catalogue install and on demand for the whole install.
+   * Null means the panel is closed; an empty rows array means "checked, nothing to report",
+   * which is a different statement and is shown as such.
+   */
+  const [depPanel, setDepPanel] = useState<{
+    title: string;
+    note?: string;
+    rows: { mod: string; reports: DependencyReport[] }[];
+  } | null>(null);
+  const [depBusy, setDepBusy] = useState(false);
   const [addonCatalogueSize, setAddonCatalogueSize] = useState(0);
   const [addonCatalogueLive, setAddonCatalogueLive] = useState(false);
   const [addonLedger, setAddonLedger] = useState<InstalledAddonRecord[]>([]);
@@ -1839,7 +1852,113 @@ export default function App() {
     if (result.success) {
       const updated = await refreshMods();
       checkForgeForNewMods(previousKeys, updated);
+      // Asked AFTER the install, so the mod itself counts as present and the answer reflects
+      // what is actually on disk rather than what was about to be.
+      await reportDependenciesFor(mod.id, version.version, mod.name);
     }
+  }
+
+  /**
+   * Checks what a just-installed mod needs, and shows the panel only if there is something
+   * to do about it.
+   *
+   * Silent when everything is satisfied: a dialog that says "nothing is wrong" after every
+   * install trains people to dismiss it without reading, which is exactly when it matters.
+   * A failure to CHECK is still reported, because that is not the same as nothing being
+   * wrong — it is not knowing.
+   */
+  async function reportDependenciesFor(modId: number, version: string, modName: string) {
+    const res = await window.modManagerAPI.checkModDependencies(modId, version);
+    if (!res.success || !res.check) {
+      if (res.message) pushToast(tMsg(res.message), false);
+      return;
+    }
+    const check = res.check;
+    if (check.error) {
+      pushToast(`Couldn't check what ${modName} needs: ${check.error}`, false);
+      return;
+    }
+    const worth = [...check.missing, ...check.outdated, ...check.unavailable];
+    if (worth.length === 0) return;
+    setDepPanel({
+      title: `${modName} needs something`,
+      note:
+        check.unavailable.length > 0
+          ? "One or more of these has no build for your SPT version, so installing it is not the fix — the mod itself may not be ready for your SPT yet."
+          : undefined,
+      rows: [{ mod: modName, reports: worth }]
+    });
+  }
+
+  /** Every installed mod at once. One batched request, so it is cheap enough to be a button. */
+  async function handleCheckAllDependencies() {
+    setDepBusy(true);
+    const res = await window.modManagerAPI.checkAllDependencies();
+    setDepBusy(false);
+    if (!res.success) {
+      pushToast(tMsg(res.message) || "Couldn't check dependencies.", false);
+      return;
+    }
+    const rows = res.rows ?? [];
+    setDepPanel({
+      title: "Dependency check",
+      // The count of mods the catalogue could not answer for is part of the result: an empty
+      // list means "nothing found among those checked", not "everything is fine".
+      note:
+        `${res.checked ?? 0} mod(s) checked, ${res.answered ?? 0} answered by the catalogue` +
+        ((res.unknown ?? 0) > 0 ? `, ${res.unknown} with no dependency information.` : "."),
+      rows
+    });
+  }
+
+  /** Installs one dependency, then re-runs the sweep so the panel reflects the new state. */
+  async function handleInstallDependency(dep: DependencyReport) {
+    if (!dep.downloadLink) return;
+    setDepBusy(true);
+    const queueId = pushQueueItem(dep.name);
+    markQueueActive(queueId);
+    const result = await installArchiveWithConfirmFlow(
+      window.modManagerAPI.installForgeMod(queueId, dep.downloadLink, dep.name, {
+        name: dep.name,
+        version: dep.version,
+        guid: dep.guid
+      })
+    );
+    markQueueDone(queueId, result.success, tMsg(result.message));
+    pushToast(tMsg(result.message), result.success);
+    await refreshMods();
+    setDepBusy(false);
+    if (result.success) await handleCheckAllDependencies();
+  }
+
+  /**
+   * Installs several, one at a time.
+   *
+   * Sequential for the same reason "Update all" is: they write into one instance and share
+   * the registry and version-ledger files, and a dependency can itself pull in another.
+   */
+  async function handleInstallAllDependencies(deps: DependencyReport[]) {
+    setDepBusy(true);
+    let done = 0;
+    for (const dep of deps) {
+      if (!dep.downloadLink) continue;
+      const queueId = pushQueueItem(dep.name);
+      markQueueActive(queueId);
+      const result = await installArchiveWithConfirmFlow(
+        window.modManagerAPI.installForgeMod(queueId, dep.downloadLink, dep.name, {
+          name: dep.name,
+          version: dep.version,
+          guid: dep.guid
+        })
+      );
+      markQueueDone(queueId, result.success, tMsg(result.message));
+      if (result.success) done++;
+      else pushToast(tMsg(result.message), false);
+    }
+    await refreshMods();
+    setDepBusy(false);
+    pushToast(`${done} of ${deps.length} dependency(ies) installed.`, done === deps.length);
+    await handleCheckAllDependencies();
   }
 
   function startRename(mod: ModInfo) {
@@ -2252,6 +2371,9 @@ export default function App() {
             <button onClick={handleDetectConflicts} disabled={checkingConflicts} title={t("filters.checkConflictsTitle")}>
               {checkingConflicts ? t("filters.checkingConflicts") : t("filters.checkConflicts")}
             </button>
+            <button onClick={handleCheckAllDependencies} disabled={depBusy} title={t("filters.checkDepsTitle")}>
+              {depBusy ? t("filters.checkingDeps") : t("filters.checkDeps")}
+            </button>
             <span className="filter-separator"></span>
             <select
               className="version-input"
@@ -2535,6 +2657,18 @@ export default function App() {
               {t("noResults.text")}
               <button onClick={clearFilters}>{t("noResults.clearFilters")}</button>
             </div>
+          )}
+
+          {depPanel && (
+            <DependencyPanel
+              title={depPanel.title}
+              note={depPanel.note}
+              rows={depPanel.rows}
+              busy={depBusy}
+              onInstall={handleInstallDependency}
+              onInstallAll={handleInstallAllDependencies}
+              onClose={() => setDepPanel(null)}
+            />
           )}
 
           {addonsOpen && (

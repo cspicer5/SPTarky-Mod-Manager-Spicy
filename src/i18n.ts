@@ -87,6 +87,10 @@ const en: Dict = {
   "filters.checkingConflicts": "Checking...",
   "filters.checkConflictsTitle":
     "Looks for duplicate DLLs between client mods and duplicate names between server mods",
+  "filters.checkDeps": "Check dependencies",
+  "filters.checkingDeps": "Checking...",
+  "filters.checkDepsTitle":
+    "Asks the catalogue what your mods need, and lists anything missing or too old for the SPT version you have",
   "filters.sptVersionTitle": "SPT version used when checking for updates — the list comes straight from the catalogue",
   "filters.sptVersionPlaceholder": "select the SPT version...",
   "filters.sptVersionNotListed": "(not listed in the catalogue)",

@@ -36,6 +36,38 @@ export interface ModInfo {
   linkedModName?: string;
 }
 
+/**
+ * A dependency, and whether it is a problem.
+ *
+ * `status` is about what is installed; `conflict` is about the requested SET disagreeing on a
+ * version, so the two are independent — a dependency can be present AND contested.
+ */
+export interface DependencyReport {
+  modId: number;
+  guid?: string;
+  name: string;
+  slug?: string;
+  status: "satisfied" | "missing" | "outdated" | "no-compatible-build";
+  conflict: boolean;
+  installedVersion?: string;
+  version?: string;
+  downloadLink?: string;
+  bytes?: number;
+  transitive: boolean;
+  via?: string;
+}
+
+export interface DependencyCheck {
+  reports: DependencyReport[];
+  missing: DependencyReport[];
+  outdated: DependencyReport[];
+  unavailable: DependencyReport[];
+  conflicts: DependencyReport[];
+  /** The catalogue had no answer — NOT the same as "nothing is missing". */
+  unknown: boolean;
+  error?: string;
+}
+
 export interface ModListComparison {
   missing: string[];
   extra: string[];
@@ -874,6 +906,19 @@ export interface ModManagerAPI {
   resolveModRef: (input: string) => Promise<{ success: boolean; modId?: number; message?: string }>;
   /** Folder name -> catalogue mod id, from the match cache (confirmed identities only). */
   getInstalledCatalogueIds: () => Promise<Record<string, string>>;
+  checkModDependencies: (
+    modId: number,
+    version: string
+  ) => Promise<{ success: boolean; check?: DependencyCheck; message?: string }>;
+  checkAllDependencies: () => Promise<{
+    success: boolean;
+    rows?: { mod: string; reports: DependencyReport[] }[];
+    checked?: number;
+    answered?: number;
+    unknown?: number;
+    message?: string;
+    error?: string;
+  }>;
   getRegistrySource: () => Promise<{ apiBase: string; siteBase: string; host: string; isDefault: boolean }>;
   setRegistrySource: (value: string | null) => Promise<{ success: boolean; message?: string }>;
   /** Removes a manual pin, returning the mod to automatic matching. */

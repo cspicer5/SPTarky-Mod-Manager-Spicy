@@ -153,6 +153,10 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   resolveModRef: (input: string) => ipcRenderer.invoke("resolve-mod-ref", input),
   // folder name -> catalogue mod id, from the match cache (confirmed identities only).
   getInstalledCatalogueIds: () => ipcRenderer.invoke("get-installed-catalogue-ids"),
+  // What one mod needs, and what the whole install is missing.
+  checkModDependencies: (modId: number, version: string) =>
+    ipcRenderer.invoke("check-mod-dependencies", modId, version),
+  checkAllDependencies: () => ipcRenderer.invoke("check-all-dependencies"),
   getRegistrySource: () => ipcRenderer.invoke("get-registry-source"),
   setRegistrySource: (value: string | null) => ipcRenderer.invoke("set-registry-source", value),
   dismissForgeUpdate: (originalName: string, version: string) =>

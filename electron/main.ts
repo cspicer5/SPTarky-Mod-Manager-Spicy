@@ -36,6 +36,13 @@ import {
   removeModFromHeadless
 } from "./modManager";
 import {
+  checkModDependencies,
+  fetchDependencies,
+  flattenDependencies,
+  type DependencyReport,
+  type InstalledIndex
+} from "./dependencies";
+import {
   DEFAULT_REGISTRY_API_BASE,
   getRegistryApiBase,
   getRegistryHost,
@@ -642,6 +649,95 @@ function localSptVersion(): string | undefined {
   const sptPath = store.get("sptPath");
   return (store.get("sptVersionOverride") ?? (sptPath ? detectSptSemver(sptPath) : undefined)) ?? undefined;
 }
+
+/* ==========================================================================
+ * Dependency checking (v1.3.2)
+ * ========================================================================== */
+
+/**
+ * What is installed and at which version, in the two ways a dependency can be recognised.
+ *
+ * Versions and not merely presence: a dependency is only worth raising when the mod needs
+ * something NEWER than what is there. The catalogue-id half matters for mods whose files
+ * declare no guid at all, which is most server mods.
+ */
+function installedDependencyIndex(): InstalledIndex {
+  const roots = rootsFor("main");
+  const byGuid = new Map<string, string | undefined>();
+  const byCatalogueId = new Map<number, string | undefined>();
+  if (!roots) return { byGuid, byCatalogueId };
+
+  const mods = scanInstance("main");
+  for (const mod of mods) {
+    if (mod.guid) byGuid.set(mod.guid.toLowerCase(), mod.version);
+  }
+  const ids = forgeIdsByFolder(roots.clientRoot);
+  const byFolder = new Map(mods.map((m) => [m.originalName, m]));
+  for (const [folder, modId] of Object.entries(ids)) {
+    const id = Number(modId);
+    if (!Number.isFinite(id)) continue;
+    // A package's halves share a catalogue id; either half proves it is installed, and the
+    // one carrying a readable version is the more useful answer.
+    const existing = byCatalogueId.get(id);
+    const version = byFolder.get(folder)?.version;
+    if (existing === undefined) byCatalogueId.set(id, version);
+  }
+  return { byGuid, byCatalogueId };
+}
+
+/** What one mod needs — used when installing it, so the answer arrives with the install. */
+ipcMain.handle("check-mod-dependencies", async (_event, modId: number, version: string) => {
+  const spt = localSptVersion();
+  if (!spt) return { success: false, message: "Set the SPT version before checking dependencies." };
+  const check = await checkModDependencies(Number(modId), String(version), spt, installedDependencyIndex());
+  return { success: true, check };
+});
+
+/**
+ * Every installed mod at once.
+ *
+ * Cheap enough to offer as a button: the endpoint batches, so the whole reference install —
+ * 45 mods with a known catalogue id and version — answers in about 1.5 seconds.
+ */
+ipcMain.handle("check-all-dependencies", async () => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+  const spt = localSptVersion();
+  if (!spt) return { success: false, message: "Set the SPT version before checking dependencies." };
+
+  const mods = scanInstance("main");
+  const ids = forgeIdsByFolder(roots.clientRoot);
+  const installed = installedDependencyIndex();
+
+  // One entry per catalogue mod, not per folder: a package's halves would otherwise ask the
+  // same question twice and report the same missing dependency twice.
+  const pairs: string[] = [];
+  const owner = new Map<string, string>();
+  for (const mod of mods) {
+    const id = ids[mod.originalName];
+    if (!id || !mod.version) continue;
+    const key = `${id}:${mod.version}`;
+    if (!owner.has(key)) {
+      owner.set(key, mod.name);
+      pairs.push(key);
+    }
+  }
+
+  const lookup = await fetchDependencies(pairs, spt);
+  const rows: { mod: string; reports: DependencyReport[] }[] = [];
+  for (const [key, raw] of lookup.byMod) {
+    const reports = flattenDependencies(raw, installed).filter((r) => r.status !== "satisfied" || r.conflict);
+    if (reports.length) rows.push({ mod: owner.get(key) ?? key, reports });
+  }
+  return {
+    success: true,
+    rows,
+    checked: pairs.length,
+    answered: lookup.byMod.size,
+    unknown: lookup.unknown.size,
+    error: lookup.error
+  };
+});
 
 ipcMain.handle("list-presets", () => listPresets(presetRoot()));
 
