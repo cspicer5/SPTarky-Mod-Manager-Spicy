@@ -33,6 +33,7 @@ import {
 } from "./types";
 import { Lang, translate, translateBackendMessage } from "./i18n";
 import { browseInstallState, compareSemver } from "./browseInstallState";
+import { planSptVersionLock } from "./serverLock";
 import DependencyPanel from "./DependencyPanel";
 import InstancesView from "./HeadlessView";
 import PresetsPanel from "./PresetsPanel";
@@ -165,6 +166,45 @@ export default function App() {
       pushToast(t("toast.sptVersionOverridden", { chosen: next, detected: detectedSptVersion }), false);
     }
   }
+  /**
+   * "Lock to server" — browse and install against the SPT the connected server actually runs.
+   *
+   * The decision lives in planSptVersionLock so its awkward cases are testable without a
+   * server. The one that matters: locking to a server whose SPT differs from the SPT installed
+   * here succeeds and yet fixes nothing — it changes which catalogue you see, not what your
+   * install can join. Reporting that as plain success would send someone off to install a set
+   * of mods that cannot work until they upgrade SPT itself, so it is said out loud.
+   */
+  function handleLockToServer() {
+    const plan = planSptVersionLock({
+      serverVersion: serverSync?.sptVersion,
+      currentVersion: sptVersionInput,
+      instanceVersion: detectedSptVersion
+    });
+
+    if (plan.kind === "unavailable") {
+      pushToast(plan.reason, false);
+      return;
+    }
+    if (plan.kind === "already-matching") {
+      pushToast(`Already set to SPT ${plan.version}, which is what this server runs.`, true);
+      return;
+    }
+
+    // Deliberately NOT handleSptVersionChange: that warns you for departing from your
+    // instance, which is precisely what this button exists to make you do on purpose. Being
+    // scolded by the button you just pressed would be nonsense.
+    setSptVersionInput(plan.version);
+    window.modManagerAPI.setSptVersionOverride(plan.version);
+
+    pushToast(
+      plan.instanceMismatch
+        ? `Locked to SPT ${plan.version} for browsing — but this install is ${plan.instanceMismatch}, so you cannot join until SPT itself is updated.`
+        : `Locked to SPT ${plan.version} to match the server.`,
+      !plan.instanceMismatch
+    );
+  }
+
   const [forgeResult, setForgeResult] = useState<ForgeUpdateCheckResult | null>(null);
   const [checkingForgeUpdates, setCheckingForgeUpdates] = useState(false);
   const [forgeError, setForgeError] = useState<string | null>(null);
@@ -2920,6 +2960,7 @@ export default function App() {
               onChangeHeadless={handleSelectHeadlessFolder}
               onChangeServer={() => setServerPrompt(true)}
               onClearServer={handleClearServer}
+              onLockToServer={handleLockToServer}
               onExitMultiMode={() => setMultiMode(false)}
               onRefresh={() => void refreshMulti()}
               refreshing={multiRefreshing}

@@ -313,6 +313,7 @@ function ServerPane({
   onToggleCollapse,
   onChangeServer,
   onClearServer,
+  onLockToServer,
   query,
   onInstall,
   installing
@@ -323,6 +324,8 @@ function ServerPane({
   onToggleCollapse: () => void;
   onChangeServer: () => void;
   onClearServer: () => void;
+  /** Match the app's SPT version to the one this server runs. */
+  onLockToServer: () => void;
   query: string;
   /** Fetch this mod from Forge into the MAIN install. The server itself is never written to. */
   onInstall: (row: ServerSyncRow) => void;
@@ -484,6 +487,18 @@ function ServerPane({
       )}
 
       <div className="hl-pane-actions">
+        {/* Offered only when it would change something. A server whose SPT already matches
+            needs no button, and one that never reported a version has nothing to lock to —
+            in both cases an enabled button would be a promise the press cannot keep. */}
+        {report?.sptVersion && report.sptMatches === false && (
+          <button
+            className="primary"
+            onClick={onLockToServer}
+            title={`Browse and install against SPT ${report.sptVersion}, the version this server runs`}
+          >
+            Lock to server (SPT {report.sptVersion})
+          </button>
+        )}
         <button onClick={onChangeServer}>Change address</button>
         <button onClick={onClearServer}>Disconnect</button>
       </div>
@@ -600,6 +615,7 @@ export default function InstancesView({
   onChangeHeadless,
   onChangeServer,
   onClearServer,
+  onLockToServer,
   onExitMultiMode,
   onRefresh,
   refreshing,
@@ -635,6 +651,8 @@ export default function InstancesView({
   onChangeHeadless: () => void;
   onChangeServer: () => void;
   onClearServer: () => void;
+  /** Match the app's SPT version to the one the connected server runs. */
+  onLockToServer: () => void;
   onExitMultiMode: () => void;
   onRefresh: () => void;
   refreshing: boolean;
@@ -757,6 +775,7 @@ export default function InstancesView({
             onToggleCollapse={() => toggle("server")}
             onChangeServer={onChangeServer}
             onClearServer={onClearServer}
+            onLockToServer={onLockToServer}
             query={searchQuery}
             onInstall={onInstallFromServer}
             installing={installingFromServer}
