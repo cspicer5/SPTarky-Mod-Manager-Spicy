@@ -30,7 +30,10 @@ public record SptarkyCompanionMetadata : AbstractModMetadata
     public override string ModGuid { get; init; } = "com.sptarky.companion";
     public override string Name { get; init; } = "SPTarky Companion";
     public override string Author { get; init; } = "cspicer5";
-    public override List<string> Contributors { get; init; } = [];
+    // The four nullable annotations below are not a claim that these can be absent — every one
+    // is initialized right here. They match how SPT declares them on the base class, which is
+    // the only way to override without a nullability mismatch warning.
+    public override List<string>? Contributors { get; init; } = [];
 
     /// <summary>
     /// Kept in step with the protocol the manager negotiates, NOT with the manager's own
@@ -46,9 +49,9 @@ public record SptarkyCompanionMetadata : AbstractModMetadata
     /// </summary>
     public override SemRange SptVersion { get; init; } = new SemRange(">=4.0.0");
 
-    public override List<string> Incompatibilities { get; init; } = [];
-    public override Dictionary<string, SemRange> ModDependencies { get; init; } = [];
-    public override string Url { get; init; } = "https://github.com/cspicer5/SPTarky-Mod-Manager-Spicy";
+    public override List<string>? Incompatibilities { get; init; } = [];
+    public override Dictionary<string, SemRange>? ModDependencies { get; init; } = [];
+    public override string? Url { get; init; } = "https://github.com/cspicer5/SPTarky-Mod-Manager-Spicy";
 
     /// <summary>Ships no bundles; it only ever reports on other mods'.</summary>
     public override bool? IsBundleMod { get; init; } = false;

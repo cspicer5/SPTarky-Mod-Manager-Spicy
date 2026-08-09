@@ -3,7 +3,10 @@
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>disable</Nullable>
+    <!-- On, because nullability is load-bearing here: a server box legitimately has no client
+         half, so ClientRoot being null is a real state the code must keep handling rather than
+         a case to assume away. -->
+    <Nullable>enable</Nullable>
     <AssemblyName>SptarkyCompanion</AssemblyName>
     <RootNamespace>SptarkyCompanion</RootNamespace>
     <!-- A mod is loaded by the server; it must not drag its own copies of SPT's assemblies

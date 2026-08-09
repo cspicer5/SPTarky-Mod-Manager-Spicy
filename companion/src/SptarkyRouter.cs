@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
 using SPTarkov.Server.Core.Utils;
+using SPTarkov.Server.Core.Models.Spt.Mod;
 using SPTarkov.Server.Core.Models.Utils;
 
 namespace SptarkyCompanion;
@@ -33,7 +34,18 @@ public class SptarkyRouter : StaticRouter
 
     private const string CompanionVersion = "1.0.0";
 
-    public SptarkyRouter(JsonUtil jsonUtil, HttpResponseUtil httpResponseUtil, ISptLogger<SptarkyRouter> logger)
+    /// <summary>
+    /// What this build can do, asked about BY NAME. The manager checks for a capability rather
+    /// than comparing version numbers, so routes can ship one at a time without the client
+    /// having to know this mod's release history.
+    /// </summary>
+    private static readonly List<string> Capabilities = ["manifest"];
+
+    public SptarkyRouter(
+        JsonUtil jsonUtil,
+        HttpResponseUtil httpResponseUtil,
+        IReadOnlyList<SptMod> loadedMods,
+        ISptLogger<SptarkyRouter> logger)
         : base(
             jsonUtil,
             [
@@ -51,15 +63,23 @@ public class SptarkyRouter : StaticRouter
                     {
                         Version = CompanionVersion,
                         Protocol = Protocol,
-                        Capabilities = []
-                    })))
+                        Capabilities = Capabilities
+                    }))),
+
+                new RouteAction(
+                    "/sptarky/manifest",
+                    // Read fresh on every request rather than cached at startup: mods are
+                    // installed and removed while the server is up, and a manifest that answered
+                    // from a snapshot taken at boot would quietly disagree with the disk.
+                    (_, _, _, _) => new ValueTask<object>(httpResponseUtil.NoBody(
+                        ManifestBuilder.Build(InstallLayout.Detect(), loadedMods, Protocol, CompanionVersion))))
             ])
     {
         // Said out loud at startup, so "is the companion actually running?" is answered by
         // the server's own log rather than by probing it from somewhere else.
         logger.Success(
             $"[Spicy's Tarky Mod Manager Companion] active — v{CompanionVersion}, protocol {Protocol}. " +
-            "Serving /sptarky/version");
+            $"Serving /sptarky/version, /sptarky/manifest");
     }
 }
 
