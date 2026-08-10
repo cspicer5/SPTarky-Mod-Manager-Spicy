@@ -35,6 +35,7 @@ import {
 import { Lang, translate, translateBackendMessage } from "./i18n";
 import { browseInstallState, compareSemver } from "./browseInstallState";
 import { planSptVersionLock } from "./serverLock";
+import CompanionStatus, { readServerCompanion } from "./CompanionStatus";
 import DependencyPanel from "./DependencyPanel";
 import InstancesView from "./HeadlessView";
 import PresetsPanel from "./PresetsPanel";
@@ -187,10 +188,40 @@ export default function App() {
     void refreshCompanionState();
   }, [refreshCompanionState, sptPath]);
 
+  const [companionBusy, setCompanionBusy] = useState(false);
+
   async function handleInstallCompanion() {
-    const result = await window.modManagerAPI.installCompanion();
-    pushToast(result.message, result.ok);
-    await refreshCompanionState();
+    setCompanionBusy(true);
+    try {
+      const result = await window.modManagerAPI.installCompanion();
+      pushToast(result.message, result.ok);
+      await refreshCompanionState();
+    } finally {
+      setCompanionBusy(false);
+    }
+  }
+
+  /**
+   * Removing deletes the mod's config.json along with the DLL, and that file holds the token.
+   * On a server somebody else connects to, that is a change with consequences beyond this PC,
+   * so it is confirmed rather than done on a single click.
+   */
+  async function handleRemoveCompanion() {
+    const ok = window.confirm(
+      "Remove the SPTarky companion from this instance?\n\n" +
+        "Its config.json goes too, so any token you set will be lost. The SPT server keeps running, " +
+        "but it will stop reporting real versions and client mods once you restart it."
+    );
+    if (!ok) return;
+
+    setCompanionBusy(true);
+    try {
+      const result = await window.modManagerAPI.removeCompanion();
+      pushToast(result.message, result.ok);
+      await refreshCompanionState();
+    } finally {
+      setCompanionBusy(false);
+    }
   }
 
   /**
@@ -2450,6 +2481,15 @@ export default function App() {
               ) : (
                 <span className="instance-path" title={sptPath ?? ""}>{sptPath}</span>
               )}
+              {/* Sits under the instance path because the left indicator is a fact ABOUT that
+                  instance, and the pairing makes clear which install would be written to. */}
+              <CompanionStatus
+                local={companionState}
+                server={readServerCompanion(serverSync, serverUrl)}
+                busy={companionBusy}
+                onInstall={handleInstallCompanion}
+                onRemove={handleRemoveCompanion}
+              />
             </div>
             <div className="header-actions">
               <button onClick={handleOpenBrowse} className="primary" title={t("header.browseForgeTitle")}>

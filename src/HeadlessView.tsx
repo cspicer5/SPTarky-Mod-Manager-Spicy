@@ -501,32 +501,17 @@ function ServerPane({
               {report.companionReason ?? "This server has no SPTarky companion."} Without it, versions are only what
               each mod declares about itself — some authors never update theirs — and the server's client plugins
               cannot be read at all.
-              {companion?.canInstall && !companion.installed && " If this server is this PC, you can install it below."}
+              {companion?.canInstall && !companion.installed && " If this server is this PC, install it from the header."}
+              {companion?.installed && " It is installed on this PC — if that is this server, restart it to load the companion."}
             </>
           )}
         </p>
       )}
 
-      {/* Installing writes to the LOCAL instance, never to the connected server — that is
-          somebody else's filesystem. The target path is spelled out so the button cannot be
-          mistaken for something that reaches across the network. */}
-      {report && !report.companionPresent && companion?.canInstall && !companion.installed && (
-        <div className="hl-pane-actions">
-          <button onClick={onInstallCompanion} title={`Writes to ${companion.targetDir}`}>
-            Install companion into this PC's SPT ({companion.targetDir})
-          </button>
-        </div>
-      )}
-
-      {companion?.installed && companion.differsFromBundled && (
-        <p className="hl-gutter-note">
-          The companion installed on this PC is not the build this manager ships.{" "}
-          <button className="hl-inline-btn" onClick={onInstallCompanion}>
-            Update it
-          </button>{" "}
-          and restart the server.
-        </p>
-      )}
+      {/* No install button here on purpose. Installing writes to the LOCAL instance, and a
+          button inside the pane describing a REMOTE server would read as acting on that
+          server. The single control lives in the header, next to the instance path it
+          actually writes to. */}
 
       {report && report.fikaRequired.length === 0 && (
         <p className="hl-gutter-note">

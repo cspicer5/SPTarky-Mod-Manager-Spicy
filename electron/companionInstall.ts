@@ -107,7 +107,7 @@ export function installCompanion(serverRoot: string | undefined, bundledDll: str
     // app.asar, and readFileSync is the asar-aware path that is certain to work there.
     fs.writeFileSync(path.join(state.targetDir, COMPANION_DLL), fs.readFileSync(bundledDll));
   } catch (err: any) {
-    return { ok: false, message: `Could not write to ${state.targetDir}: ${err?.message ?? err}` };
+    return { ok: false, message: explainFileLock(err, "install") };
   }
 
   return {
@@ -141,8 +141,28 @@ export function removeCompanion(serverRoot: string | undefined): CompanionInstal
     // Only if nothing else is in there.
     if (fs.readdirSync(targetDir).length === 0) fs.rmdirSync(targetDir);
   } catch (err: any) {
-    return { ok: false, message: `Could not remove it: ${err?.message ?? err}` };
+    return { ok: false, message: explainFileLock(err, "remove") };
   }
 
   return { ok: true, targetDir, message: "Companion removed. Restart the SPT server to unload it." };
+}
+
+/**
+ * Turns a file-lock error into the sentence that actually helps.
+ *
+ * Found by clicking the button with the server running: Windows refuses to unlink a DLL that a
+ * live process has loaded, and Node surfaces that as
+ * `EPERM: operation not permitted, unlink '...SptarkyCompanion.dll'`. That is a true statement
+ * and a useless one — it names a syscall, not the running SPT server holding the file, and not
+ * the one thing that fixes it.
+ *
+ * Windows reports this as EPERM here, but EBUSY and EACCES are the same situation from the
+ * user's side, so all three get the same answer.
+ */
+function explainFileLock(err: any, verb: "install" | "remove"): string {
+  const code = err?.code ?? "";
+  if (code === "EPERM" || code === "EBUSY" || code === "EACCES") {
+    return `Could not ${verb} the companion because the SPT server is using it. Stop the server, then try again.`;
+  }
+  return `Could not ${verb} the companion: ${err?.message ?? err}`;
 }

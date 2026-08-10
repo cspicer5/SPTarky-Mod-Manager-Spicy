@@ -1502,3 +1502,96 @@ button:hover > .btn-scope {
   border-color: var(--accent);
   color: var(--accent-strong);
 }
+
+/* --- server companion status ------------------------------------------------
+   Two indicators: this instance (a fact about disk) and the server (a fact about
+   a live process). They are styled the same so neither reads as more
+   authoritative, but the server one has a distinct "unknown" state — grey, not
+   red — because unreachable is not the same as missing. */
+.companion-status {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  margin-top: 8px;
+  /* The header actions sit immediately to the right and the box has a visible border, so
+     without this it reads as touching the Browse Mods button. Bottom margin too, since the
+     header can wrap at narrow widths and stack them instead. */
+  margin-right: 24px;
+  margin-bottom: 4px;
+  padding: 7px 10px 8px;
+  border: 1px solid var(--border, #333);
+  border-radius: 7px;
+  /* Slightly lifted off the header so the box reads as a grouped panel rather than
+     as an outlined chip. */
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.companion-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.companion-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 1px 8px 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #333);
+  color: var(--text-dim, #9aa0a6);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.companion-dot::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #6b7280;
+  flex: 0 0 auto;
+}
+
+.companion-dot.on::before,
+.companion-dot.server-active::before {
+  background: #35c46a;
+}
+
+.companion-dot.on,
+.companion-dot.server-active {
+  color: #7fdca2;
+  border-color: #2a6b42;
+}
+
+/* Absent is a real answer and is amber; unreachable and untracked stay grey,
+   because nothing was learned either way. */
+.companion-dot.server-absent::before {
+  background: #d0a13a;
+}
+.companion-dot.server-absent {
+  color: #dcc17f;
+  border-color: #6b5a2a;
+}
+
+.companion-btn {
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 10px;
+  line-height: 1.6;
+}
+
+/* Names the group. Muted and uppercase so it reads as a heading for the two dots
+   rather than as a third status of its own. */
+.companion-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim, #7c828a);
+  font-weight: 600;
+  cursor: help;
+}

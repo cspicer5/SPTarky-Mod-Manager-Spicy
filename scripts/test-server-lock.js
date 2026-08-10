@@ -85,5 +85,48 @@ console.log("\nnothing set locally yet");
   check("and no mismatch claimed about an unknown install", plan.instanceMismatch, undefined);
 }
 
+/* ------------------------------------------------------------------------------------------ *
+ * The companion status indicator: what the SERVER side is allowed to claim.
+ * ------------------------------------------------------------------------------------------ */
+
+const stateSrc = path.join(__dirname, "..", "src", "companionState.ts");
+const stateOut = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sptarky-cstate-")), "companionState.js");
+esbuild.buildSync({ entryPoints: [stateSrc], outfile: stateOut, format: "cjs", platform: "node", bundle: false });
+const { readServerCompanion } = require(stateOut);
+
+console.log("\nwhat may be claimed about a server");
+{
+  check("no server tracked says exactly that", readServerCompanion(null, null).kind, "none");
+
+  // THE distinction. A server that is switched off — the normal state of somebody else's
+  // machine — has told us nothing. Reporting that as "not installed" would invite someone to
+  // install the companion onto a machine that already has it, or to conclude the feature is
+  // broken when nothing is wrong.
+  check("unreachable is not absence", readServerCompanion({ reachable: false }, "https://x:6969").kind, "unreachable");
+
+  // Found by reading the live UI, not by reasoning. On startup the app has a stored server
+  // address and has fetched nothing, and the first version called that "unreachable" — which
+  // accuses a server that was sitting there answering perfectly well. Both mean "unknown", but
+  // only one of them is a claim ABOUT the server.
+  check("not-yet-fetched is its own state", readServerCompanion(null, "https://x:6969").kind, "unchecked");
+
+  const active = readServerCompanion(
+    { reachable: true, companionPresent: true, companionVersion: "1.0.0" },
+    "https://x:6969"
+  );
+  check("a reporting companion is active", active.kind, "active");
+  check("with its version", active.version, "1.0.0");
+
+  // Only this one is a finding: the server answered, and it has none.
+  const absent = readServerCompanion({ reachable: true, companionPresent: false }, "https://x:6969");
+  check("a server that answered without one is absent", absent.kind, "absent");
+
+  const denied = readServerCompanion(
+    { reachable: true, companionPresent: false, companionReason: "needs a token" },
+    "https://x:6969"
+  );
+  check("and carries the reason when there is one", denied.reason, "needs a token");
+}
+
 console.log(`\n${failures === 0 ? "all checks passed" : `${failures} check(s) failed`}`);
 process.exit(failures === 0 ? 0 : 1);
