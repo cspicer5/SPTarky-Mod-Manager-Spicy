@@ -72,8 +72,28 @@ export interface SptServerSnapshot {
    * must not be rendered as "it has none".
    */
   clientMods?: RemoteMod[];
+  /**
+   * The server machine's addon ledger. Undefined means it has none — that machine has never
+   * installed an addon through this manager — which is NOT the same as having no addons, and
+   * must not be compared against as though it were.
+   */
+  addons?: RemoteAddon[];
   /** Gaps the companion reported while gathering, in words. */
   companionWarnings?: string[];
+}
+
+/**
+ * An addon as the remote machine's ledger recorded it.
+ *
+ * Deliberately a narrow read of `InstalledAddonRecord` rather than the whole type: only these
+ * four fields are compared, and accepting the rest would tie this to a ledger shape that belongs
+ * to the other machine's version of the app.
+ */
+export interface RemoteAddon {
+  forgeAddonId?: number;
+  name: string;
+  version?: string;
+  parentName: string;
 }
 
 /** Normalises whatever the user typed into a base URL. Defaults to HTTPS — see above. */
@@ -231,7 +251,7 @@ export async function fetchServerSnapshot(input: string, timeoutMs = 8000, token
 
   // The companion, if this server has one. Everything above works without it; everything below
   // is the part a stock server cannot answer.
-  const { companion, clientMods, companionWarnings } = await readCompanion(origin, token, timeoutMs, mods);
+  const { companion, clientMods, addons, companionWarnings } = await readCompanion(origin, token, timeoutMs, mods);
 
   return {
     url: origin,
@@ -243,6 +263,7 @@ export async function fetchServerSnapshot(input: string, timeoutMs = 8000, token
     fetchedAt,
     companion,
     clientMods,
+    addons,
     companionWarnings
   };
 }
@@ -264,7 +285,7 @@ async function readCompanion(
   token: string | undefined,
   timeoutMs: number,
   mods: SptServerMod[]
-): Promise<{ companion: CompanionCapabilities; clientMods?: RemoteMod[]; companionWarnings?: string[] }> {
+): Promise<{ companion: CompanionCapabilities; clientMods?: RemoteMod[]; addons?: RemoteAddon[]; companionWarnings?: string[] }> {
   const headers = token ? { [COMPANION_TOKEN_HEADER]: token } : undefined;
 
   let caps: CompanionCapabilities;
@@ -293,6 +314,8 @@ async function readCompanion(
       // Only handed over when the companion could actually SEE the client half. An empty list
       // from a server-only box would otherwise read as "this server has no client mods".
       clientMods: manifest.clientKnown ? manifest.clientMods : undefined,
+      // Same rule for addons: no ledger on that machine means unknown, not none.
+      addons: manifest.addonsKnown ? readRemoteAddons(manifest.addons) : undefined,
       companionWarnings: manifest.warnings.length ? manifest.warnings : undefined
     };
   } catch {
@@ -321,6 +344,30 @@ function applyLedgerVersions(mods: SptServerMod[], remote: RemoteMod[]): void {
     mod.declaredVersion = mod.version;
     mod.version = match.version;
   }
+}
+
+/**
+ * Narrows the remote addon ledger to the fields that are compared.
+ *
+ * Entries missing a name or a parent are dropped rather than repaired. An addon's identity IS
+ * its name plus the mod it patches — a record without both cannot be matched against anything,
+ * and carrying it forward would only produce a row that can never resolve.
+ */
+function readRemoteAddons(entries: unknown[]): RemoteAddon[] {
+  const out: RemoteAddon[] = [];
+  for (const raw of entries) {
+    if (!raw || typeof raw !== "object") continue;
+    const e = raw as Record<string, unknown>;
+    if (typeof e.name !== "string" || !e.name.trim()) continue;
+    if (typeof e.parentName !== "string" || !e.parentName.trim()) continue;
+    out.push({
+      forgeAddonId: typeof e.forgeAddonId === "number" ? e.forgeAddonId : undefined,
+      name: e.name,
+      version: typeof e.version === "string" ? e.version : undefined,
+      parentName: e.parentName
+    });
+  }
+  return out;
 }
 
 function safeJson(text: string): unknown {
@@ -369,8 +416,8 @@ export type ServerSyncIssue =
 
 export interface ServerSyncRow {
   key: string;
-  /** Which half this row is about. Client rows appear only when a companion reported them. */
-  side?: "server" | "client";
+  /** Which half this row is about. Client and addon rows appear only when a companion reported them. */
+  side?: "server" | "client" | "addon";
   /** Display name — the local folder name when matched, otherwise what the server declares. */
   name: string;
   /** What the server calls it, kept when it differs so the row can be traced back. */
@@ -385,6 +432,23 @@ export interface ServerSyncRow {
   matchedBy?: "guid" | "name";
   url?: string;
   detail?: string;
+  /**
+   * Forge's addon id, on addon rows that came from the catalogue. Its presence is what makes an
+   * addon installable in one click; without it there is nothing to look up.
+   */
+  forgeAddonId?: number;
+  /** The mod an addon patches. Meaningless without it — an addon alone has nowhere to go. */
+  parentName?: string;
+  /**
+   * Whether this row can be fetched, and why not when it cannot.
+   *
+   * Decided HERE rather than in the UI because the reason lives with the data: a client plugin
+   * with no GUID cannot be looked up in the catalogue by its BepInEx folder name without risking
+   * the wrong mod, and an addon with no Forge id has nothing to fetch at all. A button that
+   * silently does the wrong thing is worse than one that is absent and says why.
+   */
+  installable?: boolean;
+  notInstallableReason?: string;
 }
 
 export interface ServerSyncReport {
@@ -413,6 +477,15 @@ export interface ServerSyncReport {
   companionReason?: string;
   /** Client plugins on the server machine. Undefined means NOT KNOWN, not none. */
   serverClientMods?: { id: string; version?: string; enabled: boolean }[];
+  /**
+   * Whether the two addon ledgers could be compared at all.
+   *
+   * False is an ordinary state, not a fault: it means one of the machines has never installed an
+   * addon through this manager. The distinction has to reach the UI, because "no addon
+   * differences" and "addons were not compared" look identical in a list and mean opposite
+   * things — addons routinely merge into their parent's folder and leave nothing on disk to see.
+   */
+  addonsCompared?: boolean;
   /** True when nothing stands between you and joining the server. */
   readyToPlay: boolean;
 }
@@ -431,7 +504,13 @@ const norm = (s: string | undefined) => (s ?? "").trim().toLowerCase().replace(/
 export function buildServerSyncReport(
   snapshot: SptServerSnapshot,
   localMods: ModInfo[],
-  localSptVersion?: string
+  localSptVersion?: string,
+  /**
+   * This install's addon ledger. Undefined and empty mean different things and are kept apart:
+   * undefined is "not read", which stops addons being compared at all, while an empty array is a
+   * machine that genuinely has none and can legitimately be shown as missing the server's.
+   */
+  localAddons?: RemoteAddon[]
 ): ServerSyncReport {
   const counts = { inSync: 0, needUpdating: 0, needInstalling: 0, newerLocally: 0, notOnServer: 0, unknownVersion: 0 };
 
@@ -569,6 +648,28 @@ export function buildServerSyncReport(
       if (mod.id) addLocal(clientKey(mod.id), mod);
     }
 
+    /*
+     * Client plugins are matched by NAME and not by GUID, which looks like a missed
+     * opportunity now that both sides report one. It is not, and the reason is worth keeping:
+     * the two sides mean different things by "GUID".
+     *
+     *   local  — `ModInfo.guid` prefers the registry's forgeGuid, which identifies the
+     *            CATALOGUE PACKAGE. One package routinely installs several plugin folders:
+     *            HollywoodFX 2.0.0 ships both `HollywoodFX` and `HollywoodGraphics`, and both
+     *            carry `com.janky.hollywoodfx`.
+     *   remote — the companion reads `[BepInPlugin]`, which identifies ONE ASSEMBLY.
+     *            `HollywoodGraphics.dll` declares `com.janky.hollywoodgraphics`.
+     *
+     * So a catalogue GUID is many-to-one against plugin folders and cannot key a row, and the
+     * two identities are not even drawn from the same namespace — `Tyfon.UIFixes.dll` declares
+     * `Tyfon.UIFixes` while its catalogue id is `com.tyfon.uifixes`. Matching across them
+     * pairs a mod with its packaging sibling: measured here, remote `HollywoodFX` matched
+     * BOTH local folders and picked one by version order. It happened to agree, which is
+     * exactly how this kind of fault survives a test.
+     *
+     * Folder names ARE like-for-like — two BepInEx listings read by the same convention — so
+     * they stay the key, and rows say "matched by name" because that is the truth.
+     */
     const claimedClient = new Set<string>();
 
     // Collapse the remote side by identity first. A plugin shipping as both `Mod.dll` and a
@@ -609,8 +710,13 @@ export function buildServerSyncReport(
       const row: ServerSyncRow = {
         key: "client:" + clientKey(remote.id),
         side: "client",
-        name: local?.name ?? remote.id,
+        name: local?.name ?? remote.displayName ?? remote.id,
         serverName: local && local.name !== remote.id ? remote.id : undefined,
+        // The CATALOGUE identity, not the assembly's. This is what the Install button looks the
+        // mod up with, so it has to be the identifier the catalogue understands — the remote
+        // machine's ledger recorded it at install time. The `[BepInPlugin]` GUID would be the
+        // wrong namespace and could resolve to a different mod entirely.
+        guid: remote.catalogueGuid ?? local?.guid,
         serverVersion: remote.version,
         localVersion: local?.version,
         localModId: local?.id,
@@ -625,7 +731,12 @@ export function buildServerSyncReport(
         row.issue = "unknown-local-version";
         row.detail = remote.version
           ? "This plugin does not declare a version locally, so it cannot be compared."
-          : "The server did not report a version for this plugin.";
+          : // Named precisely when it can be. An old companion could only report versions its
+            // ledger held, so a plugin installed by hand had none — and "the server did not
+            // report a version" reads like the plugin's fault rather than a missing reader.
+            snapshot.companion?.clientVersions === false
+            ? "The server's companion is too old to read plugin versions from the plugins themselves. Update it there to compare this."
+            : "The server did not report a version for this plugin.";
         counts.unknownVersion++;
       } else {
         const cmp = compareVersions(local.version, remote.version);
@@ -639,6 +750,34 @@ export function buildServerSyncReport(
           counts.newerLocally++;
         } else {
           counts.inSync++;
+        }
+      }
+
+      /*
+       * A client plugin is fetchable only when a CATALOGUE identifier is known for it.
+       *
+       * The alternative is searching the catalogue for a BepInEx file name, and those are chosen
+       * by whoever installed the plugin: "01-SomeMod.dll" carries a load-order prefix, and plenty
+       * of plugins ship under a filename that resembles a DIFFERENT mod's name. A lookup on that
+       * finds nothing, or finds the wrong mod and installs it over a working one — the shape of
+       * fault that already shipped once, when preset sync fetched the newest build instead of
+       * the recorded one.
+       *
+       * The plugin's own `[BepInPlugin]` GUID is NOT accepted here even though it is usually
+       * present. It identifies an assembly, not a catalogue entry, and the two disagree often
+       * enough to matter: `Tyfon.UIFixes.dll` declares `Tyfon.UIFixes` where the catalogue says
+       * `com.tyfon.uifixes`. Passing one as the other is a lookup that silently matches whatever
+       * happens to share the string.
+       */
+      if (row.issue === "missing-locally" || row.issue === "outdated-locally") {
+        // The REMOTE machine's catalogue record specifically, not `row.guid`. On an outdated row
+        // `row.guid` can fall back to the local mod's, and that one is catalogue-first with an
+        // assembly-GUID plan B — so a locally hand-installed plugin would supply a BepInPlugin
+        // GUID and put the wrong namespace back into the lookup by the side door.
+        row.installable = Boolean(remote.catalogueGuid);
+        if (!row.installable) {
+          row.notInstallableReason =
+            "The server has no catalogue record for this plugin — it was installed by hand there — so it could only be looked up by its file name, which finds the wrong mod as often as the right one. Install it by hand.";
         }
       }
       rows.push(row);
@@ -658,6 +797,101 @@ export function buildServerSyncReport(
         // UI tweaks). Only Fika's required list makes one mandatory, and that is reported
         // separately, so this must not read as a fault.
         detail: "You have this client plugin and the server machine does not. Often harmless — only matters if the server requires matching clients."
+      });
+      counts.notOnServer++;
+    }
+  }
+
+  // --- addons, the third thing a plain server cannot answer ---------------------------
+  //
+  // Gated on BOTH ledgers being present, because an addon comparison is ledger against ledger and
+  // nothing else. That is a real limitation rather than an implementation shortcut: most addons
+  // unpack INTO their parent's folder and leave nothing of their own behind, so once installed
+  // they are indistinguishable from the mod they patch. There is no scan that can find them and
+  // no version to read off disk — the record written at install time is the only evidence that
+  // they exist. An addon installed by hand on either machine is therefore invisible here, and
+  // saying nothing about it is the only honest option.
+  const addonsCompared = Boolean(snapshot.addons && localAddons);
+  if (snapshot.addons && localAddons) {
+    // Indexed under BOTH identities, and looked up by both. The same addon can carry a Forge id
+    // on one machine and not on the other — installed from the catalogue here, from a file
+    // there — and keying on only the stronger identity would then fail to match it, reporting
+    // one addon as two: missing locally AND not on the server. That is the duplicate-row shape
+    // the client comparison already had to be fixed for.
+    const localByKey = new Map<string, RemoteAddon>();
+    for (const addon of localAddons) {
+      localByKey.set(nameKey(addon), addon);
+      if (addon.forgeAddonId !== undefined) localByKey.set(idKey(addon.forgeAddonId), addon);
+    }
+
+    const claimedAddons = new Set<RemoteAddon>();
+
+    for (const remote of snapshot.addons) {
+      const key = addonKey(remote);
+      const local =
+        (remote.forgeAddonId !== undefined ? localByKey.get(idKey(remote.forgeAddonId)) : undefined) ??
+        localByKey.get(nameKey(remote));
+      if (local) claimedAddons.add(local);
+
+      const row: ServerSyncRow = {
+        key: "addon:" + key,
+        side: "addon",
+        name: remote.name,
+        parentName: remote.parentName,
+        forgeAddonId: remote.forgeAddonId,
+        serverVersion: remote.version,
+        localVersion: local?.version,
+        // Matched on the Forge id when both sides have one, which is exact; otherwise on the
+        // name-plus-parent pair, which is the same identity the addon ledger itself uses.
+        matchedBy: remote.forgeAddonId !== undefined && local?.forgeAddonId !== undefined ? "guid" : local ? "name" : undefined
+      };
+
+      if (!local) {
+        row.issue = "missing-locally";
+        row.detail = `The server has this patch for ${remote.parentName} and you do not.`;
+        counts.needInstalling++;
+        // An addon is fetched by its catalogue id, never by name: it is not a mod in its own
+        // right, and a name search would land on the parent or on nothing.
+        row.installable = remote.forgeAddonId !== undefined;
+        if (!row.installable) {
+          row.notInstallableReason = `This addon was not installed from the catalogue on the server, so there is nothing to fetch. Get it from ${remote.parentName}'s page and install it as an addon.`;
+        }
+      } else if (!local.version || !remote.version) {
+        row.issue = "unknown-local-version";
+        row.detail = "One side recorded no version for this addon, so it cannot be compared.";
+        counts.unknownVersion++;
+      } else {
+        const cmp = compareVersions(local.version, remote.version);
+        if (cmp < 0) {
+          row.issue = "outdated-locally";
+          row.detail = `The server has ${remote.version} of this ${remote.parentName} patch; you have ${local.version}.`;
+          counts.needUpdating++;
+          row.installable = remote.forgeAddonId !== undefined;
+          if (!row.installable) {
+            row.notInstallableReason = `This addon did not come from the catalogue, so it cannot be updated automatically. Get it from ${remote.parentName}'s page.`;
+          }
+        } else if (cmp > 0) {
+          row.issue = "newer-locally";
+          row.detail = `You have ${local.version}; the server has ${remote.version}.`;
+          counts.newerLocally++;
+        } else {
+          counts.inSync++;
+        }
+      }
+      rows.push(row);
+    }
+
+    for (const local of localAddons) {
+      if (claimedAddons.has(local)) continue;
+      rows.push({
+        key: "addon:" + addonKey(local),
+        side: "addon",
+        name: local.name,
+        parentName: local.parentName,
+        forgeAddonId: local.forgeAddonId,
+        localVersion: local.version,
+        issue: "not-on-server",
+        detail: `You have this patch for ${local.parentName} and the server does not. It changes content locally, which can differ from what the server sends.`
       });
       counts.notOnServer++;
     }
@@ -694,6 +928,7 @@ export function buildServerSyncReport(
     // the companion has no "reason", and inventing one would make a normal state look broken.
     companionReason: snapshot.companion?.reason,
     serverClientMods: snapshot.clientMods?.map((m) => ({ id: m.id, version: m.version, enabled: m.enabled })),
+    addonsCompared,
     rows,
     counts,
     // "Newer locally" and "not on server" are mismatches worth showing but do not stop you
@@ -716,6 +951,28 @@ function clientKey(name: string | undefined): string {
     .toLowerCase()
     .replace(/\.dll$/, "")
     .replace(/^\d+[-_.\s]+/, "");
+}
+
+/**
+ * Identity for an addon, on both sides of the comparison.
+ *
+ * The Forge id when there is one, and name-plus-parent otherwise — the same rule the addon
+ * ledger applies when deciding whether an install replaces an existing record. The parent is
+ * part of the identity because addon names are not unique on their own: several mods ship a
+ * patch called exactly "compatibility patch", and matching those by name alone would pair a
+ * patch for one mod against a patch for another and report a version difference between two
+ * unrelated things.
+ */
+function addonKey(addon: RemoteAddon): string {
+  return addon.forgeAddonId !== undefined ? idKey(addon.forgeAddonId) : nameKey(addon);
+}
+
+function idKey(forgeAddonId: number): string {
+  return `id:${forgeAddonId}`;
+}
+
+function nameKey(addon: RemoteAddon): string {
+  return `n:${addon.name.trim().toLowerCase()}|${addon.parentName.trim().toLowerCase()}`;
 }
 
 /**

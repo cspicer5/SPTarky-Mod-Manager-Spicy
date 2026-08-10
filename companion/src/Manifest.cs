@@ -111,6 +111,29 @@ public class ClientModEntry
 
     [JsonPropertyName("sizeBytes")]
     public long SizeBytes { get; set; }
+
+    /// <summary>
+    /// The GUID from <c>[BepInPlugin]</c>. The only identity that survives someone renaming a
+    /// plugin to control BepInEx load order, and the one that makes a catalogue lookup exact
+    /// rather than a search for a folder name.
+    /// </summary>
+    [JsonPropertyName("guid")]
+    public string? Guid { get; set; }
+
+    /// <summary>The name the author declared, which is rarely the file name.</summary>
+    [JsonPropertyName("displayName")]
+    public string? DisplayName { get; set; }
+
+    /// <summary>
+    /// The version from <c>[BepInPlugin]</c>. Read from the DLL because the ledger cannot cover
+    /// a plugin that was installed by hand, and those were previously impossible to compare.
+    /// </summary>
+    [JsonPropertyName("declaredVersion")]
+    public string? DeclaredVersion { get; set; }
+
+    /// <summary>Weaker than <see cref="DeclaredVersion"/> and sent separately so the manager decides whether to trust it.</summary>
+    [JsonPropertyName("assemblyVersion")]
+    public string? AssemblyVersion { get; set; }
 }
 
 /// <summary>
@@ -224,13 +247,26 @@ public static class ManifestBuilder
                     bool isDir = Directory.Exists(entry);
                     // Only DLLs matter among loose files; configs and readmes are noise here.
                     if (!isDir && !string.Equals(Path.GetExtension(entry), ".dll", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    // Identity read from the assembly itself. The ledger is still preferred by the
+                    // manager where it has an entry, but it can only ever cover what the manager
+                    // installed — a plugin dropped in by hand has no ledger entry on either
+                    // machine and was, before this, uncomparable rather than merely unversioned.
+                    AssemblyMetadata.Info declared = isDir
+                        ? AssemblyMetadata.ReadFolder(entry)
+                        : AssemblyMetadata.ReadFile(entry);
+
                     manifest.ClientMods.Add(new ClientModEntry
                     {
                         Name = Path.GetFileName(entry),
                         Kind = isDir ? "folder" : "file",
                         Area = area,
                         Enabled = enabled,
-                        SizeBytes = isDir ? 0 : SafeLength(entry)
+                        SizeBytes = isDir ? 0 : SafeLength(entry),
+                        Guid = declared.Guid,
+                        DisplayName = declared.Name,
+                        DeclaredVersion = declared.Version,
+                        AssemblyVersion = declared.AssemblyVersion
                     });
                 }
             }

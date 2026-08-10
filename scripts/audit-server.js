@@ -13,6 +13,7 @@ const path = require("path");
 const dist = path.join(__dirname, "..", "dist-electron");
 const { scanMods, resolveSptInstance, detectSptSemver } = require(path.join(dist, "modManager.js"));
 const { fetchServerSnapshot, buildServerSyncReport } = require(path.join(dist, "sptServer.js"));
+const { loadAddonLedger } = require(path.join(dist, "addons.js"));
 
 // The third argument mirrors the app's SPT version override. Without it this script sees
 // only what detectSptSemver can read from disk, which is blank on installs where the user
@@ -33,9 +34,19 @@ if (!serverArg || !localArg) {
   const localMods = scanMods(clientRoot, serverRoot);
   const localSpt = sptOverride || detectSptSemver(clientRoot);
 
+  // The addon ledger, passed exactly as the app passes it. Addons mostly unpack into their
+  // parent's folder, so this file is the only record they exist — reading it here is what keeps
+  // the audit an honest reproduction of what the app decides rather than a subset of it.
+  const localAddons = loadAddonLedger(clientRoot).map((a) => ({
+    forgeAddonId: a.forgeAddonId,
+    name: a.name,
+    version: a.version,
+    parentName: a.parentName
+  }));
+
   const started = Date.now();
   const snapshot = await fetchServerSnapshot(serverArg);
-  const report = buildServerSyncReport(snapshot, localMods, localSpt);
+  const report = buildServerSyncReport(snapshot, localMods, localSpt, localAddons);
   const elapsed = Date.now() - started;
 
   console.log("=".repeat(78));
@@ -65,22 +76,28 @@ if (!serverArg || !localArg) {
     console.log("");
   };
 
+  // Which half each row came from. With a companion the list holds all three, and a client
+  // plugin reported alongside server mods with no label reads as a server mod that failed.
+  const side = (r) => (r.side && r.side !== "server" ? `[${r.side}] ` : "");
+
   show("INSTALL THESE — the server runs them, you do not", group("missing-locally"), (r) =>
-    `  ${r.name.slice(0, 42).padEnd(42)} ${String(r.serverVersion ?? "?").padEnd(10)} ${r.author ?? ""}` +
+    `  ${(side(r) + r.name).slice(0, 42).padEnd(42)} ${String(r.serverVersion ?? "?").padEnd(10)} ${r.author ?? ""}` +
+    (r.installable === false ? `\n      BY HAND: ${r.notInstallableReason}` : "") +
     (r.url ? `\n      ${r.url}` : "")
   );
   show("UPDATE THESE — the server is newer", group("outdated-locally"), (r) =>
-    `  ${r.name.slice(0, 42).padEnd(42)} ${String(r.localVersion).padStart(9)} -> ${String(r.serverVersion).padEnd(9)}` +
+    `  ${(side(r) + r.name).slice(0, 42).padEnd(42)} ${String(r.localVersion).padStart(9)} -> ${String(r.serverVersion).padEnd(9)}` +
+    (r.installable === false ? `\n      BY HAND: ${r.notInstallableReason}` : "") +
     (r.url ? `\n      ${r.url}` : "")
   );
   show("CANNOT COMPARE — no usable version on one side", group("unknown-local-version"), (r) =>
-    `  ${r.name.slice(0, 42).padEnd(42)} local=${String(r.localVersion ?? "-").padEnd(10)} server=${r.serverVersion ?? "-"}`
+    `  ${(side(r) + r.name).slice(0, 42).padEnd(42)} local=${String(r.localVersion ?? "-").padEnd(10)} server=${r.serverVersion ?? "-"}`
   );
   show("NEWER HERE — you are ahead of the server", group("newer-locally"), (r) =>
-    `  ${r.name.slice(0, 42).padEnd(42)} ${String(r.localVersion).padStart(9)} vs ${String(r.serverVersion).padEnd(9)} on server`
+    `  ${(side(r) + r.name).slice(0, 42).padEnd(42)} ${String(r.localVersion).padStart(9)} vs ${String(r.serverVersion).padEnd(9)} on server`
   );
   show("NOT ON THE SERVER — no effect in a raid there", group("not-on-server"), (r) =>
-    `  ${r.name.slice(0, 42).padEnd(42)} ${String(r.localVersion ?? "-").padEnd(10)}`
+    `  ${(side(r) + r.name).slice(0, 42).padEnd(42)} ${String(r.localVersion ?? "-").padEnd(10)}`
   );
 
   const weak = report.rows.filter((r) => r.matchedBy === "name");
@@ -102,6 +119,9 @@ if (!serverArg || !localArg) {
   console.log(`  cannot compare  : ${c.unknownVersion}`);
   console.log(`  newer here      : ${c.newerLocally}`);
   console.log(`  not on server   : ${c.notOnServer}`);
+  // Said out loud. "No addon differences" and "addons were not compared" produce identical
+  // output otherwise, and they mean opposite things.
+  console.log(`  addons compared : ${report.addonsCompared ? "yes" : "NO — one machine has no addon records"}`);
   console.log("");
   console.log(report.readyToPlay ? "  READY — server mods match." : "  NOT READY — resolve the items above.");
 

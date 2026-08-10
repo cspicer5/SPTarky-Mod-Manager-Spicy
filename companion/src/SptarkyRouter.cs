@@ -32,14 +32,23 @@ public class SptarkyRouter : StaticRouter
     /// </summary>
     private const int Protocol = 1;
 
-    private const string CompanionVersion = "1.0.0";
+    private const string CompanionVersion = "1.1.0";
 
     /// <summary>
     /// What this build can do, asked about BY NAME. The manager checks for a capability rather
     /// than comparing version numbers, so routes can ship one at a time without the client
     /// having to know this mod's release history.
+    ///
+    /// <para>
+    /// <c>clientVersions</c> is why the protocol did NOT have to change for 1.1.0: the manifest
+    /// only gained optional fields, which an older manager ignores. What a newer manager cannot
+    /// work out on its own is the difference between "this companion cannot read plugin versions"
+    /// and "it can, and these plugins genuinely declare none" — both look like an absent field.
+    /// The capability says which, so the app can tell someone to update their companion instead
+    /// of leaving them to wonder why half the list says "cannot be compared".
+    /// </para>
     /// </summary>
-    private static readonly List<string> Capabilities = ["manifest", "files"];
+    private static readonly List<string> Capabilities = ["manifest", "files", "clientVersions"];
 
     public SptarkyRouter(
         JsonUtil jsonUtil,

@@ -1234,7 +1234,42 @@ export default function App() {
    * interrupting for, and a bulk run that swallowed them would look like it worked.
    */
   async function installOneFromServer(row: ServerSyncRow, options: { quiet?: boolean } = {}): Promise<boolean> {
-    const lookupName = row.serverName ?? row.name;
+    // Rows the report has already decided cannot be fetched. The reason travels with the row
+    // because it is a property of the data, not of the button — a client plugin that declares no
+    // ID, or an addon that never came from the catalogue. Refusing here as well as hiding the
+    // button matters for "Match server", which acts on rows without a button being pressed.
+    if (row.installable === false) {
+      if (!options.quiet) pushToast(row.notInstallableReason ?? `"${row.name}" cannot be installed automatically.`, false);
+      return false;
+    }
+
+    /*
+     * An addon is not a mod and cannot be fetched like one. It has no page of its own in the
+     * catalogue, no folder of its own once installed, and is identified by an addon id against
+     * its parent — so it goes through the same handler the addon panel uses. Searching for its
+     * NAME would land on the parent mod and reinstall that instead, which would wipe out the
+     * very patch this row is trying to add.
+     */
+    if (row.side === "addon") {
+      if (row.forgeAddonId === undefined) {
+        if (!options.quiet) pushToast(`"${row.name}" did not come from the catalogue, so it cannot be fetched.`, false);
+        return false;
+      }
+      setInstallingFromServer(row.key);
+      try {
+        const result = await window.modManagerAPI.installForgeAddon(`server-addon-${row.forgeAddonId}`, row.forgeAddonId);
+        if (!options.quiet || !result.success) pushToast(tMsg(result.message), result.success);
+        return result.success;
+      } finally {
+        setInstallingFromServer(null);
+      }
+    }
+
+    // The name to search the catalogue with. For a client plugin the row's `name` is a BepInEx
+    // file name, so the DECLARED name the companion read out of the assembly is preferred — it is
+    // what the author published under. The GUID passed alongside makes the match exact anyway;
+    // the name only matters when there is none.
+    const lookupName = row.side === "client" ? row.name : row.serverName ?? row.name;
     setInstallingFromServer(row.key);
     try {
       const found = await window.modManagerAPI.findForgeDownloadsForNames([{ name: lookupName, guid: row.guid }]);

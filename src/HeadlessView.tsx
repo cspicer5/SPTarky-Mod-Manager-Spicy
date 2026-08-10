@@ -398,23 +398,51 @@ function ServerPane({
         {/* Offered only where it would change something: a mod the server runs that is
             absent or older here. It installs into the MAIN install — never the server,
             which is read only, and never the headless client, which is synced from main so
-            the two can never disagree on a version. */}
-        {(row.issue === "missing-locally" || row.issue === "outdated-locally") && (
-          <button
-            className="hl-install-btn"
-            onClick={() => onInstall(row)}
-            disabled={installing !== null}
-            title={
-              row.issue === "outdated-locally"
-                ? `Get ${row.serverVersion} from Forge and install it here`
-                : "Find this on Forge and install it into the main install"
-            }
-          >
-            {installing === row.key ? "…" : row.issue === "outdated-locally" ? "Update" : "Install"}
-          </button>
-        )}
+            the two can never disagree on a version.
+
+            `installable === false` withholds it where the fetch could not be done correctly —
+            a client plugin with no ID, an addon that never came from the catalogue. The row
+            says why in its place, because a button that quietly installs the wrong mod is far
+            worse than one that is not there. */}
+        {(row.issue === "missing-locally" || row.issue === "outdated-locally") &&
+          (row.installable === false ? (
+            <span className="hl-cannot-install" title={row.notInstallableReason ?? ""}>
+              by hand
+            </span>
+          ) : (
+            <button
+              className="hl-install-btn"
+              onClick={() => onInstall(row)}
+              disabled={installing !== null}
+              title={
+                row.issue === "outdated-locally"
+                  ? `Get ${row.serverVersion} from the catalogue and install it here`
+                  : "Find this in the catalogue and install it into the main install"
+              }
+            >
+              {installing === row.key ? "…" : row.issue === "outdated-locally" ? "Update" : "Install"}
+            </button>
+          ))}
       </div>
       <div className="hl-row-meta">
+        {/* Which half this row came from. The list holds three kinds now — server mods from
+            SPT itself, client plugins and addons from the companion — and they behave
+            differently enough that mixing them unlabelled would make a client plugin look
+            like a server mod that failed to load. Server rows stay unmarked: they are the
+            majority and the pane is already about them. */}
+        {row.side === "client" && (
+          <span className="hl-badge hl-side-client" title="A client plugin on the server machine, reported by the companion.">
+            client
+          </span>
+        )}
+        {row.side === "addon" && (
+          <span
+            className="hl-badge hl-side-addon"
+            title={row.parentName ? `A patch for ${row.parentName}, from the server's addon records.` : "An addon, from the server's addon records."}
+          >
+            addon
+          </span>
+        )}
         {row.issue && (
           <span className={`hl-issue hl-issue-tag-server-${row.issue}`} title={row.detail ?? ""}>
             {SERVER_ISSUE_LABEL[row.issue] ?? row.issue}
@@ -478,8 +506,12 @@ function ServerPane({
         <p className="empty-list">{query ? "Nothing here matches the search." : "No server mods reported."}</p>
       ) : (
         <div className="hl-pane-body">
+          {/* Titled by what is actually in the list. With a companion this is all three halves
+              of an install, and calling that "server mods" would misdescribe most of it. */}
           <h3 className="hl-group-title">
-            Server mods <span>loaded</span> ({rows.length})
+            {rows.some((r) => r.side === "client" || r.side === "addon") ? "Everything compared" : "Server mods"}{" "}
+            <span>{rows.some((r) => r.side === "client" || r.side === "addon") ? "server, client and addons" : "loaded"}</span> (
+            {rows.length})
           </h3>
           <ul className="hl-list">{rows.map(renderRow)}</ul>
         </div>
@@ -495,6 +527,11 @@ function ServerPane({
               <strong>Companion {report.companionVersion ?? ""} connected.</strong> Versions above are what is really
               installed, read from that machine's own records.
               {report.serverClientMods && ` Its ${report.serverClientMods.length} client plugins are visible too.`}
+              {/* Said explicitly, because "no addon differences" and "addons were not compared"
+                  look identical in a list and mean opposite things. Addons usually unpack into
+                  their parent's folder, so there is nothing on disk to notice their absence. */}
+              {report.addonsCompared === false &&
+                " Addons were not compared — one of the two machines has no addon records, and addons leave nothing on disk to check for."}
             </>
           ) : (
             <>

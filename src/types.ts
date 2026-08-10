@@ -244,8 +244,8 @@ export type ServerSyncIssue =
 
 export interface ServerSyncRow {
   key: string;
-  /** Which half this row is about. Client rows appear only when a companion reported them. */
-  side?: "server" | "client";
+  /** Which half this row is about. Client and addon rows appear only when a companion reported them. */
+  side?: "server" | "client" | "addon";
   /** Local folder name when matched, otherwise whatever the server declares. */
   name: string;
   /** The server's own name, kept only when it differs (Fika's server half calls itself "server"). */
@@ -260,6 +260,17 @@ export interface ServerSyncRow {
   matchedBy?: "guid" | "name";
   url?: string;
   detail?: string;
+  /** Forge's addon id, on addon rows. Its presence is what makes an addon installable at all. */
+  forgeAddonId?: number;
+  /** The mod an addon patches. An addon has nowhere to go without it. */
+  parentName?: string;
+  /**
+   * False where the row cannot be fetched correctly — a client plugin declaring no ID, an addon
+   * that never came from the catalogue. Decided in the report rather than here, because the
+   * reason belongs with the data; the UI withholds the button and shows `notInstallableReason`.
+   */
+  installable?: boolean;
+  notInstallableReason?: string;
 }
 
 export interface ServerSyncReport {
@@ -288,6 +299,12 @@ export interface ServerSyncReport {
   companionReason?: string;
   /** Client plugins on the server machine. Undefined means NOT KNOWN, not none. */
   serverClientMods?: { id: string; version?: string; enabled: boolean }[];
+  /**
+   * Whether the two addon ledgers could be compared. False means one machine has no addon
+   * records — an ordinary state, but one that has to be SAID, because "no addon differences"
+   * and "addons were not compared" look identical in a list and mean opposite things.
+   */
+  addonsCompared?: boolean;
   readyToPlay: boolean;
 }
 

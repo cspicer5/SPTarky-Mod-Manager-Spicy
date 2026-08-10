@@ -1846,8 +1846,22 @@ ipcMain.handle("get-server-sync", async () => {
   const localMods = sptPath ? scanInstance("main") : [];
   const localSpt = store.get("sptVersionOverride") ?? (sptPath ? detectSptSemver(sptPath) : undefined);
 
+  // The addon ledger, which is the ONLY record that an addon exists at all — most of them unpack
+  // into their parent's folder and leave nothing to scan for afterwards. Passed as undefined when
+  // there is no instance to read, so the comparison is skipped rather than run against an empty
+  // list, which would report every addon the server has as missing here.
+  const roots = rootsFor("main");
+  const localAddons = roots
+    ? loadAddonLedger(roots.clientRoot).map((a) => ({
+        forgeAddonId: a.forgeAddonId,
+        name: a.name,
+        version: a.version,
+        parentName: a.parentName
+      }))
+    : undefined;
+
   const snapshot = await fetchServerSnapshot(serverUrl);
-  return { configured: true, report: buildServerSyncReport(snapshot, localMods, localSpt ?? undefined) };
+  return { configured: true, report: buildServerSyncReport(snapshot, localMods, localSpt ?? undefined, localAddons) };
 });
 
 /* ==========================================================================

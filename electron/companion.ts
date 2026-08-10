@@ -49,6 +49,16 @@ export interface CompanionCapabilities {
   manifest: boolean;
   /** Mod files can be pulled from the server instead of the catalogue. */
   files: boolean;
+  /**
+   * The companion reads client plugin versions out of the DLLs themselves.
+   *
+   * Worth asking about separately because without it a missing version is ambiguous: companion
+   * 1.0.0 could only report what the ledger held, so a plugin installed by hand had no version
+   * on either machine and every such row read "cannot be compared" with no way to tell whether
+   * the plugin declared nothing or the companion simply could not look. This distinguishes them,
+   * so the app can say "update the companion" instead of leaving someone to guess.
+   */
+  clientVersions: boolean;
   /** The companion wants a token and this manager has not supplied a valid one. */
   unauthorised?: boolean;
   /**
@@ -58,7 +68,7 @@ export interface CompanionCapabilities {
   reason?: string;
 }
 
-export const NO_COMPANION: CompanionCapabilities = { present: false, manifest: false, files: false };
+export const NO_COMPANION: CompanionCapabilities = { present: false, manifest: false, files: false, clientVersions: false };
 
 /**
  * Decides what a server can do, from its answer to `/sptarky/version`.
@@ -112,7 +122,8 @@ export function readCapabilities(status: number, body: unknown): CompanionCapabi
     // Each capability is asked about by name rather than inferred from the version, so a
     // companion can ship one before the other without this having to know release history.
     manifest: capabilities.includes("manifest"),
-    files: capabilities.includes("files")
+    files: capabilities.includes("files"),
+    clientVersions: capabilities.includes("clientVersions")
   };
 }
 
@@ -131,12 +142,32 @@ export interface RemoteMod {
   declaredVersion?: string;
   /**
    * `ledger` means that machine's manager recorded the install, which beats the mod's own
-   * claim; `declared` means the mod's word is all there is. Never inferred from the version
-   * string itself.
+   * claim; `declared` means the mod's word — a server mod's manifest, or a client plugin's
+   * `[BepInPlugin]` — is all there is; `assembly` is the weakest, the number compiled into the
+   * DLL when the author declared none. Never inferred from the version string itself.
    */
-  versionSource: "ledger" | "declared" | "unknown";
+  versionSource: "ledger" | "declared" | "assembly" | "unknown";
+  /**
+   * The mod's own identity — `ModGuid` for a server mod, `[BepInPlugin]` for a client plugin.
+   * Identifies ONE assembly, and is NOT interchangeable with `catalogueGuid` below.
+   */
   guid?: string;
+  /**
+   * The catalogue's identifier for the PACKAGE this came from, recorded by that machine's
+   * manager at install time. A different thing from `guid` and deliberately kept apart: one
+   * package can install several plugin folders, so this is many-to-one against them, and the
+   * two are not even the same namespace — `Tyfon.UIFixes.dll` declares `Tyfon.UIFixes` while
+   * its catalogue id is `com.tyfon.uifixes`. This is the one to look a mod up with; `guid` is
+   * the one to identify an assembly with. Confusing them matches a mod to its packaging
+   * sibling.
+   */
+  catalogueGuid?: string;
   name?: string;
+  /**
+   * The name the author declared, when it differs from the file on disk. Used for a catalogue
+   * lookup, where "MoreBotsAPI" finds a mod and "01-MoreBotsAPI.dll" finds nothing.
+   */
+  displayName?: string;
   /** False for anything in mods.disabled / plugins.disabled — present but not running. */
   enabled: boolean;
   /**
@@ -157,6 +188,13 @@ export interface RemoteManifest {
   clientMods: RemoteMod[];
   /** Addon ledger entries, verbatim, for parity checks the manager already knows how to do. */
   addons: unknown[];
+  /**
+   * False when that machine has no addon ledger at all — it has never installed one through this
+   * manager, or installs them by hand. Its addon list is then EMPTY BECAUSE UNKNOWN, exactly as
+   * `clientKnown` guards the client list: "the server has no addons" is a claim, and it must not
+   * be made on the strength of a file that does not exist.
+   */
+  addonsKnown: boolean;
   /**
    * False when that machine has no BepInEx beside the server. Its client list is then EMPTY
    * BECAUSE UNKNOWN, and no parity check may treat it as "the server has no client mods".
@@ -189,7 +227,7 @@ export function readManifest(body: unknown): RemoteManifest | null {
 
   // The ledger is the remote machine's registry file as text. A corrupt one is not fatal: fall
   // back to declared versions and SAY so, rather than losing the mod list along with it.
-  let ledger: Record<string, { installedVersion?: string }> = {};
+  let ledger: Record<string, { installedVersion?: string; forgeGuid?: string }> = {};
   let ledgerParsed = false;
   if (typeof raw.registryJson === "string" && raw.registryJson.trim()) {
     try {
@@ -206,10 +244,14 @@ export function readManifest(body: unknown): RemoteManifest | null {
   }
 
   let addons: unknown[] = [];
+  let addonsParsed = false;
   if (typeof raw.addonsJson === "string" && raw.addonsJson.trim()) {
     try {
       const parsed = JSON.parse(raw.addonsJson);
-      if (Array.isArray(parsed)) addons = parsed;
+      if (Array.isArray(parsed)) {
+        addons = parsed;
+        addonsParsed = true;
+      }
     } catch {
       warnings.push("The server's addon ledger could not be read.");
     }
@@ -218,18 +260,29 @@ export function readManifest(body: unknown): RemoteManifest | null {
   const reconcile = (entry: Record<string, unknown>, type: "server" | "client"): RemoteMod => {
     const id = String(entry.folder ?? entry.name ?? "");
     const declared = typeof entry.declaredVersion === "string" ? entry.declaredVersion : undefined;
+    const assembly = typeof entry.assemblyVersion === "string" ? entry.assemblyVersion : undefined;
     // Exact first. The stripped form is only a FALLBACK: checked against the live install, the
     // registry stores a loose client plugin under its full filename ("DrakiaXYZ-BigBrain.dll",
     // 6 of them), so stripping first would miss precisely those.
-    const recorded = (ledger[id] ?? ledger[id.replace(/\.dll$/i, "")])?.installedVersion;
+    const entryInLedger = ledger[id] ?? ledger[id.replace(/\.dll$/i, "")];
+    const recorded = entryInLedger?.installedVersion;
     return {
       id,
       type,
-      version: recorded ?? declared,
+      // The ladder, weakest last. The assembly's own version is a genuine last resort: the
+      // number compiled into a DLL is often stale — BlackDiv declares 1.2.1 while its assembly
+      // still says 1.0.0 — so letting it outrank a declared version would make good data worse.
+      // It is used only where nothing else exists, which is the same rule the local scanner
+      // applies to its own installs.
+      version: recorded ?? declared ?? assembly,
       declaredVersion: declared,
-      versionSource: recorded ? "ledger" : declared ? "declared" : "unknown",
+      versionSource: recorded ? "ledger" : declared ? "declared" : assembly ? "assembly" : "unknown",
       guid: typeof entry.guid === "string" ? entry.guid : undefined,
+      // Straight out of that machine's own ledger — the identifier its manager got FROM the
+      // catalogue at install time, rather than anything inferred from the files here.
+      catalogueGuid: typeof entryInLedger?.forgeGuid === "string" ? entryInLedger.forgeGuid : undefined,
       name: typeof entry.name === "string" ? entry.name : undefined,
+      displayName: typeof entry.displayName === "string" ? entry.displayName : undefined,
       enabled: entry.enabled !== false,
       ...(typeof entry.area === "string" ? { area: entry.area } : {}),
       ...(entry.loaded === false ? { failedToLoad: true } : {})
@@ -242,6 +295,7 @@ export function readManifest(body: unknown): RemoteManifest | null {
     // identity the manager's own registry uses for a client plugin.
     clientMods: (raw.clientMods as Record<string, unknown>[]).map((m) => reconcile(m, "client")).filter((m) => m.id),
     addons,
+    addonsKnown: addonsParsed,
     clientKnown: raw.clientRootFound === true,
     versionsAreDeclaredOnly: !ledgerParsed,
     warnings
@@ -258,9 +312,14 @@ export function readManifest(body: unknown): RemoteManifest | null {
 export function describeCapabilities(caps: CompanionCapabilities): string {
   if (caps.present) {
     const has = [caps.manifest ? "mods and addons" : null, caps.files ? "mod files" : null].filter(Boolean);
-    return has.length
-      ? `Server companion ${caps.version ?? ""} connected — ${has.join(", ")}.`.replace("  ", " ")
-      : `Server companion ${caps.version ?? ""} connected, but it offers nothing this manager uses.`;
+    if (!has.length) return `Server companion ${caps.version ?? ""} connected, but it offers nothing this manager uses.`;
+    // Named as a limitation of that companion rather than a fact about the server's plugins, and
+    // it names the fix. Without this the older build's client rows read "cannot be compared",
+    // which sounds like the plugins are at fault when the reader simply is not there.
+    const gap = caps.manifest && !caps.clientVersions
+      ? " Its client plugin versions come only from that machine's install records — update the companion to read them from the plugins themselves."
+      : "";
+    return `Server companion ${caps.version ?? ""} connected — ${has.join(", ")}.${gap}`.replace("  ", " ");
   }
   if (caps.reason) return caps.reason;
   return "This server has no SPTarky companion, so only its server mods and bundles can be seen. Client mods and addons cannot be read from it.";

@@ -56,7 +56,24 @@ console.log("\na companion that answers");
   check("with its version", caps.version, "1.0.0");
   check("offering the manifest", caps.manifest, true);
   check("and file serving", caps.files, true);
-  check("summarised for a person", C.describeCapabilities(caps), "Server companion 1.0.0 connected — mods and addons, mod files.");
+  // A 1.0.0 companion. It predates reading versions out of the plugins themselves, so the
+  // summary must SAY so and name the fix — otherwise its client rows read "cannot be compared"
+  // and the plugins look at fault when the reader is simply not there.
+  check("but not client versions", caps.clientVersions, false);
+  check(
+    "summarised for a person",
+    C.describeCapabilities(caps),
+    "Server companion 1.0.0 connected — mods and addons, mod files. Its client plugin versions come only from that machine's install records — update the companion to read them from the plugins themselves."
+  );
+}
+
+console.log("\na companion that reads plugin versions from the DLLs");
+{
+  const caps = C.readCapabilities(200, { version: "1.1.0", protocol: 1, capabilities: ["manifest", "files", "clientVersions"] });
+  check("declares the capability", caps.clientVersions, true);
+  // Asked about BY NAME rather than inferred from "1.1.0 >= the version that added it", so this
+  // stays right regardless of which order the routes ship in.
+  check("and the summary stops nagging about it", /update the companion/.test(C.describeCapabilities(caps)), false);
 }
 
 console.log("\ncapabilities are asked about by name, not inferred");
@@ -158,8 +175,86 @@ console.log("\nthe manifest, reconciled");
   const folderMod = m.clientMods.find((x) => x.id === "AmandsGraphics");
   check("a folder plugin matches too", folderMod.version, "1.7.0");
   check("addons come through", m.addons.length, 1);
+  check("and that the ledger existed at all is recorded", m.addonsKnown, true);
   check("the client half is known", m.clientKnown, true);
   check("and versions are not declared-only", m.versionsAreDeclaredOnly, false);
+}
+
+console.log("\nclient plugin versions read from the DLL, for plugins no ledger covers");
+{
+  /*
+   * The gap this closes, taken from two real machines. Neither had a registry entry for
+   * `com.swiftxp.spt.showmethemoney.quicksell` — it was installed by hand — yet the local scan
+   * reported 2.3.0, because the manager reads [BepInPlugin] out of the assembly. The companion
+   * could not, so the row was permanently "cannot be compared" and no amount of reinstalling
+   * would have fixed it.
+   *
+   * `showmethemoney` sits beside it deliberately: the two are SEPARATE mods whose names share a
+   * prefix, so anything that resolved a missing version from a similarly-named sibling would
+   * report 2.7.0 here and be confidently wrong.
+   */
+  const m = C.readManifest({
+    ...liveish,
+    clientMods: [
+      {
+        name: "com.swiftxp.spt.showmethemoney.quicksell",
+        kind: "folder",
+        area: "plugins",
+        enabled: true,
+        guid: "com.swiftxp.spt.showmethemoney.quicksell",
+        displayName: "Quick Sell",
+        declaredVersion: "2.3.0",
+        assemblyVersion: "2.3.0"
+      },
+      {
+        name: "com.swiftxp.spt.showmethemoney",
+        kind: "folder",
+        area: "plugins",
+        enabled: true,
+        guid: "com.swiftxp.spt.showmethemoney",
+        declaredVersion: "2.7.0"
+      },
+      // Declared 1.2.1 while the compiled assembly still says 1.0.0 — a real pair, and the
+      // reason the assembly version may never outrank a declared one.
+      { name: "BlackDiv", kind: "folder", area: "plugins", enabled: true, declaredVersion: "1.2.1", assemblyVersion: "1.0.0" },
+      // Nothing declared at all. The assembly's own version is the only thing left.
+      { name: "Tyfon.UIFixes.Net.dll", kind: "file", area: "plugins", enabled: true, assemblyVersion: "5.3.11" }
+    ],
+    registryJson: JSON.stringify([])
+  });
+
+  const quicksell = m.clientMods.find((x) => x.id === "com.swiftxp.spt.showmethemoney.quicksell");
+  check("a hand-installed plugin now has a version", quicksell.version, "2.3.0");
+  check("attributed to the mod's own declaration", quicksell.versionSource, "declared");
+  check("its GUID travels too, which is what makes a catalogue lookup exact", quicksell.guid, "com.swiftxp.spt.showmethemoney.quicksell");
+  check("as does the name the author published under", quicksell.displayName, "Quick Sell");
+
+  // The similarly-named sibling keeps its own version. If these ever converge, the prefix
+  // shortcut has crept back in.
+  check("a similarly named mod is NOT confused with it", m.clientMods.find((x) => x.id === "com.swiftxp.spt.showmethemoney").version, "2.7.0");
+
+  const blackdiv = m.clientMods.find((x) => x.id === "BlackDiv");
+  check("a stale assembly version never outranks a declared one", blackdiv.version, "1.2.1");
+  check("and is not passed off as the declaration", blackdiv.versionSource, "declared");
+
+  const helper = m.clientMods.find((x) => x.id === "Tyfon.UIFixes.Net.dll");
+  check("with nothing declared, the assembly version is used", helper.version, "5.3.11");
+  check("and is named as the weaker source it is", helper.versionSource, "assembly");
+}
+
+console.log("\nan install with no addon records");
+{
+  // Absent and empty must not reduce to the same thing. A machine that has never installed an
+  // addon through this manager has no ledger, and "the server has no addons" is a claim that
+  // cannot be made from a file that does not exist — addons mostly unpack into their parent and
+  // leave nothing on disk to notice.
+  const none = C.readManifest({ ...liveish, addonsJson: null });
+  check("no ledger means unknown", none.addonsKnown, false);
+  check("with an empty list rather than a guess", none.addons.length, 0);
+
+  const empty = C.readManifest({ ...liveish, addonsJson: "[]" });
+  check("an EMPTY ledger is a real answer, not an absent one", empty.addonsKnown, true);
+  check("and still has nothing in it", empty.addons.length, 0);
 }
 
 console.log("\nwhat a server-only box reports");

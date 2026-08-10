@@ -433,6 +433,15 @@
   opacity: 0.75;
 }
 
+/* Which half of the install a server-pane row came from. Quiet on purpose: these label rows
+   rather than flag them, and the issue tag beside them is the thing worth looking at. Server
+   rows carry no badge — they are the majority, so marking them would be noise on every line. */
+.hl-side-client,
+.hl-side-addon {
+  border-color: var(--border-soft);
+  color: var(--text-dim);
+}
+
 /* Marks an inference rather than a documented rule — a guess must look like a guess. */
 .hl-guess {
   font-style: normal;
@@ -657,6 +666,23 @@
 
 .hl-install-btn:disabled {
   opacity: 0.4;
+}
+
+/* Stands where the Install button would be, on rows the app cannot fetch correctly — a client
+   plugin that declares no ID, an addon that never came from the catalogue. Deliberately not a
+   disabled button: a greyed-out control reads as "try again later", when the answer is that this
+   one has to be done by hand. The reason is in the tooltip. */
+.hl-cannot-install {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--radius);
+  padding: 1px 6px;
+  cursor: help;
+  flex-shrink: 0;
 }
 
 /* Compatibility addons in the parity gutter. The plugin rows above cannot show these: most

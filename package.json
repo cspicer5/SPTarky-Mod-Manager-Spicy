@@ -18,8 +18,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && tsc -p electron/tsconfig.json",
+    "build:companion": "node scripts/build-companion.js",
     "electron:dev": "npm run build && electron .",
-    "electron:build": "npm run build && electron-builder",
+    "electron:build": "npm run build:companion && npm run build && electron-builder",
     "audit:forge": "npm run build && node scripts/audit-forge-match.js",
     "audit:headless": "npm run build && node scripts/audit-headless.js",
     "audit:server": "npm run build && node scripts/audit-server.js",
@@ -37,14 +38,15 @@
     "test:sptpick": "tsc -p electron/tsconfig.json && node scripts/test-spt-version-pick.js",
     "test:constraints": "tsc -p electron/tsconfig.json && node scripts/test-spt-constraints.js",
     "test:layout": "tsc -p electron/tsconfig.json && node scripts/test-spt-layout.js",
-    "test": "npm run test:parity && npm run test:sync && npm run test:update && npm run test:ledger && npm run test:presets && npm run test:store && npm run test:payloads && npm run test:addons && npm run test:presetsync && npm run test:bulk && npm run test:sptpick && npm run test:constraints && npm run test:layout && npm run test:registry && npm run test:browse && npm run test:deps && npm run test:bundles && npm run test:companion && npm run test:serverlock && npm run test:companioninstall && npm run test:asar",
+    "test": "npm run test:parity && npm run test:sync && npm run test:update && npm run test:ledger && npm run test:presets && npm run test:store && npm run test:payloads && npm run test:addons && npm run test:presetsync && npm run test:bulk && npm run test:sptpick && npm run test:constraints && npm run test:layout && npm run test:registry && npm run test:browse && npm run test:deps && npm run test:bundles && npm run test:companion && npm run test:serversync && npm run test:serverlock && npm run test:companioninstall && npm run test:asar",
     "test:registry": "tsc -p electron/tsconfig.json && node scripts/test-registry.js",
     "test:browse": "node scripts/test-browse-state.js",
     "test:deps": "tsc -p electron/tsconfig.json && node scripts/test-dependencies.js",
     "test:bundles": "tsc -p electron/tsconfig.json && node scripts/test-bundles.js",
     "test:companion": "tsc -p electron/tsconfig.json && node scripts/test-companion.js",
     "test:serverlock": "node scripts/test-server-lock.js",
-    "test:companioninstall": "tsc -p electron/tsconfig.json && node scripts/test-companion-install.js"
+    "test:companioninstall": "tsc -p electron/tsconfig.json && node scripts/test-companion-install.js",
+    "test:serversync": "tsc -p electron/tsconfig.json && node scripts/test-server-sync.js"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
