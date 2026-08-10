@@ -97,9 +97,12 @@ const SERVER_ISSUE_LABEL: Record<string, string> = {
  * row, and it says WHICH kind of nothing it is — "not installed here" is a difference to act on,
  * "not compared" is a row deliberately held out (SPT's own files, the companion) and is not.
  */
-function BlankRow({ reason }: { reason: string }) {
+function BlankRow({ reason, tone, title }: { reason: string; tone?: "fine" | "needed" | "unknown"; title?: string }) {
   return (
-    <li className={`hl-row hl-row-blank ${reason === "not compared" ? "hl-row-uncompared" : ""}`} aria-hidden="true">
+    <li
+      className={`hl-row hl-row-blank ${reason === "not compared" ? "hl-row-uncompared" : ""} ${tone ? `hl-blank-${tone}` : ""}`}
+      title={title}
+    >
       <span className="hl-blank-mark">{reason}</span>
     </li>
   );
@@ -234,18 +237,25 @@ function InstancePane({
   onSyncMod,
   syncing,
   canSync,
-  alignedSections
+  alignedSections,
+  alignedRole
 }: {
   title: string;
   subtitle: string;
   path: string | null;
   mods: ModInfo[];
   /**
-   * When a server is connected, both panes render THIS instead of their own grouping, so row N
-   * on the left is row N on the right and a gap shows as a blank rather than shifting
-   * everything below it out of step.
+   * When a server is connected, every pane renders THIS instead of its own grouping, so row N in
+   * one pane is row N in the others and a gap shows as a blank rather than shifting everything
+   * below it out of step.
    */
   alignedSections?: AlignedSection[];
+  /**
+   * Which side of each slot this pane draws. The headless client draws only the client-plugin
+   * section — it loads BepInEx and nothing else, so a server mod or an addon cannot be on it and
+   * listing them would report a machine as missing what it cannot hold.
+   */
+  alignedRole?: "local" | "headless";
   rowsByKey: Map<string, ParityRow>;
   overrides: Record<string, HeadlessClass>;
   onOverride: (key: string, klass: HeadlessClass | null) => void;
@@ -353,18 +363,32 @@ function InstancePane({
         alignedSections ? (
           /* The counterpart to the server's readiness box. It fills the reserved block with
              something worth reading rather than blank space, and being the same markup it is
-             the same height, which is what keeps the two lists starting on the same line. */
+             the same height, which is what keeps every list starting on the same line. */
           <>
             <div className="hl-server-status">
-              <strong>This PC</strong>
+              <strong>{alignedRole === "headless" ? "Headless" : "This PC"}</strong>
               <span>{mods.length} installed</span>
             </div>
             <ul className="hl-server-counts">
-              {alignedSections.map((s) => (
-                <li key={s.side}>
-                  {s.slots.filter((slot) => slot.localHas).length} {s.side === "addon" ? "addons" : s.side}
+              {alignedSections
+                .filter((s) => alignedRole !== "headless" || s.side === "client" || s.side === "addon")
+                .map((s) => (
+                  <li key={s.side}>
+                    {s.slots.filter((slot) => (alignedRole === "headless" ? slot.headlessHas : slot.localHas)).length}{" "}
+                    {s.side === "addon" ? "addons" : s.side}
+                  </li>
+                ))}
+              {/* The number that matters on the headless pane: plugins it SHOULD have and does
+                  not. Everything else there is a subset by design. */}
+              {alignedRole === "headless" && (
+                <li className={alignedSections.some((s) => s.slots.some((x) => !x.headlessHas && x.headlessGap === "needed")) ? "bad" : "ok"}>
+                  {alignedSections.reduce(
+                    (n, s) => n + s.slots.filter((x) => !x.headlessHas && x.headlessGap === "needed").length,
+                    0
+                  )}{" "}
+                  needed
                 </li>
-              ))}
+              )}
             </ul>
           </>
         ) : undefined
@@ -377,33 +401,64 @@ function InstancePane({
            a slot the server has and this install does not is a blank of equal height, so the
            two lists stay in step all the way down instead of drifting apart at the first gap. */
         <div className="hl-pane-body hl-aligned">
-          {alignedSections.map((section) => (
-            <section key={section.side} className={`hl-section hl-section-${section.side}`}>
-              <h3 className="hl-group-title">
-                {section.title} <span>{section.hint}</span> ({section.slots.filter((s) => s.localHas).length})
-              </h3>
-              <ul className="hl-list">
-                {section.slots.map((slot) =>
-                  slot.local && slot.localHas ? (
-                    renderRow(slot.local, slot)
-                  ) : slot.localHas ? (
-                    /* An addon: real, installed, but with no folder of its own to act on. */
-                    <li key={slot.key} className="hl-row hl-row-addon">
-                      <div className="hl-row-main">
-                        <span className="hl-name" title={slot.row?.parentName ? `Patches ${slot.row.parentName}` : ""}>
-                          {slot.row?.name}
-                        </span>
-                        <span className="hl-version">{slot.localAddonVersion ?? "—"}</span>
-                      </div>
-                      <div className="hl-row-meta" />
-                    </li>
-                  ) : (
-                    <BlankRow key={slot.key} reason={slot.notCompared ? "not compared" : "not installed here"} />
-                  )
-                )}
-              </ul>
-            </section>
-          ))}
+          {alignedSections
+            /* A headless client loads BepInEx only, so SERVER MODS can never be on it — a column
+               of blanks there would report a machine as missing what it cannot hold.
+               Client plugins and addons both apply, since a client-side patch matters wherever
+               its parent runs. Prepatchers are left out for a different reason: nothing scans
+               the headless client's patchers folder, so every row would be a blank meaning
+               "unknown" rather than anything about that machine. */
+            .filter((section) => alignedRole !== "headless" || section.side === "client" || section.side === "addon")
+            .map((section) => (
+              <section key={section.side} className={`hl-section hl-section-${section.side}`}>
+                <h3 className="hl-group-title">
+                  {section.title} <span>{section.hint}</span> (
+                  {section.slots.filter((s) => (alignedRole === "headless" ? s.headlessHas : s.localHas)).length})
+                </h3>
+                <ul className="hl-list">
+                  {section.slots.map((slot) => {
+                    const mine = alignedRole === "headless" ? slot.headless : slot.local;
+                    const iHaveIt = alignedRole === "headless" ? slot.headlessHas : slot.localHas;
+
+                    if (mine && iHaveIt) return renderRow(mine, slot);
+                    if (iHaveIt) {
+                      /* An addon: real, installed, but with no folder of its own to act on. */
+                      return (
+                        <li key={slot.key} className="hl-row hl-row-addon">
+                          <div className="hl-row-main">
+                            <span className="hl-name" title={slot.row?.parentName ? `Patches ${slot.row.parentName}` : ""}>
+                              {slot.row?.name}
+                            </span>
+                            <span className="hl-version">{slot.localAddonVersion ?? "—"}</span>
+                          </div>
+                          <div className="hl-row-meta" />
+                        </li>
+                      );
+                    }
+
+                    /*
+                     * On the headless pane a gap is the interesting part rather than an absence.
+                     * It runs a deliberate subset — cosmetics and UI tweaks are pointless without
+                     * a screen and some break it outright — so "missing" there is usually correct
+                     * and occasionally serious. The blank says which, from the parity verdict.
+                     */
+                    if (alignedRole === "headless") {
+                      const gap = slot.headlessGap ?? "unknown";
+                      return (
+                        <BlankRow
+                          key={slot.key}
+                          reason={gap === "needed" ? "needed here" : gap === "fine" ? "not needed" : "undecided"}
+                          tone={gap}
+                          title={slot.headlessNote}
+                        />
+                      );
+                    }
+
+                    return <BlankRow key={slot.key} reason={slot.notCompared ? "not compared" : "not installed here"} />;
+                  })}
+                </ul>
+              </section>
+            ))}
         </div>
       ) : (
         <div className="hl-pane-body">
@@ -1010,7 +1065,11 @@ export default function InstancesView({
   const q = searchQuery.trim().toLowerCase();
   const alignedSections =
     serverUrl && server?.reachable
-      ? buildAlignedSections(server.rows, mainMods)
+      ? buildAlignedSections(
+          server.rows,
+          mainMods,
+          headlessConfigured ? { mods: headlessMods, parityRows: parity?.rows ?? [], addonRows: parity?.addons } : undefined
+        )
           .map((section) => ({
             ...section,
             slots: section.slots.filter(
@@ -1158,6 +1217,8 @@ export default function InstancesView({
           collapsed={!!collapsed.headless}
           onToggleCollapse={() => toggle("headless")}
           filtersActive={filtersActive}
+          alignedSections={alignedSections}
+          alignedRole="headless"
         />
         )}
       </div>

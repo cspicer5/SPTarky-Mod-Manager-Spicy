@@ -131,6 +131,78 @@ console.log("\naddons, which have no folder on either side");
   check("and no ModInfo is invented for it", addons.slots[2].local, undefined);
 }
 
+console.log("\nthe headless client shares the same slots");
+{
+  /*
+   * A headless client runs a deliberate SUBSET, so a gap there is the finding rather than an
+   * absence — and whether it matters is the whole question. The verdict comes from the parity
+   * pass; copying that judgement here would be a second opinion free to disagree with the one
+   * already on screen.
+   */
+  const verdict = (klass) => ({ klass, source: "rule", why: `because ${klass}` });
+  const sections = buildAlignedSections(
+    [
+      row({ name: "SAIN", localModId: "SAIN", serverVersion: "4.4.3", localVersion: "4.4.3" }),
+      row({ name: "AmandsGraphics", localModId: "AmandsGraphics", serverVersion: "1.7.0", localVersion: "1.7.0" }),
+      row({ name: "Fika", localModId: "Fika", serverVersion: "2.3.9", localVersion: "2.3.9" })
+    ],
+    [local("SAIN"), local("AmandsGraphics"), local("Fika")],
+    {
+      // The headless has SAIN and Fika; the graphics mod is pointless without a screen.
+      mods: [local("SAIN"), local("Fika")],
+      parityRows: [
+        { key: "client:sain", modKey: "sain", name: "SAIN", type: "client", presence: "both", verdict: verdict("required") },
+        { key: "client:amandsgraphics", modKey: "amandsgraphics", name: "AmandsGraphics", type: "client", presence: "main-only", verdict: verdict("unnecessary") },
+        { key: "client:fika", modKey: "fika", name: "Fika", type: "client", presence: "both", verdict: verdict("required") }
+      ]
+    }
+  );
+
+  const client = section(sections, "client");
+  // The invariant, extended to a third pane: same slots, so all three stay in step.
+  check("the headless walks the SAME slots", client.slots.length, 3);
+
+  const amands = client.slots.find((s) => s.row.name === "AmandsGraphics");
+  check("a plugin the headless lacks is a gap", amands.headlessHas, false);
+  // The distinction that makes the pane readable: this gap is CORRECT.
+  check("and it is marked as fine, not as a problem", amands.headlessGap, "fine");
+  check("with the verdict's own reasoning", amands.headlessNote, "because unnecessary");
+
+  const sain = client.slots.find((s) => s.row.name === "SAIN");
+  check("one it has is present", sain.headlessHas, true);
+}
+
+console.log("\na REQUIRED plugin missing from the headless is a problem");
+{
+  const verdict = (klass) => ({ klass, source: "rule", why: `because ${klass}` });
+  const sections = buildAlignedSections(
+    [row({ name: "Fika", localModId: "Fika", serverVersion: "2.3.9", localVersion: "2.3.9" })],
+    [local("Fika")],
+    {
+      mods: [],
+      parityRows: [{ key: "client:fika", modKey: "fika", name: "Fika", type: "client", presence: "main-only", verdict: verdict("required") }]
+    }
+  );
+  const slot = section(sections, "client").slots[0];
+  check("flagged as needed", slot.headlessGap, "needed");
+  check("and not quietly blank", slot.headlessHas, false);
+}
+
+console.log("\nheadless-only plugins are not lost");
+{
+  // The headless is synced FROM main, so anything here arrived another way and will not survive
+  // the next sync. It gets its own slot rather than vanishing from a list built off main.
+  const sections = buildAlignedSections([], [local("SAIN")], {
+    mods: [local("SAIN"), local("StrayPlugin")],
+    parityRows: []
+  });
+  const client = section(sections, "client");
+  const stray = client.slots.find((s) => s.headless && s.headless.id === "StrayPlugin");
+  check("it gets a slot", Boolean(stray), true);
+  check("present on the headless", stray.headlessHas, true);
+  check("and blank on the main install", stray.localHas, false);
+}
+
 console.log("\nwith nothing to compare against");
 {
   check("no rows and no mods means no sections", buildAlignedSections([], []).length, 0);

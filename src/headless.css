@@ -559,6 +559,22 @@
   opacity: 0.5;
 }
 
+/* On the headless pane a gap is the finding rather than an absence — it runs a deliberate
+   subset, so "missing" there is usually correct and occasionally serious. These say which
+   without shouting: only a plugin that SHOULD be there gets any colour. */
+.hl-blank-needed {
+  background: rgba(200, 117, 46, 0.1);
+}
+
+.hl-blank-needed .hl-blank-mark {
+  color: var(--accent-strong);
+  opacity: 0.9;
+}
+
+.hl-blank-fine .hl-blank-mark {
+  opacity: 0.32;
+}
+
 /* A row held OUT of the comparison on purpose — SPT's own files, the companion this app
    installs. Distinct from a real gap, because "we did not look" and "it is not there" must not
    read the same. */
