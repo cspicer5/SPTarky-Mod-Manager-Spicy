@@ -434,12 +434,27 @@
 }
 
 /* Which half of the install a server-pane row came from. Quiet on purpose: these label rows
-   rather than flag them, and the issue tag beside them is the thing worth looking at. Server
-   rows carry no badge — they are the majority, so marking them would be noise on every line. */
+   rather than flag them, and the issue tag beside them is the thing worth looking at.
+
+   Every row carries one. A mod that ships BOTH a server mod and a client plugin under the same
+   folder name — acidphantasm-botplacementsystem, ManimalIcebreaker, WTT-PackNStrap — produces two
+   legitimate rows, and unlabelled they read as the same mod listed twice. The three are tinted
+   apart so a pair is distinguishable at a glance rather than only by reading the words. */
+.hl-side-server,
 .hl-side-client,
 .hl-side-addon {
   border-color: var(--border-soft);
   color: var(--text-dim);
+}
+
+.hl-side-client {
+  border-color: rgba(96, 128, 168, 0.45);
+  color: #7f9dc0;
+}
+
+.hl-side-addon {
+  border-color: rgba(150, 116, 172, 0.45);
+  color: #a487bb;
 }
 
 /* Marks an inference rather than a documented rule — a guess must look like a guess. */

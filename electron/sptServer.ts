@@ -649,27 +649,39 @@ export function buildServerSyncReport(
     }
 
     /*
-     * Client plugins are matched by NAME and not by GUID, which looks like a missed
-     * opportunity now that both sides report one. It is not, and the reason is worth keeping:
-     * the two sides mean different things by "GUID".
+     * By ASSEMBLY GUID first, falling back to the folder name.
      *
-     *   local  — `ModInfo.guid` prefers the registry's forgeGuid, which identifies the
-     *            CATALOGUE PACKAGE. One package routinely installs several plugin folders:
-     *            HollywoodFX 2.0.0 ships both `HollywoodFX` and `HollywoodGraphics`, and both
-     *            carry `com.janky.hollywoodfx`.
-     *   remote — the companion reads `[BepInPlugin]`, which identifies ONE ASSEMBLY.
-     *            `HollywoodGraphics.dll` declares `com.janky.hollywoodgraphics`.
+     * The GUID has to be the right one, and that is the whole subtlety here. There are two, and
+     * they are not the same namespace:
      *
-     * So a catalogue GUID is many-to-one against plugin folders and cannot key a row, and the
-     * two identities are not even drawn from the same namespace — `Tyfon.UIFixes.dll` declares
-     * `Tyfon.UIFixes` while its catalogue id is `com.tyfon.uifixes`. Matching across them
-     * pairs a mod with its packaging sibling: measured here, remote `HollywoodFX` matched
-     * BOTH local folders and picked one by version order. It happened to agree, which is
-     * exactly how this kind of fault survives a test.
+     *   ModInfo.guid          prefers the registry's forgeGuid = the catalogue PACKAGE. It is
+     *                         many-to-one against folders: HollywoodFX 2.0.0 installs BOTH
+     *                         `HollywoodFX` and `HollywoodGraphics`, so the registry gives both
+     *                         `com.janky.hollywoodfx`.
+     *   ModInfo.assemblyGuid  the `[BepInPlugin]` attribute = ONE assembly.
+     *                         `HollywoodGraphics.dll` declares `com.janky.hollywoodgraphics`.
      *
-     * Folder names ARE like-for-like — two BepInEx listings read by the same convention — so
-     * they stay the key, and rows say "matched by name" because that is the truth.
+     * The companion reads `[BepInPlugin]`, so `assemblyGuid` is the like-for-like counterpart and
+     * `guid` is not. Matching against `guid` made remote `HollywoodFX` match both local folders
+     * and pick one by version order — which agreed, so the report looked right while the matching
+     * was not. They can also be different strings entirely: `Tyfon.UIFixes.dll` declares
+     * `Tyfon.UIFixes` where the catalogue says `com.tyfon.uifixes`.
+     *
+     * Done correctly this beats the folder name, which is a filename somebody chose and which
+     * people rename to control BepInEx load order.
+     *
+     * A multimap, because a plugin shipping as both `Mod.dll` and a `Mod/` folder declares the
+     * same assembly GUID from both halves.
      */
+    const localByAssemblyGuid = new Map<string, ModInfo[]>();
+    for (const mod of localClient) {
+      if (!mod.assemblyGuid) continue;
+      const key = norm(mod.assemblyGuid);
+      const list = localByAssemblyGuid.get(key);
+      if (list) list.push(mod);
+      else localByAssemblyGuid.set(key, [mod]);
+    }
+
     const claimedClient = new Set<string>();
 
     // Collapse the remote side by identity first. A plugin shipping as both `Mod.dll` and a
@@ -701,9 +713,16 @@ export function buildServerSyncReport(
        */
       if (remote.area && remote.area !== "plugins") continue;
 
-      const matches = localByName.get(clientKey(remote.id)) ?? [];
-      // Every local part sharing this identity is accounted for, not just the one shown.
-      for (const m of matches) claimedClient.add(m.id + " " + m.type);
+      const byAssemblyGuid = remote.guid ? localByAssemblyGuid.get(norm(remote.guid)) ?? [] : [];
+      const byName = localByName.get(clientKey(remote.id)) ?? [];
+      // The GUID decides the comparison, but BOTH sets are claimed. A plugin's two halves do not
+      // always agree on identity — the loose `Mod.dll` declares one and the `Mod/` folder beside
+      // it may hold no assembly at all — and claiming only the matched set would leave the other
+      // half unaccounted for and report it as "not on server": a mod present on both machines
+      // shown as a difference, which is the bug the name multimap was added for.
+      const matches = byAssemblyGuid.length ? byAssemblyGuid : byName;
+      for (const m of byAssemblyGuid) claimedClient.add(m.id + " " + m.type);
+      for (const m of byName) claimedClient.add(m.id + " " + m.type);
       // Prefer the part that carries a version — the folder half often has none.
       const local = matches.find((m) => m.version) ?? matches[0];
 
@@ -720,7 +739,7 @@ export function buildServerSyncReport(
         serverVersion: remote.version,
         localVersion: local?.version,
         localModId: local?.id,
-        matchedBy: local ? "name" : undefined
+        matchedBy: local ? (byAssemblyGuid.length ? "guid" : "name") : undefined
       };
 
       if (!local) {

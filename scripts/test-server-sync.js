@@ -180,15 +180,17 @@ console.log("\nwhat makes a row fetchable");
   check("but the local assembly GUID does not make it fetchable", row.installable, false);
 }
 
-console.log("\nclient plugins are matched by name, never across GUID namespaces");
+console.log("\nclient plugins match on the ASSEMBLY guid, never across GUID namespaces");
 {
   /*
    * The fault this guards against, measured on the reference install: HollywoodFX 2.0.0 is ONE
-   * catalogue package that installs TWO plugin folders, so locally both `HollywoodFX` and
-   * `HollywoodGraphics` carry `com.janky.hollywoodfx`. Remotely each declares its own assembly
-   * GUID. Matching local-catalogue against remote-assembly made remote `HollywoodFX` match both
-   * local folders, and it picked one by version order — which agreed, so the report looked
-   * right while the matching was not.
+   * catalogue package that installs TWO plugin folders, so `ModInfo.guid` — which prefers the
+   * registry's forgeGuid — reads `com.janky.hollywoodfx` for BOTH. Each DLL declares its own
+   * `[BepInPlugin]`, which is what the companion reports.
+   *
+   * Matching remote-assembly against local-CATALOGUE made remote `HollywoodFX` match both local
+   * folders and pick one by version order. It agreed, so the report looked right while the
+   * matching was not. `assemblyGuid` is the like-for-like field and is what must be used.
    */
   const report = buildServerSyncReport(
     snapshot({
@@ -198,19 +200,51 @@ console.log("\nclient plugins are matched by name, never across GUID namespaces"
       ]
     }),
     [
-      // Both local folders share the packaging GUID, exactly as the registry records them.
-      localMod({ id: "HollywoodFX", guid: "com.janky.hollywoodfx", version: "2.0.0" }),
-      localMod({ id: "HollywoodGraphics", guid: "com.janky.hollywoodfx", version: "2.0.0" })
+      // Both local folders share the PACKAGING guid, exactly as the registry records them, while
+      // each keeps its own assembly guid.
+      localMod({ id: "HollywoodFX", guid: "com.janky.hollywoodfx", assemblyGuid: "com.janky.hollywoodfx", version: "2.0.0" }),
+      localMod({ id: "HollywoodGraphics", guid: "com.janky.hollywoodfx", assemblyGuid: "com.janky.hollywoodgraphics", version: "2.0.0" })
     ]
   );
 
   check("each folder gets its own row", report.rows.filter((r) => r.side === "client").length, 2);
-  check("matched to the folder of the same name", rowFor(report, "client:hollywoodgraphics").localModId, "HollywoodGraphics");
+  check("matched to itself", rowFor(report, "client:hollywoodgraphics").localModId, "HollywoodGraphics");
   check("and not to its packaging sibling", rowFor(report, "client:hollywoodfx").localModId, "HollywoodFX");
-  // Said honestly. These ARE name matches, and labelling them as GUID matches would present a
-  // weaker method with more confidence than it has earned.
-  check("reported as the name matches they are", rowFor(report, "client:hollywoodfx").matchedBy, "name");
+  check("reported as the exact match it now is", rowFor(report, "client:hollywoodfx").matchedBy, "guid");
   check("with nothing invented on either side", [report.counts.needInstalling, report.counts.notOnServer], [0, 0]);
+}
+
+console.log("\nthe assembly guid beats a renamed folder");
+{
+  // People rename plugins to control BepInEx load order. The name key strips a leading numeric
+  // prefix, but not an arbitrary rename — the GUID survives both.
+  const report = buildServerSyncReport(
+    snapshot({
+      clientMods: [{ id: "SAIN", type: "client", version: "4.4.3", versionSource: "declared", guid: "me.sol.sain", enabled: true, area: "plugins" }]
+    }),
+    [localMod({ id: "zz-SAIN-loadlast.dll", guid: "me.sol.sain", assemblyGuid: "me.sol.sain", version: "4.4.3" })]
+  );
+  const row = rowFor(report, "client:sain");
+  check("matched despite the rename", row.localModId, "zz-SAIN-loadlast.dll");
+  check("by GUID", row.matchedBy, "guid");
+  check("so it is not reported as missing", report.counts.needInstalling, 0);
+  check("nor the local copy as an extra", report.counts.notOnServer, 0);
+}
+
+console.log("\na plugin with no assembly guid still matches by name");
+{
+  // `Tyfon.UIFixes.Net.dll` has no [BepInPlugin] at all. The name path has to keep working, or
+  // adding GUID matching would lose the plugins that have none.
+  const report = buildServerSyncReport(
+    snapshot({
+      clientMods: [{ id: "Tyfon.UIFixes.Net.dll", type: "client", version: "5.3.11", versionSource: "assembly", enabled: true, area: "plugins" }]
+    }),
+    [localMod({ id: "Tyfon.UIFixes.Net.dll", version: "5.3.11" })]
+  );
+  const row = rowFor(report, "client:tyfon.uifixes.net");
+  check("still matched", row.localModId, "Tyfon.UIFixes.Net.dll");
+  check("by name, and it says so", row.matchedBy, "name");
+  check("and comes out in sync", row.issue, undefined);
 }
 
 console.log("\naddons, which only a ledger can see");

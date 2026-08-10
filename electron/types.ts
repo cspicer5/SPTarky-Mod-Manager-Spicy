@@ -57,6 +57,22 @@ export interface ModInfo {
   // enabled/disabled. NOTE: this comment previously ended up merged onto `guid` below.
   manifestOnly?: boolean;
   guid?: string; // GUID declared by the mod (SPT 4.0) — exact match against Forge
+  /**
+   * The GUID read from the ASSEMBLY itself — `[BepInPlugin]` on a client plugin,
+   * `AbstractModMetadata` on a server mod.
+   *
+   * Kept separate from `guid` above, which prefers the registry's forgeGuid and is therefore a
+   * MIXED namespace: forgeGuid identifies the catalogue PACKAGE and is many-to-one against
+   * folders (HollywoodFX 2.0.0 installs both `HollywoodFX` and `HollywoodGraphics`, and the
+   * registry gives both `com.janky.hollywoodfx`), while this one identifies a single assembly
+   * and the two are often not even the same string — `Tyfon.UIFixes.dll` declares
+   * `Tyfon.UIFixes` where the catalogue says `com.tyfon.uifixes`.
+   *
+   * This is the field to compare against a remote machine's plugins, because the companion
+   * reads the same attribute over there. Comparing against `guid` instead matches a mod to its
+   * packaging sibling — and does it silently, since the sibling usually carries the same version.
+   */
+  assemblyGuid?: string;
   linkedModName?: string; // display name of a "linked" mod (e.g. a loose file from the same install) — removing one removes the other
   sptVersion?: string;
   sptCompatibility?: "compatible" | "incompatible" | "unknown"; // SPT version declared by the mod vs. this instance

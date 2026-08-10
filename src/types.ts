@@ -33,6 +33,12 @@ export interface ModInfo {
   packageInferred?: boolean; // joined its package by name similarity, not by an install record
   packageSiblings?: { id: string; type: ModType }[]; // the other parts, when the package is inferred
   guid?: string; // GUID declared by the mod (SPT 4.0) — exact match against Forge
+  /**
+   * The GUID read from the assembly itself. Distinct from `guid`, which prefers the registry's
+   * forgeGuid and so identifies the catalogue PACKAGE rather than one assembly — see the fuller
+   * note on the Electron-side ModInfo. This is the one that compares against a remote machine.
+   */
+  assemblyGuid?: string;
   linkedModName?: string;
 }
 

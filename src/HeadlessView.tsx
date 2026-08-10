@@ -388,6 +388,72 @@ function ServerPane({
   // number made a 25-mod server read as 32.
   const serverModCount = (report?.rows ?? []).filter((r) => r.issue !== "not-on-server").length;
 
+  const allRows = report?.rows ?? [];
+  const sideCount = (side: string) => allRows.filter((r) => (r.side ?? "server") === side).length;
+  const clientRowCount = sideCount("client");
+  const addonRowCount = sideCount("addon");
+
+  /*
+   * Names that appear on more than one side.
+   *
+   * A mod commonly ships BOTH halves under the same folder name — `acidphantasm-botplacementsystem`
+   * exists in `user/mods` AND in `BepInEx/plugins`, and so do ManimalIcebreaker, WTT-PackNStrap and
+   * Show Me The Money. Both rows are real, both are compared separately, and they can drift apart
+   * independently, so neither may be dropped. Rendered identically, though, they read as the same
+   * mod listed twice — which is exactly how it was reported.
+   *
+   * Every row carries its side badge regardless; this set only enriches the TOOLTIP on the ones
+   * where a name genuinely appears on both halves, so the pair explains itself rather than
+   * leaving the reader to work out why one mod is on screen twice.
+   */
+  const sharedNames = new Set<string>();
+  const seenBySide = new Map<string, string>();
+  for (const row of allRows) {
+    const name = row.name.trim().toLowerCase();
+    const side = row.side ?? "server";
+    const other = seenBySide.get(name);
+    if (other !== undefined && other !== side) sharedNames.add(name);
+    else if (other === undefined) seenBySide.set(name, side);
+  }
+
+  /**
+   * The side tag: where this row's files actually live.
+   *
+   * `shared` means a row of the SAME NAME exists on another side — a mod shipping both a server
+   * mod and a client plugin under one folder name. That is not a duplicate and neither row may
+   * be dropped: they are different files that can hold different versions. The tooltip says so
+   * on both, since two identical-looking lines otherwise look like a fault in the report.
+   */
+  const SideBadge = ({ row, shared }: { row: ServerSyncRow; shared: boolean }) => {
+    const side = row.side ?? "server";
+    if (side === "addon") {
+      return (
+        <span
+          className="hl-badge hl-side-addon"
+          title={row.parentName ? `A patch for ${row.parentName}, from the server's addon records.` : "An addon, from the server's addon records."}
+        >
+          addon
+        </span>
+      );
+    }
+    const where = side === "server" ? "user/mods" : "BepInEx/plugins";
+    const otherHalf = side === "server" ? "client plugin" : "server mod";
+    return (
+      <span
+        className={`hl-badge hl-side-${side}`}
+        title={
+          shared
+            ? `The ${side.toUpperCase()} half of this mod, from ${where}. It also ships a ${otherHalf} of the same name, listed separately — different files, and they can differ in version.`
+            : side === "server"
+              ? "A server mod, from user/mods."
+              : "A client plugin on the server machine, from BepInEx/plugins."
+        }
+      >
+        {side}
+      </span>
+    );
+  };
+
   const renderRow = (row: ServerSyncRow) => (
     <li key={row.key} className={`hl-row ${row.issue ? `hl-issue-server-${row.issue}` : ""}`}>
       <div className="hl-row-main">
@@ -425,24 +491,14 @@ function ServerPane({
           ))}
       </div>
       <div className="hl-row-meta">
-        {/* Which half this row came from. The list holds three kinds now — server mods from
-            SPT itself, client plugins and addons from the companion — and they behave
-            differently enough that mixing them unlabelled would make a client plugin look
-            like a server mod that failed to load. Server rows stay unmarked: they are the
-            majority and the pane is already about them. */}
-        {row.side === "client" && (
-          <span className="hl-badge hl-side-client" title="A client plugin on the server machine, reported by the companion.">
-            client
-          </span>
-        )}
-        {row.side === "addon" && (
-          <span
-            className="hl-badge hl-side-addon"
-            title={row.parentName ? `A patch for ${row.parentName}, from the server's addon records.` : "An addon, from the server's addon records."}
-          >
-            addon
-          </span>
-        )}
+        {/* Which half this row came from — on EVERY row, not just the unusual ones.
+            The list holds three kinds now: server mods from SPT itself, client plugins and
+            addons from the companion. They come from different folders, are compared
+            separately, and can differ in version, so leaving the largest group unlabelled
+            made a mod that ships both halves read as the same mod listed twice. The data has
+            carried this all along — the companion returns serverMods and clientMods as
+            separate lists — so this is only a matter of drawing it. */}
+        <SideBadge row={row} shared={sharedNames.has(row.name.trim().toLowerCase())} />
         {row.issue && (
           <span className={`hl-issue hl-issue-tag-server-${row.issue}`} title={row.detail ?? ""}>
             {SERVER_ISSUE_LABEL[row.issue] ?? row.issue}
@@ -474,7 +530,14 @@ function ServerPane({
   return (
     <PaneShell
       title="Server"
-      subtitle="Remote — loaded server mods, read only"
+      // Says what is actually being compared. Without a companion that really is only the
+      // loaded server mods; with one it is the whole install, and leaving the old wording in
+      // place made the headline number look wrong rather than broader.
+      subtitle={
+        clientRowCount || addonRowCount
+          ? "Remote — server mods, client plugins and addons, read only"
+          : "Remote — loaded server mods, read only"
+      }
       location={url}
       count={report ? serverModCount : "…"}
       collapsed={collapsed}
@@ -506,12 +569,25 @@ function ServerPane({
         <p className="empty-list">{query ? "Nothing here matches the search." : "No server mods reported."}</p>
       ) : (
         <div className="hl-pane-body">
-          {/* Titled by what is actually in the list. With a companion this is all three halves
-              of an install, and calling that "server mods" would misdescribe most of it. */}
+          {/* Titled by what is actually in the list, and BROKEN DOWN by half.
+              With a companion this is all three parts of an install, so a single total invites
+              the obvious question — "why does it say 70 when I have 68?" — whose answer is that
+              it is no longer counting the same thing the local pane counts. Saying
+              "33 server · 34 client · 4 addons" answers that in place. */}
           <h3 className="hl-group-title">
-            {rows.some((r) => r.side === "client" || r.side === "addon") ? "Everything compared" : "Server mods"}{" "}
-            <span>{rows.some((r) => r.side === "client" || r.side === "addon") ? "server, client and addons" : "loaded"}</span> (
-            {rows.length})
+            {clientRowCount || addonRowCount ? "Everything compared" : "Server mods"}{" "}
+            <span>
+              {clientRowCount || addonRowCount
+                ? [
+                    `${sideCount("server")} server`,
+                    clientRowCount ? `${clientRowCount} client` : null,
+                    addonRowCount ? `${addonRowCount} addon${addonRowCount === 1 ? "" : "s"}` : null
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")
+                : "loaded"}
+            </span>{" "}
+            ({rows.length})
           </h3>
           <ul className="hl-list">{rows.map(renderRow)}</ul>
         </div>

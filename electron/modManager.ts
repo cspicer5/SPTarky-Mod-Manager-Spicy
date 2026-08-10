@@ -1283,6 +1283,10 @@ export function scanMods(clientRoot: string, serverRoot: string): ModInfo[] {
       // (BepInPlugin) belongs to the mod's runtime and is not always the same — it serves
       // as plan B for mods installed outside the app.
       guid: registryEntry?.forgeGuid ?? metadata.guid,
+      // The assembly's own GUID, kept UNMIXED alongside the catalogue-first one above. It is
+      // what a remote machine's plugins can be compared against, since the companion reads the
+      // very same attribute there.
+      assemblyGuid: metadata.guid,
       sptVersion: metadata.sptVersion,
       packageId: registryEntry?.packageId,
       installedAt: registryEntry?.installedAt,
