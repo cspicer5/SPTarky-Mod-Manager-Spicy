@@ -194,9 +194,21 @@ Runs the real matching code against an install and reports what resolved, by whi
 ### Building
 
 ```bash
+npm run build:companion                                          # the C# server companion
 npm run build                                                    # renderer + main
 npx electron-builder --win zip "-c.win.signAndEditExecutable=false"   # release artifact
 npx electron-builder --win dir "-c.win.signAndEditExecutable=false"   # portable folder only
+```
+
+`build:companion` compiles `companion/` and copies the DLL to `companion/dist/`, which is where
+electron-builder packages it from. That file is **gitignored** and built per release, so a clean
+clone has no companion until this runs — and the copy used to be manual, which is how v1.4.0
+nearly shipped a companion that was built but never packaged. It needs an SPT install to
+reference (SPT publishes no NuGet packages); pass another path to build against a different
+version:
+
+```bash
+node scripts/build-companion.js "D:\SPT41\SPT_Runtime"
 ```
 
 The `zip` target writes `release/SPTarky-Mod-Manager-Spicy-win-x64.zip` — deliberately **without** the version in the filename. That is the file the in-app updater downloads, and a stable name means the matcher cannot drift as versions change, and `releases/latest/download/SPTarky-Mod-Manager-Spicy-win-x64.zip` is a permanent link. The NSIS installer keeps its version, since a person downloads that one and files it somewhere.

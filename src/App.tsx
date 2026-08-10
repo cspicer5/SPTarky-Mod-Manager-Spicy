@@ -1288,10 +1288,18 @@ export default function App() {
           if (!options.quiet) pushToast(tMsg(result.message), true);
           return true;
         }
-        // Falls through to the catalogue rather than stopping. A server that cannot serve this
-        // particular mod is an ordinary state — the companion may be older, or the mod may sit
-        // somewhere its file routes do not reach — and the catalogue is still a route to it.
-        if (!options.quiet) pushToast(`${tMsg(result.message)} Trying the catalogue instead…`, false);
+        /*
+         * Falls through to the catalogue rather than stopping. A server that cannot serve this
+         * particular mod is an ordinary state — the companion may be older, or the mod may sit
+         * somewhere its file routes do not reach — and the catalogue is still a route to it.
+         *
+         * Announced even during a bulk run, where every other per-mod message is suppressed.
+         * `quiet` exists to stop N success toasts becoming noise, but this one is not progress:
+         * it says the files came from somewhere OTHER than the source the toggle names, and a
+         * silent change of provenance is precisely what nobody should have to discover later
+         * from the version ledger.
+         */
+        pushToast(`${tMsg(result.message)} Falling back to the catalogue for "${row.name}".`, false);
       } finally {
         setInstallingFromServer(null);
       }
