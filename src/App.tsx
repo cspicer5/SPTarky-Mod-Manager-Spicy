@@ -36,6 +36,7 @@ import { Lang, translate, translateBackendMessage } from "./i18n";
 import { browseInstallState, compareSemver } from "./browseInstallState";
 import { planSptVersionLock } from "./serverLock";
 import CompanionStatus, { readServerCompanion } from "./CompanionStatus";
+import { isCompanionMod } from "./companionState";
 import DependencyPanel from "./DependencyPanel";
 import InstancesView from "./HeadlessView";
 import PresetsPanel from "./PresetsPanel";
@@ -1427,6 +1428,11 @@ export default function App() {
   const applyFilterSort = useCallback((source: ModInfo[]) => {
     const q = searchQuery.trim().toLowerCase();
     const filtered = source.filter((m) => {
+      // The companion is not a mod and never appears in a mod list. It has its own box in the
+      // header, which is where it is installed, reported and removed. Filtered HERE because both
+      // the single view and the instance panes read through this one function, so there is one
+      // rule rather than a copy per list that can drift.
+      if (isCompanionMod(m)) return false;
       if (q && !m.name.toLowerCase().includes(q)) return false;
       if (typeFilter !== "all" && m.type !== typeFilter) return false;
       if (statusFilter === "enabled" && !m.enabled) return false;

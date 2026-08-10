@@ -12,6 +12,26 @@
  */
 import { ServerSyncReport } from "./types";
 
+/**
+ * The companion itself, which is not a mod and must not be listed as one.
+ *
+ * It is infrastructure this app installs to answer questions about a server — nobody chose it as
+ * content, it changes nothing in a raid, and it is installed and removed from its own box in the
+ * header. Listing it among the mods put a ✕ beside it that would break the very connection the
+ * pane is reporting on, and it inflated the install's mod count by one against every other
+ * instance.
+ *
+ * The comparison already excluded it on the SERVER side for the same reason (a mismatch there is
+ * always expected and never actionable); this is the local half of that rule.
+ *
+ * Matched on GUID first, so renaming the folder does not smuggle it back into the list.
+ */
+export function isCompanionMod(mod: { id?: string; name?: string; guid?: string }): boolean {
+  if (mod.guid && mod.guid.trim().toLowerCase() === "com.sptarky.companion") return true;
+  const named = (value?: string) => (value ?? "").trim().toLowerCase() === "sptarkycompanion";
+  return named(mod.id) || named(mod.name);
+}
+
 export type CompanionServerState =
   /** No server is being tracked, so nothing can be said about one. */
   | { kind: "none" }
