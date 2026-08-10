@@ -797,10 +797,16 @@ export function readAssemblyModMetadata(buf: Buffer): AssemblyModMetadata | null
     const tables = parseTables(image);
     if (!tables) return null;
     const declared = readAbstractModMetadata(tables) ?? readBepInPlugin(tables);
-    if (!declared) return null;
-    // Always attach the assembly version, but never let it stand in for a declared one —
-    // the caller decides whether to fall back to it.
-    return { ...declared, assemblyVersion: readAssemblyVersion(tables) };
+    const assemblyVersion = readAssemblyVersion(tables);
+    // An assembly with NO declared identity still has a version worth having, and returning null
+    // here threw it away. That excluded exactly the files that declare nothing — prepatchers,
+    // which are not plugins and carry no [BepInPlugin] — so the companion (which reads the
+    // assembly version independently) reported a version for them and this side did not, and
+    // every prepatcher compared as "can't compare".
+    if (!declared) return assemblyVersion ? { assemblyVersion } : null;
+    // Never let the assembly version stand in for a declared one — the caller decides whether
+    // to fall back to it.
+    return { ...declared, assemblyVersion };
   } catch {
     // A malformed or obfuscated assembly must never break a scan of the whole mod list.
     return null;

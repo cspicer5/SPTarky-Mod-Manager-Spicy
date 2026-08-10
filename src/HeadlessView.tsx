@@ -79,21 +79,15 @@ const ISSUE_LABEL: Record<string, string> = {
 const SERVER_ISSUE_LABEL: Record<string, string> = {
   "missing-locally": "Missing here",
   "outdated-locally": "Behind server",
+  "disabled-locally": "Disabled here",
   "newer-locally": "Newer here",
   "not-on-server": "Not on server",
   "unknown-local-version": "Can't compare"
 };
 
-/**
- * The three halves of an install, in the order the local pane lists them, so the two panes can
- * be read across. Addons come last because they are the only ones with no folder of their own —
- * they live inside their parent and exist, as far as anything can tell, only in the ledger.
- */
-const SERVER_SECTIONS: { side: "client" | "server" | "addon"; title: string; hint: string }[] = [
-  { side: "client", title: "Client plugins", hint: "BepInEx/plugins" },
-  { side: "server", title: "Server mods", hint: "user/mods" },
-  { side: "addon", title: "Addons", hint: "patches, from install records" }
-];
+/* The section list lives in serverAlignment.ts and nowhere else. Both panes walk the SAME
+   sections in the same order — that is what keeps them in step — so a second copy here would be
+   a way for the two lists to disagree about what exists. */
 
 /**
  * A placeholder holding one side's place while the other has something.

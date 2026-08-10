@@ -246,12 +246,14 @@ export type ServerSyncIssue =
   | "outdated-locally"
   | "newer-locally"
   | "not-on-server"
-  | "unknown-local-version";
+  | "unknown-local-version"
+  /** Present on disk but parked in a .disabled folder, while the server runs it. */
+  | "disabled-locally";
 
 export interface ServerSyncRow {
   key: string;
   /** Which half this row is about. Client and addon rows appear only when a companion reported them. */
-  side?: "server" | "client" | "addon";
+  side?: "server" | "client" | "addon" | "patcher";
   /** Local folder name when matched, otherwise whatever the server declares. */
   name: string;
   /** The server's own name, kept only when it differs (Fika's server half calls itself "server"). */
@@ -317,6 +319,8 @@ export interface ServerSyncReport {
    * and "addons were not compared" look identical in a list and mean opposite things.
    */
   addonsCompared?: boolean;
+  /** Whether BepInEx/patchers could be compared. Needs a companion and a local patcher scan. */
+  patchersCompared?: boolean;
   readyToPlay: boolean;
 }
 

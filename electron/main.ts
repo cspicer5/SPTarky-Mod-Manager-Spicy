@@ -37,7 +37,8 @@ import {
   undismissForgeUpdate,
   copyClientModToHeadless,
   removeModFromHeadless,
-  recordServerPullInstall
+  recordServerPullInstall,
+  scanPatchers
 } from "./modManager";
 import {
   checkModDependencies,
@@ -1862,8 +1863,15 @@ ipcMain.handle("get-server-sync", async () => {
       }))
     : undefined;
 
+  // Prepatchers, listed as FILES rather than mods — the local scanner folds them into their
+  // parents, so this is the only way to compare them like-for-like against the server's folder.
+  const localPatchers = roots ? scanPatchers(roots.clientRoot) : undefined;
+
   const snapshot = await fetchServerSnapshot(serverUrl);
-  return { configured: true, report: buildServerSyncReport(snapshot, localMods, localSpt ?? undefined, localAddons) };
+  return {
+    configured: true,
+    report: buildServerSyncReport(snapshot, localMods, localSpt ?? undefined, localAddons, localPatchers)
+  };
 });
 
 /**

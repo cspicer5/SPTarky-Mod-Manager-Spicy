@@ -20,7 +20,7 @@
  */
 import type { ModInfo, ServerSyncRow } from "./types";
 
-export type AlignedSide = "client" | "server" | "addon";
+export type AlignedSide = "client" | "server" | "addon" | "patcher";
 
 export interface AlignedSlot {
   key: string;
@@ -51,6 +51,7 @@ export interface AlignedSection {
 const SECTIONS: { side: AlignedSide; title: string; hint: string }[] = [
   { side: "client", title: "Client plugins", hint: "BepInEx/plugins" },
   { side: "server", title: "Server mods", hint: "user/mods" },
+  { side: "patcher", title: "Prepatchers", hint: "BepInEx/patchers" },
   { side: "addon", title: "Addons", hint: "patches, from install records" }
 ];
 
@@ -73,7 +74,10 @@ export function buildAlignedSections(rows: ServerSyncRow[], localMods: ModInfo[]
       const serverHas = row.issue !== "not-on-server";
       const localHas = row.issue !== "missing-locally";
 
-      if (side === "addon") {
+      // Neither addons nor prepatchers are mods, so neither has a ModInfo to pair with. An addon
+      // owns no folder at all; a patcher owns a file but is folded into its parent by the scanner
+      // and never listed on its own. Both are described entirely by the row itself.
+      if (side === "addon" || side === "patcher") {
         slots.push({ key: row.key, row, localAddonVersion: row.localVersion, serverHas, localHas });
         continue;
       }
@@ -88,7 +92,7 @@ export function buildAlignedSections(rows: ServerSyncRow[], localMods: ModInfo[]
     // Local mods this section covers that no row referred to. They are not differences — they
     // were held out of the comparison on purpose (SPT's own files, the companion this app
     // installs) — so they are shown with the far side marked "not compared" rather than blank.
-    if (side !== "addon") {
+    if (side !== "addon" && side !== "patcher") {
       for (const mod of localMods) {
         const isServer = mod.type === "server";
         if ((side === "server") !== isServer) continue;

@@ -294,6 +294,61 @@ export function findRelatedPatcherFiles(dir: string, modId: string, manifestFile
     .map((entry) => path.join(dir, entry.name));
 }
 
+/** A file or folder in BepInEx/patchers, which is NOT a mod — see `scanPatchers`. */
+export interface LocalPatcher {
+  /** File or folder name as it sits on disk. Patchers can be either. */
+  id: string;
+  /** False for anything in patchers.disabled. */
+  enabled: boolean;
+  version?: string;
+}
+
+/**
+ * Lists BepInEx/patchers, so prepatchers can be compared against another machine.
+ *
+ * Deliberately NOT part of `scanMods`. A prepatcher is not a mod: nobody installs one on
+ * purpose, it arrives with the mod that ships it, and the scanner folds it into that parent so
+ * it does not appear as a separate row people could enable, disable or remove independently —
+ * doing any of those to a patcher breaks its parent.
+ *
+ * That folding is exactly why parity could not see them. The companion lists every patcher file
+ * individually while the local side lists none of them, so comparing the two reported mods as
+ * missing that were sitting on disk — five of them against the real server, four of which were
+ * present the whole time. The answer is not to unfold them into mods but to compare LIKE with
+ * LIKE: this folder against that folder, as files.
+ */
+export function scanPatchers(clientRoot: string): LocalPatcher[] {
+  const out: LocalPatcher[] = [];
+  for (const [dir, enabled] of [
+    [p(clientRoot, CLIENT_PATCHERS_DIR), true],
+    [p(clientRoot, CLIENT_PATCHERS_DISABLED_DIR), false]
+  ] as [string, boolean][]) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        // A patcher is usually a loose .dll but is sometimes a folder — WTT-ContentBackportPatcher
+        // and TarkovDLSS45 both are on the reference install.
+        let version: string | undefined;
+        if (entry.isDirectory()) {
+          version = findFilesRecursive(full, ".dll")
+            .map((dll) => readDllModMetadata(dll).version)
+            .find(Boolean);
+        } else if (entry.name.toLowerCase().endsWith(".dll")) {
+          const meta = readDllModMetadata(full);
+          version = meta.version ?? meta.assemblyVersion;
+        } else {
+          continue; // configs and readmes sit here too and are not patchers
+        }
+        out.push({ id: entry.name, enabled, version });
+      }
+    } catch {
+      /* an unreadable patchers folder is not worth failing a whole scan over */
+    }
+  }
+  return out;
+}
+
 export function isProtectedClientEntry(name: string): boolean {
   return PROTECTED_CLIENT_PLUGIN_NAMES.has(name.toLowerCase());
 }
@@ -540,7 +595,12 @@ export function readDllModMetadata(dllPath: string): DllModMetadata {
       name: parsed?.name ?? scanned.name,
       author: parsed?.author ?? scanned.author,
       version: parsed?.version ?? scanned.version,
-      sptVersion: parsed?.sptVersion ?? scanned.sptVersion
+      sptVersion: parsed?.sptVersion ?? scanned.sptVersion,
+      // Carried on this path too. It used to be returned ONLY when a BepInPlugin GUID was found,
+      // which excluded precisely the files that have no such attribute — prepatchers. The
+      // companion reads their assembly version happily, so the two sides disagreed about whether
+      // a patcher had a version at all, and every one of them compared as "can't compare".
+      assemblyVersion: parsed?.assemblyVersion
     };
   } catch {
     return {};

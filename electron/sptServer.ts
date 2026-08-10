@@ -446,12 +446,14 @@ export type ServerSyncIssue =
   | "outdated-locally"
   | "newer-locally"
   | "not-on-server"
-  | "unknown-local-version";
+  | "unknown-local-version"
+  /** Present on disk but parked in a .disabled folder, while the server runs it. */
+  | "disabled-locally";
 
 export interface ServerSyncRow {
   key: string;
-  /** Which half this row is about. Client and addon rows appear only when a companion reported them. */
-  side?: "server" | "client" | "addon";
+  /** Which half this row is about. Everything but `server` needs a companion to report it. */
+  side?: "server" | "client" | "addon" | "patcher";
   /** Display name — the local folder name when matched, otherwise what the server declares. */
   name: string;
   /** What the server calls it, kept when it differs so the row can be traced back. */
@@ -530,6 +532,11 @@ export interface ServerSyncReport {
    * things — addons routinely merge into their parent's folder and leave nothing on disk to see.
    */
   addonsCompared?: boolean;
+  /**
+   * Whether BepInEx/patchers could be compared. Needs a companion (to see the server's) and a
+   * local scan; an empty patchers folder is a real answer, not knowing what is in it is not.
+   */
+  patchersCompared?: boolean;
   /** True when nothing stands between you and joining the server. */
   readyToPlay: boolean;
 }
@@ -554,7 +561,13 @@ export function buildServerSyncReport(
    * undefined is "not read", which stops addons being compared at all, while an empty array is a
    * machine that genuinely has none and can legitimately be shown as missing the server's.
    */
-  localAddons?: RemoteAddon[]
+  localAddons?: RemoteAddon[],
+  /**
+   * This install's BepInEx/patchers, from `scanPatchers`. Undefined skips the comparison, the
+   * same way an unread addon ledger does — an empty patchers folder is a real answer, not
+   * knowing what is in it is not.
+   */
+  localPatchers?: { id: string; enabled: boolean; version?: string }[]
 ): ServerSyncReport {
   const counts = { inSync: 0, needUpdating: 0, needInstalling: 0, newerLocally: 0, notOnServer: 0, unknownVersion: 0 };
 
@@ -891,6 +904,114 @@ export function buildServerSyncReport(
     }
   }
 
+  /* --- prepatchers ---------------------------------------------------------------------
+   *
+   * Compared FOLDER TO FOLDER: BepInEx/patchers here against BepInEx/patchers there.
+   *
+   * They were skipped entirely until now, and the reason they had to be is worth keeping. The
+   * companion lists every patcher file individually, while the local scanner folds a patcher into
+   * the mod that ships it and never lists it alone — a patcher is not something anyone installs
+   * or removes on its own. Comparing the companion's file list against the local MOD list
+   * therefore reported mods as missing that were sitting on disk: five against the real server,
+   * four of them present the whole time.
+   *
+   * The fix is not to unfold patchers into mods but to compare like with like. Against the same
+   * server that produced those five false positives, this produces two differences and both are
+   * real: a patcher disabled here and running there, and one here the server does not have.
+   */
+  const patchersCompared = Boolean(snapshot.clientMods && localPatchers);
+  if (snapshot.clientMods && localPatchers) {
+    const localByKey = new Map<string, { id: string; enabled: boolean; version?: string }>();
+    for (const p of localPatchers) {
+      const key = clientKey(p.id);
+      const held = localByKey.get(key);
+      // An enabled copy wins over a disabled one. Both can exist at once — a leftover in
+      // patchers.disabled beside a live one — and the running file is the one that matters.
+      if (!held || (!held.enabled && p.enabled)) localByKey.set(key, p);
+    }
+
+    const remoteByKey = new Map<string, RemoteMod>();
+    for (const entry of snapshot.clientMods) {
+      if (entry.area !== "patchers") continue;
+      const key = clientKey(entry.id);
+      const held = remoteByKey.get(key);
+      if (!held || (!held.enabled && entry.enabled)) remoteByKey.set(key, entry);
+    }
+
+    const claimedPatchers = new Set<string>();
+
+    for (const remote of remoteByKey.values()) {
+      // SPT's own prepatcher. Arrives with SPT, nobody manages it.
+      if (isSptOwnedPlugin(remote.id)) continue;
+      const key = clientKey(remote.id);
+      const local = localByKey.get(key);
+      if (local) claimedPatchers.add(key);
+
+      const row: ServerSyncRow = {
+        key: "patcher:" + key,
+        side: "patcher",
+        name: local?.id ?? remote.id,
+        serverVersion: remote.version,
+        localVersion: local?.version,
+        matchedBy: local ? "name" : undefined,
+        // Never installable on its own. A patcher arrives with the mod that ships it, and the
+        // companion's file routes do not serve BepInEx/patchers at all — they are rooted at
+        // user/mods and BepInEx/plugins. Fetching one in isolation would also be the wrong
+        // repair: the parent is what is actually missing or behind.
+        installable: false,
+        notInstallableReason:
+          "Prepatchers arrive with the mod that ships them. Install or update that mod and this comes with it."
+      };
+
+      if (!local) {
+        row.issue = "missing-locally";
+        row.detail = "The server runs this prepatcher and you do not have it. It belongs to a mod — installing that mod brings it.";
+        counts.needInstalling++;
+      } else if (!local.enabled && remote.enabled) {
+        // Present but parked, which is its own state. "Missing" would be wrong — the file is
+        // right there — and "behind" would be wrong too, since the version may match exactly.
+        // A disabled prepatcher simply does not run, so the mod it belongs to behaves
+        // differently here than it does there, and the fix is to enable it rather than fetch it.
+        row.issue = "disabled-locally";
+        row.detail = "You have this prepatcher but it is disabled, and the server runs it. Enable the mod it belongs to, or the mod will not behave the same here.";
+        counts.needUpdating++;
+      } else if (!local.version || !remote.version) {
+        row.issue = "unknown-local-version";
+        row.detail = "One side reports no version for this prepatcher, so it cannot be compared.";
+        counts.unknownVersion++;
+      } else {
+        const cmp = compareVersions(local.version, remote.version);
+        if (cmp < 0) {
+          row.issue = "outdated-locally";
+          row.detail = `The server runs ${remote.version}; you have ${local.version}. Update the mod that ships it.`;
+          counts.needUpdating++;
+        } else if (cmp > 0) {
+          row.issue = "newer-locally";
+          row.detail = `You have ${local.version}; the server runs ${remote.version}.`;
+          counts.newerLocally++;
+        } else {
+          counts.inSync++;
+        }
+      }
+      rows.push(row);
+    }
+
+    for (const local of localByKey.values()) {
+      const key = clientKey(local.id);
+      if (claimedPatchers.has(key)) continue;
+      if (isSptOwnedPlugin(local.id)) continue;
+      rows.push({
+        key: "patcher:" + key,
+        side: "patcher",
+        name: local.id,
+        localVersion: local.version,
+        issue: "not-on-server",
+        detail: "You have this prepatcher and the server does not. It patches the game before it loads, so it can change behaviour the server is not expecting."
+      });
+      counts.notOnServer++;
+    }
+  }
+
   // --- addons, the third thing a plain server cannot answer ---------------------------
   //
   // Gated on BOTH ledgers being present, because an addon comparison is ledger against ledger and
@@ -992,7 +1113,8 @@ export function buildServerSyncReport(
   const severity: Record<string, number> = {
     "missing-locally": 0,
     "outdated-locally": 1,
-    "unknown-local-version": 2,
+    "disabled-locally": 2,
+    "unknown-local-version": 3,
     "newer-locally": 3,
     "not-on-server": 4
   };
@@ -1018,6 +1140,7 @@ export function buildServerSyncReport(
     companionReason: snapshot.companion?.reason,
     serverClientMods: snapshot.clientMods?.map((m) => ({ id: m.id, version: m.version, enabled: m.enabled })),
     addonsCompared,
+    patchersCompared,
     rows,
     counts,
     // "Newer locally" and "not on server" are mismatches worth showing but do not stop you

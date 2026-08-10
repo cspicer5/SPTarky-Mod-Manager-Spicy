@@ -474,6 +474,10 @@
   background: rgba(122, 148, 86, 0.05);
 }
 
+.hl-section-patcher {
+  background: rgba(180, 140, 90, 0.05);
+}
+
 .hl-section-addon {
   background: rgba(150, 116, 172, 0.06);
 }
