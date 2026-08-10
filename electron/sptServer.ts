@@ -453,7 +453,7 @@ export function buildServerSyncReport(
   // reports the server side alone, so folding client plugins in would report every one of them
   // as "not on server" — noise, not information. WITH the companion, the client half is
   // genuinely known and is compared below.
-  const localServer = localMods.filter((m) => m.type === "server");
+  const localServer = localMods.filter((m) => m.type === "server" && !isCompanionMod(m.id, m.guid));
 
   const byGuid = new Map<string, ModInfo>();
   const byName = new Map<string, ModInfo>();
@@ -467,6 +467,7 @@ export function buildServerSyncReport(
   const claimed = new Set<string>();
 
   for (const mod of snapshot.mods) {
+    if (isCompanionMod(mod.name, mod.modGuid)) continue;
     const viaGuid = mod.modGuid ? byGuid.get(norm(mod.modGuid)) : undefined;
     const local = viaGuid ?? byName.get(norm(mod.name));
     const matchedBy = viaGuid ? "guid" : local ? "name" : undefined;
@@ -585,6 +586,19 @@ export function buildServerSyncReport(
       // SPT ships its own files into BepInEx/plugins. They are not mods, nobody installs or
       // removes them, and reporting them would put permanent noise at the top of the list.
       if (isSptOwnedPlugin(remote.id)) continue;
+
+      /*
+       * Patchers are skipped, and this is a like-for-like problem rather than an omission.
+       *
+       * The companion lists every file under BepInEx/patchers individually, while the local
+       * scanner folds a prepatcher into the parent mod that ships it and never lists it alone.
+       * Comparing the two therefore reported mods as missing that were sitting on disk: against
+       * the real remote server it produced five, and four of them — FixPluginTypesSerialization,
+       * MoreBotsPrepatch, ISBSpecialForces, WTT-ContentBackportPatcher — were present locally
+       * the whole time. A parity report that invents missing mods is worse than one that says
+       * less, so the side that cannot see them decides what gets compared.
+       */
+      if (remote.area && remote.area !== "plugins") continue;
 
       const matches = localByName.get(clientKey(remote.id)) ?? [];
       // Every local part sharing this identity is accounted for, not just the one shown.
@@ -714,4 +728,19 @@ function clientKey(name: string | undefined): string {
 function isSptOwnedPlugin(name: string | undefined): boolean {
   const key = clientKey(name);
   return key === "spt" || key.startsWith("spt-") || key.startsWith("spt.");
+}
+
+/**
+ * The SPTarky companion itself, which must never appear in a parity report.
+ *
+ * It is infrastructure this manager installs, not a mod anyone chose, and whether a given
+ * machine has it is a deliberate per-machine decision — the server needs it, a plain client
+ * does not. Comparing the two therefore produces a difference that is always expected and
+ * never actionable, and the header already reports its presence on both sides properly.
+ *
+ * Matched on GUID first, since that survives someone renaming the folder.
+ */
+function isCompanionMod(name?: string, guid?: string): boolean {
+  if (guid && guid.trim().toLowerCase() === "com.sptarky.companion") return true;
+  return (name ?? "").trim().toLowerCase() === "sptarkycompanion";
 }

@@ -144,6 +144,12 @@ export interface RemoteMod {
    * Server mods only; the server cannot tell whether a client plugin loaded.
    */
   failedToLoad?: boolean;
+  /**
+   * "plugins" or "patchers", for client entries. Load-bearing: the local scanner folds a
+   * patcher into its parent mod rather than listing it, so comparing patchers as standalone
+   * entries reports mods as missing that are sitting right there on disk.
+   */
+  area?: string;
 }
 
 export interface RemoteManifest {
@@ -225,6 +231,7 @@ export function readManifest(body: unknown): RemoteManifest | null {
       guid: typeof entry.guid === "string" ? entry.guid : undefined,
       name: typeof entry.name === "string" ? entry.name : undefined,
       enabled: entry.enabled !== false,
+      ...(typeof entry.area === "string" ? { area: entry.area } : {}),
       ...(entry.loaded === false ? { failedToLoad: true } : {})
     };
   };
