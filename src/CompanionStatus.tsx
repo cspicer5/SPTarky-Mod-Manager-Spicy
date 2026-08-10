@@ -75,6 +75,11 @@ export default function CompanionStatus({
         Companion Server App
       </span>
       <div className="companion-row">
+      {/* The buttons sit UNDER the This PC indicator, not at the end of the row. They only
+          ever act on this machine — nothing here can install to or remove from the remote
+          server — and trailing the row put them next to the Remote Server chip, where they
+          read as acting on it. */}
+      <div className="companion-col">
       <span
         className={`companion-dot ${installed ? "on" : "off"}`}
         title={
@@ -86,10 +91,7 @@ export default function CompanionStatus({
         {installed ? "This PC: installed" : "This PC: not installed"}
       </span>
 
-      <span className={`companion-dot server-${server.kind}`} title={serverTitle}>
-        {serverLabel}
-      </span>
-
+      <div className="companion-actions">
       {installed ? (
         <>
           {local?.differsFromBundled && (
@@ -111,6 +113,12 @@ export default function CompanionStatus({
           {busy ? "…" : "Install companion"}
         </button>
       )}
+      </div>
+      </div>
+
+      <span className={`companion-dot server-${server.kind}`} title={serverTitle}>
+        {serverLabel}
+      </span>
       </div>
     </div>
   );

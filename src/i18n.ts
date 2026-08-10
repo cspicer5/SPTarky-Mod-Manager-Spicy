@@ -39,11 +39,16 @@ const en: Dict = {
 
   "header.browseForge": "Browse mods",
   "header.browseForgeTitle": "Search and install mods straight from the catalogue",
-  "header.openHub": "Download mods",
+  // Names the destination, not the outcome: this opens the catalogue in a browser and
+  // downloads nothing itself, which "Download mods" implied next to a button that really
+  // does install.
+  "header.openHub": "Go To Forge",
   "header.openHubTitle": "Open the mod catalogue in the browser",
   "header.changeInstance": "Change instance",
   "header.changeInstanceTitle": "Select a different SPT instance",
-  "header.installButton": "Install mod (.zip / .7z / .rar)",
+  // "Manually" separates it from Browse mods, which installs for you. This one is the
+  // fallback for an archive you already have.
+  "header.installButton": "Manually Install Mod (.zip / .7z / .rar)",
   "header.installButtonTitle": "Choose a .zip, .7z, or .rar to install",
   "header.installing": "Installing...",
   "header.splitInstance": "Client: {client}  •  Server: {server}",

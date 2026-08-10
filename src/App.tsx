@@ -2481,55 +2481,14 @@ export default function App() {
               ) : (
                 <span className="instance-path" title={sptPath ?? ""}>{sptPath}</span>
               )}
-              {/* Sits under the instance path because the left indicator is a fact ABOUT that
-                  instance, and the pairing makes clear which install would be written to. */}
-              <CompanionStatus
-                local={companionState}
-                server={readServerCompanion(serverSync, serverUrl)}
-                busy={companionBusy}
-                onInstall={handleInstallCompanion}
-                onRemove={handleRemoveCompanion}
-              />
             </div>
+
+
             <div className="header-actions">
               <button onClick={handleOpenBrowse} className="primary" title={t("header.browseForgeTitle")}>
                 {t("header.browseForge")}
               </button>
               <button onClick={handleOpenModHub} title={t("header.openHubTitle")}>{t("header.openHub")}</button>
-              {/* Two distinct things, so two buttons. A tracked server is on ANOTHER machine
-                  and is reached over the network; a headless client is realistically always
-                  on this one, since it is a folder the app has to read and write. Hiding
-                  both behind one "Instances" button implied they were interchangeable. */}
-              {multiMode ? (
-                <button onClick={() => setMultiMode(false)} className="primary" title="Back to the single mod list">
-                  Single view
-                </button>
-              ) : (
-                <>
-                  <button
-                    onClick={handleServerButton}
-                    title={
-                      serverUrl
-                        ? `Compare against the server at ${serverUrl}`
-                        : "Track a live SPT server running on another machine (read only)"
-                    }
-                  >
-                    {serverUrl ? "Server" : "Add server"}
-                    <span className="btn-scope">remote</span>
-                  </button>
-                  <button
-                    onClick={handleHeadlessButton}
-                    title={
-                      headlessPath
-                        ? "Compare against the Fika headless client on this machine"
-                        : "Track a Fika headless client installed on this machine"
-                    }
-                  >
-                    {headlessPath ? "Headless" : "Add headless"}
-                    <span className="btn-scope">local</span>
-                  </button>
-                </>
-              )}
               <button
                 onClick={openUpdatePanel}
                 className={appUpdate?.updateAvailable ? "primary" : ""}
@@ -2545,6 +2504,67 @@ export default function App() {
               <button onClick={handleInstall} disabled={loading} className="primary" title={t("header.installButtonTitle")}>
                 {loading ? t("header.installing") : t("header.installButton")}
               </button>
+            </div>
+            {/* Two rows, not one wrapping line. The actions come first because they are what
+                gets used constantly; the two boxes below are context — what the companion is
+                doing, and which other instances are tracked. Boxed things and bare buttons on
+                the same line staggered their baselines and read as clutter. */}
+            <div className="header-controls">
+              <div className="header-row-boxes">
+              <CompanionStatus
+                local={companionState}
+                server={readServerCompanion(serverSync, serverUrl)}
+                busy={companionBusy}
+                onInstall={handleInstallCompanion}
+                onRemove={handleRemoveCompanion}
+              />
+            {/* The OTHER instances, boxed and labelled away from the mod actions to their
+                right. They belong together and belong apart from everything else: these two
+                choose WHICH install you are looking at, while every button after them acts on
+                the one already selected. Mixing them in one row made "Add server" read as
+                another thing to install. */}
+            <div className="header-group instances-group">
+              <span className="header-group-label" title="Other installs this manager can compare against. Neither is written to by the buttons on the right.">
+                Instances
+              </span>
+              <div className="header-group-row">
+                {/* Two distinct things, so two buttons. A remote server is on ANOTHER machine
+                    and is reached over the network; a headless client is realistically always
+                    on this one, since it is a folder the app has to read and write. Hiding
+                    both behind one "Instances" button implied they were interchangeable. */}
+                {multiMode ? (
+                  <button onClick={() => setMultiMode(false)} className="primary" title="Back to the single mod list">
+                    Single view
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={handleServerButton}
+                      title={
+                        serverUrl
+                          ? `Compare against the remote server at ${serverUrl}`
+                          : "Track a live SPT server running on another machine (read only)"
+                      }
+                    >
+                      {serverUrl ? "Remote Server" : "Add Remote Server"}
+                      <span className="btn-scope">remote</span>
+                    </button>
+                    <button
+                      onClick={handleHeadlessButton}
+                      title={
+                        headlessPath
+                          ? "Compare against the Fika headless client on this machine"
+                          : "Track a Fika headless client installed on this machine"
+                      }
+                    >
+                      {headlessPath ? "Headless Client" : "Add Headless Client"}
+                      <span className="btn-scope">local</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            </div>
             </div>
           </header>
 

@@ -1595,3 +1595,129 @@ button:hover > .btn-scope {
   font-weight: 600;
   cursor: help;
 }
+
+/* --- header instance group ---------------------------------------------------
+   The same titled-box treatment as the companion status, because it does the same
+   job: names a pair of controls that belong together. Sits to the LEFT of the mod
+   actions — these two choose which install you are looking at, everything to their
+   right acts on the one already chosen. */
+.header-group {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 7px 10px 8px;
+  border: 1px solid var(--border, #333);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.02);
+  margin-right: 20px;
+}
+
+.header-group-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim, #7c828a);
+  font-weight: 600;
+  cursor: help;
+}
+
+.header-group-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* The group is a header child, so the header must lay its children out in a row and
+   let them wrap rather than stretching the box to full width. */
+header {
+  flex-wrap: wrap;
+}
+
+.instances-group {
+  align-self: flex-start;
+}
+
+/* The header is now title-on-top, controls-below, rather than title-left /
+   actions-right: three boxed groups plus a title cannot share one row at any
+   sane window width, and space-between spread them to the corners. */
+header {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 14px;
+}
+
+.header-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+/* Margins are handled by the row's gap now; keeping them would double the spacing. */
+.header-controls .companion-status,
+.header-controls .header-group {
+  margin: 0;
+}
+
+/* Pushes the mod actions to the far right when there is room, so the two
+   context boxes group together on the left and the actions read as separate. */
+.header-controls .header-actions {
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+
+/* Two rows under the title: mod actions, then the context boxes. Ordering is DOM
+   order now — an earlier attempt used flex 'order' on these two, which silently did
+   nothing because their shared parent is the plain title wrapper, not a flex box.
+   The separation is a real gap; before it the box borders touched the buttons. */
+.header-actions {
+  flex-wrap: wrap;
+  margin-left: 0;
+  margin-bottom: 18px;
+}
+
+.header-controls {
+  display: block;
+}
+
+.header-row-boxes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 16px;
+}
+
+.header-row-boxes .companion-status,
+.header-row-boxes .header-group {
+  margin: 0;
+  justify-content: space-between;
+}
+
+/* This PC and its buttons form one column; the Remote Server chip sits beside them.
+   The buttons only ever act on this machine, so they must not trail the row where
+   they would sit against the Remote Server chip. */
+.companion-col {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.companion-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.companion-actions button {
+  flex: 1;
+}
+
+/* Aligns the remote chip with the This PC chip above the buttons, rather than
+   centring it against the whole two-line column. */
+.companion-row {
+  align-items: flex-start;
+}
