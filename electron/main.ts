@@ -143,7 +143,8 @@ import {
   forgetAddon,
   snapshotVersions,
   restoreClobberedVersions,
-  addonsNeedingReinstall
+  addonsNeedingReinstall,
+  listFilesRelative
 } from "./addons";
 import { InstanceConfig, InstanceId, ModInfo, ModType } from "./types";
 
@@ -1166,6 +1167,19 @@ ipcMain.handle("get-store-preset-report", async (_event, id: string) => {
  *   the install    — what is already here and what it is wired to (read from the files,
  *                    works forever)
  */
+/**
+ * Where a parent mod's folder lives.
+ *
+ * Needed because a merged addon leaves its files INSIDE this folder and nowhere else, so it is
+ * the only place the question "is that addon still there?" can be answered by looking rather
+ * than by reasoning about install timestamps — which was measurably wrong.
+ */
+function parentFolderPath(parent: { id: string; type: ModType }, roots: { clientRoot: string; serverRoot: string }): string {
+  return parent.type === "server"
+    ? path.join(roots.serverRoot, ...SERVER_MODS_DIR, parent.id)
+    : path.join(roots.clientRoot, ...CLIENT_PLUGINS_DIR, parent.id);
+}
+
 function addonCataloguePaths(): string[] {
   return [
     path.join(process.resourcesPath ?? "", "data", "forge-addons.json"),
@@ -1275,7 +1289,15 @@ function withReinstallFlags(clientRoot: string) {
   const installedAt = (name: string, type: ModType) =>
     registry.find((e) => e.id?.toLowerCase() === name.toLowerCase() && e.type === type)?.installedAt;
 
-  const stale = new Set(addonsNeedingReinstall(ledger, installedAt).map((r) => `${r.forgeAddonId ?? r.name}`));
+  // Where each parent's folder is, so the check can LOOK at the files an addon left there rather
+  // than reason from install timestamps — which cannot tell a real parent reinstall from the
+  // parent's stamp being touched by a later addon merging into the same folder.
+  const roots = rootsFor("main");
+  const parentDir = (name: string, type: ModType) => (roots ? parentFolderPath({ id: name, type }, roots) : undefined);
+
+  const stale = new Set(
+    addonsNeedingReinstall(ledger, installedAt, parentDir).map((r) => `${r.forgeAddonId ?? r.name}`)
+  );
   return ledger.map((r) => ({ ...r, needsReinstall: stale.has(`${r.forgeAddonId ?? r.name}`) }));
 }
 
@@ -1400,6 +1422,10 @@ async function installCataloguedAddon(
   // Taken so the addon cannot relabel the mod it patches. Installing the CAG BRNVG patch
   // (v1.0.0) into Borkel's RNVG rewrote that mod's recorded version from 2.1.1 to 1.0.0.
   const versionsBefore = snapshotVersions(registryPath);
+  // The parent's folder as it stands NOW. Diffed after the install to learn exactly which files
+  // this addon contributed, so whether it is still installed later is a matter of looking.
+  const parentDir = parentFolderPath(parent, roots);
+  const parentFilesBefore = new Set(listFilesRelative(parentDir));
 
   const result = await installForgeModVersion(
     roots.clientRoot,
@@ -1437,7 +1463,8 @@ async function installCataloguedAddon(
     installedAt: new Date().toISOString(),
     source: "forge",
     folders: added,
-    mergedIntoParent: added.length === 0
+    mergedIntoParent: added.length === 0,
+    parentFiles: listFilesRelative(parentDir).filter((f) => !parentFilesBefore.has(f))
   });
 
   /*
@@ -1502,6 +1529,8 @@ ipcMain.handle("install-addon-from-file", async (_event, parentName: string, fil
   const registryPath = path.join(roots.clientRoot, ".spt-mod-manager-registry.json");
   const before = new Set(scanInstance("main").map((m) => `${m.type}:${m.id}`));
   const versionsBefore = snapshotVersions(registryPath);
+  const parentDir = parentFolderPath(parent, roots);
+  const parentFilesBefore = new Set(listFilesRelative(parentDir));
 
   const result = await installModFromArchive(roots.clientRoot, roots.serverRoot, archive);
   if (!result.success) return result;
@@ -1519,7 +1548,8 @@ ipcMain.handle("install-addon-from-file", async (_event, parentName: string, fil
     installedAt: new Date().toISOString(),
     source: "file",
     folders: added,
-    mergedIntoParent: added.length === 0
+    mergedIntoParent: added.length === 0,
+    parentFiles: listFilesRelative(parentDir).filter((f) => !parentFilesBefore.has(f))
   });
 
   return {
@@ -1553,6 +1583,8 @@ ipcMain.handle(
     const registryPath = path.join(roots.clientRoot, ".spt-mod-manager-registry.json");
     const before = new Set(scanInstance("main").map((m) => `${m.type}:${m.id}`));
     const versionsBefore = snapshotVersions(registryPath);
+    const parentDir = parentFolderPath(parent, roots);
+    const parentFilesBefore = new Set(listFilesRelative(parentDir));
 
     const result = await installForgeModVersion(
       roots.clientRoot,
@@ -1579,7 +1611,8 @@ ipcMain.handle(
       installedAt: new Date().toISOString(),
       source: "github",
       folders: added,
-      mergedIntoParent: added.length === 0
+      mergedIntoParent: added.length === 0,
+      parentFiles: listFilesRelative(parentDir).filter((f) => !parentFilesBefore.has(f))
     });
 
     return {

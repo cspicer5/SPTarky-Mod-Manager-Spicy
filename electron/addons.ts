@@ -334,6 +334,55 @@ export interface InstalledAddonRecord {
   folders: { id: string; type: ModType }[];
   /** True when nothing new appeared, so the addon lives inside its parent's folders. */
   mergedIntoParent: boolean;
+  /**
+   * The files this addon actually put into its parent's folder, relative to that folder.
+   *
+   * Recorded because the alternative is inference, and the inference was wrong. Whether a merged
+   * addon still exists used to be decided by comparing timestamps — if the parent was installed
+   * after the addon, the addon must have been overwritten — which cannot tell a real reinstall
+   * from the parent's own stamp being touched, and reported addons as wiped that were sitting on
+   * disk untouched.
+   *
+   * With the file list the question stops being a guess: look, and see whether they are there.
+   * Absent on records written before this existed, which fall back to the old rule.
+   */
+  parentFiles?: string[];
+}
+
+/**
+ * Every file under a folder, relative and forward-slashed, for diffing before against after.
+ *
+ * Returns an empty array for a missing folder rather than throwing: "the parent has no folder"
+ * is an ordinary state for an addon whose parent is a loose .dll.
+ */
+export function listFilesRelative(root: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else out.push(path.relative(root, full).split(path.sep).join("/"));
+    }
+  };
+  if (fs.existsSync(root)) walk(root);
+  return out;
+}
+
+/**
+ * Which of an addon's recorded files are no longer on disk.
+ *
+ * The factual replacement for the timestamp guess. An addon is gone when its files are gone —
+ * nothing else needs to be believed about install order.
+ */
+export function missingAddonFiles(parentDir: string, record: InstalledAddonRecord): string[] {
+  if (!record.parentFiles?.length) return [];
+  return record.parentFiles.filter((rel) => !fs.existsSync(path.join(parentDir, ...rel.split("/"))));
 }
 
 const addonLedgerPath = (clientRoot: string) => path.join(clientRoot, ".spt-mod-manager-addons.json");
@@ -373,13 +422,52 @@ export function recordAddonInstall(clientRoot: string, record: InstalledAddonRec
  */
 export function addonsNeedingReinstall(
   ledger: InstalledAddonRecord[],
-  parentInstalledAt: (name: string, type: ModType) => string | undefined
+  parentInstalledAt: (name: string, type: ModType) => string | undefined,
+  /**
+   * Where each parent's folder is, so its files can actually be looked at. Optional only for
+   * callers that predate the file check; without it this falls back to comparing timestamps.
+   */
+  parentDir?: (name: string, type: ModType) => string | undefined
 ): InstalledAddonRecord[] {
   return ledger.filter((record) => {
     if (!record.mergedIntoParent) return false; // it has its own folder, so it survived
+
+    // Look at the files first. This is a fact, and it replaces an inference that was measurably
+    // wrong: comparing timestamps cannot tell a real parent reinstall from the parent's stamp
+    // being touched by a LATER addon merging into the same folder, and on the reference install
+    // that reported a patch as wiped which had never been touched.
+    const dir = parentDir?.(record.parentName, record.parentType);
+    if (dir && record.parentFiles?.length) return missingAddonFiles(dir, record).length > 0;
+
+    // Records written before file lists existed still get the old rule, which is better than
+    // nothing for them and now applies to nothing else.
     const parentAt = parentInstalledAt(record.parentName, record.parentType);
     if (!parentAt || !record.installedAt) return false;
-    return parentAt.localeCompare(record.installedAt) > 0;
+    if (parentAt.localeCompare(record.installedAt) <= 0) return false;
+
+    /*
+     * Before believing that stamp, check what actually wrote it.
+     *
+     * A merged addon writes into its parent's folder, so the install machinery stamps the PARENT
+     * too — within a second of the addon's own record. A parent whose stamp coincides with some
+     * other addon's install was not reinstalled at all; it was patched, and reading that as a
+     * reinstall condemns every addon that went in earlier.
+     *
+     * Measured: BorkelRNVG is stamped 255ms BEFORE the second of its two patches, and the first
+     * patch has been reported as needing a reinstall ever since — with nothing wiped and nothing
+     * to do. New installs no longer bump the parent at all; this rescues the records that
+     * already carry the bumped stamp.
+     */
+    const parentTime = Date.parse(parentAt);
+    const writtenByAnotherAddon = ledger.some(
+      (other) =>
+        other !== record &&
+        other.parentName.toLowerCase() === record.parentName.toLowerCase() &&
+        other.parentType === record.parentType &&
+        other.installedAt &&
+        Math.abs(Date.parse(other.installedAt) - parentTime) < 60_000
+    );
+    return !writtenByAnotherAddon;
   });
 }
 
@@ -406,7 +494,23 @@ export function forgetAddon(clientRoot: string, match: { forgeAddonId?: number; 
  * the precise failure the version ledger exists to prevent.
  */
 export interface VersionSnapshot {
-  [key: string]: { installedVersion?: string; versionOrigin?: string; versionEvidence?: string };
+  [key: string]: {
+    installedVersion?: string;
+    versionOrigin?: string;
+    versionEvidence?: string;
+    /**
+     * When the PARENT itself was installed — restored along with the version, and for a closely
+     * related reason.
+     *
+     * A merged addon writes into its parent's folder, so the install machinery records that
+     * folder and stamps it with a fresh `installedAt`. That timestamp is then read as "the
+     * parent was reinstalled", and `addonsNeedingReinstall` concludes that every addon installed
+     * BEFORE it has been wiped. Measured on the reference install: installing the second Borkel's
+     * RNVG patch stamped BorkelRNVG 255ms before its own record, and the first patch has been
+     * reported as needing a reinstall ever since. Nothing was wiped and nothing needed doing.
+     */
+    installedAt?: string;
+  };
 }
 
 export function snapshotVersions(registryPath: string): VersionSnapshot {
@@ -416,7 +520,8 @@ export function snapshotVersions(registryPath: string): VersionSnapshot {
       snap[`${e.type}:${String(e.id).toLowerCase()}`] = {
         installedVersion: e.installedVersion,
         versionOrigin: e.versionOrigin,
-        versionEvidence: e.versionEvidence
+        versionEvidence: e.versionEvidence,
+        installedAt: e.installedAt
       };
     }
   } catch {
@@ -452,12 +557,16 @@ export function restoreClobberedVersions(registryPath: string, before: VersionSn
     const changed =
       entry.installedVersion !== prior.installedVersion ||
       entry.versionOrigin !== prior.versionOrigin ||
-      entry.versionEvidence !== prior.versionEvidence;
+      entry.versionEvidence !== prior.versionEvidence ||
+      entry.installedAt !== prior.installedAt;
     if (!changed) continue;
 
     entry.installedVersion = prior.installedVersion;
     entry.versionOrigin = prior.versionOrigin;
     entry.versionEvidence = prior.versionEvidence;
+    // The parent was not reinstalled — an addon merged into its folder. Leaving the bumped
+    // stamp makes every addon installed before this one look wiped, permanently.
+    if (prior.installedAt) entry.installedAt = prior.installedAt;
     restored.push(`${entry.id} [${entry.type}]`);
   }
   if (restored.length) fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2), "utf-8");
