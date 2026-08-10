@@ -154,6 +154,7 @@ function PaneShell({
   subtitle,
   location,
   count,
+  countTitle,
   collapsed,
   onToggleCollapse,
   headerExtra,
@@ -164,6 +165,9 @@ function PaneShell({
   subtitle: string;
   location: string | null;
   count: number | string;
+  /** What the headline number counts. Worth stating: two panes tallying different things
+      silently is how "70 against 68" reads as a fault rather than a difference in units. */
+  countTitle?: string;
   collapsed: boolean;
   onToggleCollapse: () => void;
   headerExtra?: React.ReactNode;
@@ -202,7 +206,9 @@ function PaneShell({
           </h2>
           <span className="hl-pane-sub">{subtitle}</span>
         </div>
-        <span className="hl-pane-count">{count}</span>
+        <span className="hl-pane-count" title={countTitle}>
+          {count}
+        </span>
       </div>
       <div className="hl-pane-path" title={location ?? ""}>
         {location ?? "Not configured"}
@@ -345,6 +351,7 @@ function InstancePane({
       subtitle={subtitle}
       location={path}
       count={mods.length}
+      countTitle={`Client plugins and server mods installed here: ${mods.length}. Addons are listed in their own section — most have no folder of their own, so they are not counted as installed items.`}
       collapsed={collapsed}
       onToggleCollapse={onToggleCollapse}
       aligned={!!alignedSections}
@@ -509,10 +516,25 @@ function ServerPane({
   // precisely the drift the aligned model exists to prevent.
   const sections = alignedSections ?? [];
 
-  // The pane counts what the SERVER runs, not the number of rows. Rows also include local
-  // mods the server does not load ("not on server"), and folding those into the headline
-  // number made a 25-mod server read as 32.
-  const serverModCount = (report?.rows ?? []).filter((r) => r.issue !== "not-on-server").length;
+  /*
+   * MODS the server has: client plugins plus server mods, and nothing else.
+   *
+   * Two exclusions, both so this number means the same thing as the main pane's:
+   *
+   *   "not on server"  a row about a mod only THIS install has. Counting those made a 25-mod
+   *                    server read as 32.
+   *   addons           not separate installed items. Most unpack INTO their parent's folder and
+   *                    own no files at all, so counting them alongside mods counts the same
+   *                    content twice — and it put the server at 70 against a local 68 when the
+   *                    two were tallying different things. Their own section still counts them.
+   *
+   * The companion is absent for a third reason: it is never compared, so it is not in the list,
+   * and a headline should count what is on screen.
+   */
+  const serverModCount = (report?.rows ?? []).filter(
+    (r) => r.issue !== "not-on-server" && (r.side ?? "server") !== "addon"
+  ).length;
+  const serverAddonCount = (report?.rows ?? []).filter((r) => r.issue !== "not-on-server" && r.side === "addon").length;
 
   /*
    * Names that appear on more than one side.
@@ -652,6 +674,13 @@ function ServerPane({
       }
       location={url}
       count={report ? serverModCount : "…"}
+      countTitle={
+        report
+          ? `Client plugins and server mods on this server: ${serverModCount}.` +
+            (serverAddonCount ? ` ${serverAddonCount} addon(s) are counted in their own section — most have no folder of their own.` : "") +
+            " The companion itself is never compared, so it is not counted."
+          : undefined
+      }
       collapsed={collapsed}
       onToggleCollapse={onToggleCollapse}
       aligned={sections.length > 0}
