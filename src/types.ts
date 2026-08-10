@@ -263,7 +263,7 @@ export interface ServerSyncRow {
   localModId?: string;
   issue?: ServerSyncIssue;
   /** GUID matches are exact; name matches are a weaker fallback and are shown as such. */
-  matchedBy?: "guid" | "name";
+  matchedBy?: "guid" | "package" | "name";
   url?: string;
   detail?: string;
   /** Forge's addon id, on addon rows. Its presence is what makes an addon installable at all. */

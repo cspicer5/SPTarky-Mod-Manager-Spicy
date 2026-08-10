@@ -73,6 +73,17 @@ export interface ModInfo {
    * packaging sibling — and does it silently, since the sibling usually carries the same version.
    */
   assemblyGuid?: string;
+  /**
+   * The catalogue's identifier for the PACKAGE this was installed from, straight out of the
+   * registry's forgeGuid — unmixed, unlike `guid`.
+   *
+   * Many-to-one against folders by nature, so it can never key a row on its own. What it CAN do
+   * is corroborate a weaker match: when two machines' install records name the same package for
+   * the same folder, a name match is no longer a guess. `Tyfon.UIFixes.Net.dll` declares no
+   * `[BepInPlugin]` at all, so it can only ever be matched by name — but both ledgers say
+   * `com.tyfon.uifixes`, which is real evidence and should not be presented as doubt.
+   */
+  catalogueGuid?: string;
   linkedModName?: string; // display name of a "linked" mod (e.g. a loose file from the same install) — removing one removes the other
   sptVersion?: string;
   sptCompatibility?: "compatible" | "incompatible" | "unknown"; // SPT version declared by the mod vs. this instance

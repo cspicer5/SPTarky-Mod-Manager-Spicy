@@ -358,6 +358,19 @@
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-faint);
+  /* Digits share a width, so version numbers line up as a column instead of drifting by a pixel
+     per "1". In a pane this wide the version sits far from the name, and a ragged column is the
+     difference between scanning it and reading it. */
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* On a "not on server" row the only version that exists is yours, so it is shown in place of an
+   em dash — marked apart so it is not mistaken for something the server reported. */
+.hl-version-local {
+  font-style: italic;
+  opacity: 0.85;
 }
 
 .hl-row-meta {
@@ -433,28 +446,90 @@
   opacity: 0.75;
 }
 
-/* Which half of the install a server-pane row came from. Quiet on purpose: these label rows
-   rather than flag them, and the issue tag beside them is the thing worth looking at.
-
-   Every row carries one. A mod that ships BOTH a server mod and a client plugin under the same
-   folder name — acidphantasm-botplacementsystem, ManimalIcebreaker, WTT-PackNStrap — produces two
-   legitimate rows, and unlabelled they read as the same mod listed twice. The three are tinted
-   apart so a pair is distinguishable at a glance rather than only by reading the words. */
-.hl-side-server,
-.hl-side-client,
-.hl-side-addon {
-  border-color: var(--border-soft);
-  color: var(--text-dim);
+/* The server pane's three halves — client plugins, server mods, addons.
+ *
+ * A mod that ships BOTH halves under one folder name (acidphantasm-botplacementsystem,
+ * ManimalIcebreaker, WTT-PackNStrap) necessarily produces two rows. In one flat list that read as
+ * the report repeating itself; in sections it reads as what it is. The tint is deliberately at
+ * the edge of visible: it marks where a section starts while scrolling, and must never compete
+ * with the issue tags, which are the thing actually worth noticing. */
+.hl-section {
+  border-radius: var(--radius);
+  padding: 0 4px 2px;
+  margin-bottom: 8px;
 }
 
-.hl-side-client {
-  border-color: rgba(96, 128, 168, 0.45);
-  color: #7f9dc0;
+.hl-section-client {
+  background: rgba(96, 128, 168, 0.05);
 }
 
-.hl-side-addon {
-  border-color: rgba(150, 116, 172, 0.45);
-  color: #a487bb;
+.hl-section-server {
+  background: rgba(122, 148, 86, 0.05);
+}
+
+.hl-section-addon {
+  background: rgba(150, 116, 172, 0.06);
+}
+
+/* ---- aligned mode: the two panes rendered row-for-row -------------------------------
+ *
+ * The panes sit in one flex row and share the PAGE's scroll — neither has an overflow of its
+ * own — so if both render the same number of rows at the same heights, row N is level with row
+ * N all the way down.
+ *
+ * "Same heights" is the part that has to be forced. A local row is one line; a server row can be
+ * two once it carries an issue tag. Letting them size naturally would put the panes back out of
+ * step at the first difference, which is exactly the problem this solves. So every aligned row
+ * gets ONE fixed height, tall enough for the two-line case, and centres its content. The cost is
+ * some empty space on single-line rows; the benefit is that a gap stays a gap instead of
+ * shifting everything below it.
+ */
+.hl-aligned .hl-row {
+  height: 46px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* Holds a place while the other pane has something. Faint and inert — it must read as absence,
+   not as a row you could act on. */
+.hl-row-blank {
+  align-items: center;
+  background: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 6px,
+    rgba(127, 127, 127, 0.035) 6px,
+    rgba(127, 127, 127, 0.035) 12px
+  );
+}
+
+.hl-blank-mark {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  opacity: 0.5;
+}
+
+/* A row held OUT of the comparison on purpose — SPT's own files, the companion this app
+   installs. Distinct from a real gap, because "we did not look" and "it is not there" must not
+   read the same. */
+.hl-row-uncompared {
+  background: none;
+}
+
+.hl-row-uncompared .hl-blank-mark {
+  opacity: 0.3;
+}
+
+/* An addon on the LOCAL side has no folder and therefore no actions — it lives inside its
+   parent, so there is nothing to toggle, open or remove. */
+.hl-row-addon .hl-name {
+  font-style: italic;
 }
 
 /* Marks an inference rather than a documented rule — a guess must look like a guess. */

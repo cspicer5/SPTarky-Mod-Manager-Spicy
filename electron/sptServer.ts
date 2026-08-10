@@ -429,7 +429,7 @@ export interface ServerSyncRow {
   localModId?: string;
   issue?: ServerSyncIssue;
   /** How the two sides were matched. A name match is weaker and is shown as such. */
-  matchedBy?: "guid" | "name";
+  matchedBy?: "guid" | "package" | "name";
   url?: string;
   detail?: string;
   /**
@@ -739,7 +739,26 @@ export function buildServerSyncReport(
         serverVersion: remote.version,
         localVersion: local?.version,
         localModId: local?.id,
-        matchedBy: local ? (byAssemblyGuid.length ? "guid" : "name") : undefined
+        /*
+         * Three strengths, not two.
+         *
+         * `Tyfon.UIFixes.Net.dll` declares no `[BepInPlugin]` at all, so it can only ever be
+         * matched by name — but both machines' ledgers record it as part of the same catalogue
+         * package (`com.tyfon.uifixes`). That is real corroboration, and flagging it "name
+         * match?" put a question mark on the one row that had install records agreeing on both
+         * sides. `package` says exactly what is known: the name lined up AND both installs came
+         * from the same catalogue entry.
+         *
+         * It cannot be promoted to a full match, because a package is many-to-one against
+         * folders — UIFixes and UIFixes.Net share this very one.
+         */
+        matchedBy: local
+          ? byAssemblyGuid.length
+            ? "guid"
+            : local.catalogueGuid && remote.catalogueGuid && norm(local.catalogueGuid) === norm(remote.catalogueGuid)
+              ? "package"
+              : "name"
+          : undefined
       };
 
       if (!local) {

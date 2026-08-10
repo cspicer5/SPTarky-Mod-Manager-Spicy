@@ -28,6 +28,7 @@ import {
   ServerSyncRow,
   CompanionInstallState
 } from "./types";
+import { buildAlignedSections, type AlignedSection, type AlignedSlot } from "./serverAlignment";
 import "./headless.css";
 
 /**
@@ -67,13 +68,48 @@ const ISSUE_LABEL: Record<string, string> = {
   "headless-only": "Only on headless"
 };
 
+/**
+ * Labels state the CONDITION, not the action.
+ *
+ * "Install this" sat directly beside a button already saying "Install", which read as two
+ * controls for one thing. The tag's job is to say what is wrong; the button says what to do
+ * about it, and on rows that cannot be fetched there is no button at all — so an action-worded
+ * tag was telling people to press something that was not there.
+ */
 const SERVER_ISSUE_LABEL: Record<string, string> = {
-  "missing-locally": "Install this",
-  "outdated-locally": "Update this",
+  "missing-locally": "Missing here",
+  "outdated-locally": "Behind server",
   "newer-locally": "Newer here",
   "not-on-server": "Not on server",
   "unknown-local-version": "Can't compare"
 };
+
+/**
+ * The three halves of an install, in the order the local pane lists them, so the two panes can
+ * be read across. Addons come last because they are the only ones with no folder of their own —
+ * they live inside their parent and exist, as far as anything can tell, only in the ledger.
+ */
+const SERVER_SECTIONS: { side: "client" | "server" | "addon"; title: string; hint: string }[] = [
+  { side: "client", title: "Client plugins", hint: "BepInEx/plugins" },
+  { side: "server", title: "Server mods", hint: "user/mods" },
+  { side: "addon", title: "Addons", hint: "patches, from install records" }
+];
+
+/**
+ * A placeholder holding one side's place while the other has something.
+ *
+ * It is the whole point of the aligned view: without it a gap shifts every row below it, so the
+ * two panes agree at the top and drift further apart the longer the list. Same height as a real
+ * row, and it says WHICH kind of nothing it is — "not installed here" is a difference to act on,
+ * "not compared" is a row deliberately held out (SPT's own files, the companion) and is not.
+ */
+function BlankRow({ reason }: { reason: string }) {
+  return (
+    <li className={`hl-row hl-row-blank ${reason === "not compared" ? "hl-row-uncompared" : ""}`} aria-hidden="true">
+      <span className="hl-blank-mark">{reason}</span>
+    </li>
+  );
+}
 
 function VerdictBadge({ verdict }: { verdict: HeadlessVerdict }) {
   return (
@@ -182,12 +218,19 @@ function InstancePane({
   filtersActive,
   onSyncMod,
   syncing,
-  canSync
+  canSync,
+  alignedSections
 }: {
   title: string;
   subtitle: string;
   path: string | null;
   mods: ModInfo[];
+  /**
+   * When a server is connected, both panes render THIS instead of their own grouping, so row N
+   * on the left is row N on the right and a gap shows as a blank rather than shifting
+   * everything below it out of step.
+   */
+  alignedSections?: AlignedSection[];
   rowsByKey: Map<string, ParityRow>;
   overrides: Record<string, HeadlessClass>;
   onOverride: (key: string, klass: HeadlessClass | null) => void;
@@ -207,11 +250,14 @@ function InstancePane({
   const servers = mods.filter((m) => m.type === "server");
   const clients = mods.filter((m) => m.type !== "server");
 
-  const renderRow = (mod: ModInfo) => {
+  const renderRow = (mod: ModInfo, slot?: AlignedSlot) => {
     const row = rowsByKey.get(parityKey(mod));
     const issue = row?.issue;
     return (
-      <li key={`${mod.type}:${mod.id}`} className={`hl-row ${mod.enabled ? "" : "disabled"} ${issue ? `hl-issue-${issue}` : ""}`}>
+      <li
+        key={slot?.key ?? `${mod.type}:${mod.id}`}
+        className={`hl-row ${mod.enabled ? "" : "disabled"} ${issue ? `hl-issue-${issue}` : ""}`}
+      >
         {/* Actions live on the title line, not with the badges. When they shared a row with
             a badge plus an issue tag plus the override select, the group wrapped and rows
             with problems became twice as tall as rows without — the list read as ragged
@@ -260,6 +306,14 @@ function InstancePane({
               {ISSUE_LABEL[issue] ?? issue}
             </span>
           )}
+          {/* The server-side verdict belongs on whichever pane HAS the files. When the server
+              does not have this at all its own row is blank, so the tag would otherwise have
+              nowhere to live and the difference would be invisible from either side. */}
+          {slot?.row?.issue === "not-on-server" && (
+            <span className="hl-issue hl-issue-tag-server-not-on-server" title={slot.row.detail ?? ""}>
+              Not on server
+            </span>
+          )}
           {/* Overrides are keyed by the mod, not the side: saying "SAIN is required" is a
               statement about SAIN, and the backend looks it up by plain name. */}
           {showVerdicts && row && row.verdict.klass !== "server-only" && (
@@ -281,19 +335,52 @@ function InstancePane({
     >
       {mods.length === 0 ? (
         <p className="empty-list">{filtersActive ? "Nothing here matches the current filters." : emptyMessage}</p>
+      ) : alignedSections ? (
+        /* Lined up against the server pane. Same sections, same order, same number of rows —
+           a slot the server has and this install does not is a blank of equal height, so the
+           two lists stay in step all the way down instead of drifting apart at the first gap. */
+        <div className="hl-pane-body hl-aligned">
+          {alignedSections.map((section) => (
+            <section key={section.side} className={`hl-section hl-section-${section.side}`}>
+              <h3 className="hl-group-title">
+                {section.title} <span>{section.hint}</span> ({section.slots.filter((s) => s.localHas).length})
+              </h3>
+              <ul className="hl-list">
+                {section.slots.map((slot) =>
+                  slot.local && slot.localHas ? (
+                    renderRow(slot.local, slot)
+                  ) : slot.localHas ? (
+                    /* An addon: real, installed, but with no folder of its own to act on. */
+                    <li key={slot.key} className="hl-row hl-row-addon">
+                      <div className="hl-row-main">
+                        <span className="hl-name" title={slot.row?.parentName ? `Patches ${slot.row.parentName}` : ""}>
+                          {slot.row?.name}
+                        </span>
+                        <span className="hl-version">{slot.localAddonVersion ?? "—"}</span>
+                      </div>
+                      <div className="hl-row-meta" />
+                    </li>
+                  ) : (
+                    <BlankRow key={slot.key} reason={slot.notCompared ? "not compared" : "not installed here"} />
+                  )
+                )}
+              </ul>
+            </section>
+          ))}
+        </div>
       ) : (
         <div className="hl-pane-body">
           <h3 className="hl-group-title">
             Client plugins <span>BepInEx/plugins</span> ({clients.length})
           </h3>
-          <ul className="hl-list">{clients.map(renderRow)}</ul>
+          <ul className="hl-list">{clients.map((m) => renderRow(m))}</ul>
 
           {servers.length > 0 && (
             <>
               <h3 className="hl-group-title">
                 Server mods <span>user/mods</span> ({servers.length})
               </h3>
-              <ul className="hl-list">{servers.map(renderRow)}</ul>
+              <ul className="hl-list">{servers.map((m) => renderRow(m))}</ul>
             </>
           )}
         </div>
@@ -319,10 +406,13 @@ function ServerPane({
   onInstallCompanion,
   query,
   onInstall,
-  installing
+  installing,
+  alignedSections
 }: {
   report: ServerSyncReport | null;
   url: string | null;
+  /** The shared row model. Both panes walk it in step; see serverAlignment.ts. */
+  alignedSections?: AlignedSection[];
   collapsed: boolean;
   onToggleCollapse: () => void;
   onChangeServer: () => void;
@@ -378,20 +468,15 @@ function ServerPane({
     );
   }
 
-  const q = query.trim().toLowerCase();
-  const rows = (report?.rows ?? []).filter(
-    (r) => !q || r.name.toLowerCase().includes(q) || (r.serverName ?? "").toLowerCase().includes(q)
-  );
+  // Filtering happens ONCE, in HeadlessView, and the same filtered slots reach both panes —
+  // filtering here as well would let the two lists disagree on which rows exist, which is
+  // precisely the drift the aligned model exists to prevent.
+  const sections = alignedSections ?? [];
 
   // The pane counts what the SERVER runs, not the number of rows. Rows also include local
   // mods the server does not load ("not on server"), and folding those into the headline
   // number made a 25-mod server read as 32.
   const serverModCount = (report?.rows ?? []).filter((r) => r.issue !== "not-on-server").length;
-
-  const allRows = report?.rows ?? [];
-  const sideCount = (side: string) => allRows.filter((r) => (r.side ?? "server") === side).length;
-  const clientRowCount = sideCount("client");
-  const addonRowCount = sideCount("addon");
 
   /*
    * Names that appear on more than one side.
@@ -399,16 +484,12 @@ function ServerPane({
    * A mod commonly ships BOTH halves under the same folder name — `acidphantasm-botplacementsystem`
    * exists in `user/mods` AND in `BepInEx/plugins`, and so do ManimalIcebreaker, WTT-PackNStrap and
    * Show Me The Money. Both rows are real, both are compared separately, and they can drift apart
-   * independently, so neither may be dropped. Rendered identically, though, they read as the same
-   * mod listed twice — which is exactly how it was reported.
-   *
-   * Every row carries its side badge regardless; this set only enriches the TOOLTIP on the ones
-   * where a name genuinely appears on both halves, so the pair explains itself rather than
-   * leaving the reader to work out why one mod is on screen twice.
+   * independently, so neither may be dropped. The sections already show which half is which; this
+   * only adds a line to the TOOLTIP so a name seen twice explains itself.
    */
   const sharedNames = new Set<string>();
   const seenBySide = new Map<string, string>();
-  for (const row of allRows) {
+  for (const row of report?.rows ?? []) {
     const name = row.name.trim().toLowerCase();
     const side = row.side ?? "server";
     const other = seenBySide.get(name);
@@ -416,51 +497,34 @@ function ServerPane({
     else if (other === undefined) seenBySide.set(name, side);
   }
 
-  /**
-   * The side tag: where this row's files actually live.
-   *
-   * `shared` means a row of the SAME NAME exists on another side — a mod shipping both a server
-   * mod and a client plugin under one folder name. That is not a duplicate and neither row may
-   * be dropped: they are different files that can hold different versions. The tooltip says so
-   * on both, since two identical-looking lines otherwise look like a fault in the report.
-   */
-  const SideBadge = ({ row, shared }: { row: ServerSyncRow; shared: boolean }) => {
-    const side = row.side ?? "server";
-    if (side === "addon") {
-      return (
-        <span
-          className="hl-badge hl-side-addon"
-          title={row.parentName ? `A patch for ${row.parentName}, from the server's addon records.` : "An addon, from the server's addon records."}
-        >
-          addon
-        </span>
-      );
-    }
-    const where = side === "server" ? "user/mods" : "BepInEx/plugins";
-    const otherHalf = side === "server" ? "client plugin" : "server mod";
-    return (
-      <span
-        className={`hl-badge hl-side-${side}`}
-        title={
-          shared
-            ? `The ${side.toUpperCase()} half of this mod, from ${where}. It also ships a ${otherHalf} of the same name, listed separately — different files, and they can differ in version.`
-            : side === "server"
-              ? "A server mod, from user/mods."
-              : "A client plugin on the server machine, from BepInEx/plugins."
-        }
-      >
-        {side}
-      </span>
-    );
-  };
-
   const renderRow = (row: ServerSyncRow) => (
     <li key={row.key} className={`hl-row ${row.issue ? `hl-issue-server-${row.issue}` : ""}`}>
       <div className="hl-row-main">
-        <span className="hl-name" title={[row.guid && `GUID: ${row.guid}`, row.serverName && `Server calls it: ${row.serverName}`].filter(Boolean).join("\n")}>
+        <span
+          className="hl-name"
+          title={[
+            row.guid && `GUID: ${row.guid}`,
+            row.serverName && `Server calls it: ${row.serverName}`,
+            row.parentName && `Patches: ${row.parentName}`,
+            // Said once, on the name, now that the sections themselves show which half is which.
+            sharedNames.has(row.name.trim().toLowerCase()) &&
+              "This mod ships BOTH halves under one name — it appears in the other section too. Different files, and they can differ in version."
+          ]
+            .filter(Boolean)
+            .join("\n")}
+        >
           {row.name}
         </span>
-        <span className="hl-version">{row.serverVersion ?? "—"}</span>
+        {/* A "not on server" row has no server version by definition, and printing "—" hid the
+            one version that DOES exist. Showing the local one answers "what have I got, then?"
+            without a second glance at the pane on the left. */}
+        {row.issue === "not-on-server" ? (
+          <span className="hl-version hl-version-local" title="Your version. The server does not have this at all.">
+            {row.localVersion ?? "—"}
+          </span>
+        ) : (
+          <span className="hl-version">{row.serverVersion ?? "—"}</span>
+        )}
         {/* Offered only where it would change something: a mod the server runs that is
             absent or older here. It installs into the MAIN install — never the server,
             which is read only, and never the headless client, which is synced from main so
@@ -491,29 +555,41 @@ function ServerPane({
           ))}
       </div>
       <div className="hl-row-meta">
-        {/* Which half this row came from — on EVERY row, not just the unusual ones.
-            The list holds three kinds now: server mods from SPT itself, client plugins and
-            addons from the companion. They come from different folders, are compared
-            separately, and can differ in version, so leaving the largest group unlabelled
-            made a mod that ships both halves read as the same mod listed twice. The data has
-            carried this all along — the companion returns serverMods and clientMods as
-            separate lists — so this is only a matter of drawing it. */}
-        <SideBadge row={row} shared={sharedNames.has(row.name.trim().toLowerCase())} />
+        {/* No side badge here. The section a row sits in already says which half it is, and
+            repeating that on all 71 rows was the "messy" part rather than a cure for it. */}
         {row.issue && (
           <span className={`hl-issue hl-issue-tag-server-${row.issue}`} title={row.detail ?? ""}>
             {SERVER_ISSUE_LABEL[row.issue] ?? row.issue}
           </span>
         )}
-        {row.localVersion && row.serverVersion && row.localVersion !== row.serverVersion && (
+        {/* Shown only when the versions genuinely DIFFER, which is what the issue says.
+            This used to be a raw string inequality, and "5.3.11.0" is not the string "5.3.11"
+            — so Tyfon.UIFixes.Net printed "you 5.3.11.0 → 5.3.11" on a row the comparison had
+            already, correctly, called identical. The report compares numerically; trusting its
+            verdict here keeps one set of version semantics instead of a second one that
+            disagrees. */}
+        {(row.issue === "outdated-locally" || row.issue === "newer-locally") && row.localVersion && row.serverVersion && (
           <span className="hl-server-versions">
             you {row.localVersion} → {row.serverVersion}
           </span>
         )}
-        {/* A name match is weaker than a GUID match and says so, rather than being
-            presented with the same confidence. */}
+        {/* A name match is weaker than a GUID match and says so, rather than being presented
+            with the same confidence. `package` sits between the two: the name lined up AND both
+            machines' install records name the same catalogue entry, which is corroboration
+            rather than a guess — so it gets no question mark. Tyfon.UIFixes.Net is the case
+            that forced the distinction: it declares no GUID at all and can only ever match by
+            name, but both ledgers agree on the package it came from. */}
         {row.matchedBy === "name" && (
-          <span className="hl-badge hl-unknown" title="Matched by name, not GUID — worth confirming.">
+          <span className="hl-badge hl-unknown" title="Matched by name alone, with nothing to corroborate it — worth confirming.">
             name match<em className="hl-guess">?</em>
+          </span>
+        )}
+        {row.matchedBy === "package" && (
+          <span
+            className="hl-badge hl-matched-package"
+            title="Matched by name, and both machines' install records say it came from the same catalogue package. This plugin declares no GUID of its own, so that is the strongest evidence available."
+          >
+            same package
           </span>
         )}
         {row.url && (
@@ -534,7 +610,7 @@ function ServerPane({
       // loaded server mods; with one it is the whole install, and leaving the old wording in
       // place made the headline number look wrong rather than broader.
       subtitle={
-        clientRowCount || addonRowCount
+        sections.some((s) => s.side !== "server")
           ? "Remote — server mods, client plugins and addons, read only"
           : "Remote — loaded server mods, read only"
       }
@@ -565,31 +641,37 @@ function ServerPane({
         </ul>
       )}
 
-      {rows.length === 0 ? (
+      {sections.length === 0 ? (
         <p className="empty-list">{query ? "Nothing here matches the search." : "No server mods reported."}</p>
       ) : (
-        <div className="hl-pane-body">
-          {/* Titled by what is actually in the list, and BROKEN DOWN by half.
-              With a companion this is all three parts of an install, so a single total invites
-              the obvious question — "why does it say 70 when I have 68?" — whose answer is that
-              it is no longer counting the same thing the local pane counts. Saying
-              "33 server · 34 client · 4 addons" answers that in place. */}
-          <h3 className="hl-group-title">
-            {clientRowCount || addonRowCount ? "Everything compared" : "Server mods"}{" "}
-            <span>
-              {clientRowCount || addonRowCount
-                ? [
-                    `${sideCount("server")} server`,
-                    clientRowCount ? `${clientRowCount} client` : null,
-                    addonRowCount ? `${addonRowCount} addon${addonRowCount === 1 ? "" : "s"}` : null
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")
-                : "loaded"}
-            </span>{" "}
-            ({rows.length})
-          </h3>
-          <ul className="hl-list">{rows.map(renderRow)}</ul>
+        <div className="hl-pane-body hl-aligned">
+          {/*
+           * Split by half, in the SAME ORDER as the local pane beside it — client plugins, then
+           * server mods, then addons. Three kinds in one flat list was genuinely hard to read: a
+           * mod that ships both halves appears twice by necessity, and with nothing separating
+           * them it looked like the report was repeating itself. Sections make that self-evident
+           * and let each half be counted against the equivalent section on the left.
+           *
+           * Each section is tinted, very faintly, so the boundary is visible while scrolling
+           * without the colour becoming a signal in its own right — the issue tags are what
+           * should catch the eye, not the background.
+           */}
+          {(alignedSections ?? []).map((section) => (
+            <section key={section.side} className={`hl-section hl-section-${section.side}`}>
+              <h3 className="hl-group-title">
+                {section.title} <span>{section.hint}</span> ({section.slots.filter((s) => s.serverHas).length})
+              </h3>
+              <ul className="hl-list">
+                {section.slots.map((slot) =>
+                  slot.serverHas && slot.row ? (
+                    renderRow(slot.row)
+                  ) : (
+                    <BlankRow key={slot.key} reason={slot.notCompared ? "not compared" : "not on server"} />
+                  )
+                )}
+              </ul>
+            </section>
+          ))}
         </div>
       )}
 
@@ -845,6 +927,36 @@ export default function InstancesView({
   const openCount = ["main", "server", "headless"].filter((k) => !collapsed[k]).length;
   const outOfStep = (parity?.counts.missingOnHeadless ?? 0) + (parity?.counts.versionDrift ?? 0);
 
+  /*
+   * The shared row model, built ONCE here and handed to both panes.
+   *
+   * Only when a server is actually connected and reachable — with no server there is nothing to
+   * line up against, and forcing the main pane through the aligned renderer would fill it with
+   * blanks for rows that do not exist.
+   *
+   * The search filter is applied HERE, to whole slots, so both panes drop the same rows. Filtering
+   * inside each pane would let the two lists disagree about which rows exist, which is the exact
+   * drift alignment is meant to remove. A slot survives if EITHER side matches, so searching for a
+   * mod you do not have still shows the gap where it would sit.
+   */
+  const q = searchQuery.trim().toLowerCase();
+  const alignedSections =
+    serverUrl && server?.reachable
+      ? buildAlignedSections(server.rows, mainMods)
+          .map((section) => ({
+            ...section,
+            slots: section.slots.filter(
+              (slot) =>
+                !q ||
+                slot.local?.name.toLowerCase().includes(q) ||
+                slot.local?.id.toLowerCase().includes(q) ||
+                slot.row?.name.toLowerCase().includes(q) ||
+                (slot.row?.serverName ?? "").toLowerCase().includes(q)
+            )
+          }))
+          .filter((section) => section.slots.length > 0)
+      : undefined;
+
   return (
     <div className="hl-wrapper">
       <div className="hl-toolbar">
@@ -916,6 +1028,7 @@ export default function InstancesView({
           onSyncMod={onSyncMod}
           syncing={syncing}
           canSync={headlessConfigured}
+          alignedSections={alignedSections}
         />
 
         {serverUrl && (
@@ -929,6 +1042,7 @@ export default function InstancesView({
             onLockToServer={onLockToServer}
             companion={companion}
             onInstallCompanion={onInstallCompanion}
+            alignedSections={alignedSections}
             query={searchQuery}
             onInstall={onInstallFromServer}
             installing={installingFromServer}
