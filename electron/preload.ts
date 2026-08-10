@@ -138,6 +138,11 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   getSptSemver: () => ipcRenderer.invoke("get-spt-semver"),
   getSptVersionOverride: () => ipcRenderer.invoke("get-spt-version-override"),
   setSptVersionOverride: (value: string) => ipcRenderer.invoke("set-spt-version-override", value),
+  // The server companion. Installs into the LOCAL instance only — a remote server is somebody
+  // else's filesystem, and anyone hosting runs this app on that machine.
+  getCompanionInstallState: () => ipcRenderer.invoke("get-companion-install-state"),
+  installCompanion: () => ipcRenderer.invoke("install-companion"),
+  removeCompanion: () => ipcRenderer.invoke("remove-companion"),
   getForgeSptVersions: () => ipcRenderer.invoke("get-forge-spt-versions"),
   getForgeCache: () => ipcRenderer.invoke("get-forge-cache"),
   setForgeCache: (statusCache: { name: string; status: string; version?: string }[]) =>

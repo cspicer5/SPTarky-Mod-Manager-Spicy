@@ -29,7 +29,8 @@ import {
   InstalledAddonRecord,
   PresetSyncProgress,
   BulkReinstallProgress,
-  BulkReinstallOutcome
+  BulkReinstallOutcome,
+  CompanionInstallState
 } from "./types";
 import { Lang, translate, translateBackendMessage } from "./i18n";
 import { browseInstallState, compareSemver } from "./browseInstallState";
@@ -166,6 +167,32 @@ export default function App() {
       pushToast(t("toast.sptVersionOverridden", { chosen: next, detected: detectedSptVersion }), false);
     }
   }
+  /**
+   * The companion in THIS PC's instance — whether it is there, and what installing would do.
+   *
+   * Refreshed after installing rather than assumed, so a copy that failed to land cannot show
+   * as installed. Its absence is the ordinary case and is never treated as an error.
+   */
+  const [companionState, setCompanionState] = useState<CompanionInstallState | null>(null);
+
+  const refreshCompanionState = useCallback(async () => {
+    try {
+      setCompanionState(await window.modManagerAPI.getCompanionInstallState());
+    } catch {
+      setCompanionState(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshCompanionState();
+  }, [refreshCompanionState, sptPath]);
+
+  async function handleInstallCompanion() {
+    const result = await window.modManagerAPI.installCompanion();
+    pushToast(result.message, result.ok);
+    await refreshCompanionState();
+  }
+
   /**
    * "Lock to server" — browse and install against the SPT the connected server actually runs.
    *
@@ -2961,6 +2988,8 @@ export default function App() {
               onChangeServer={() => setServerPrompt(true)}
               onClearServer={handleClearServer}
               onLockToServer={handleLockToServer}
+              companion={companionState}
+              onInstallCompanion={handleInstallCompanion}
               onExitMultiMode={() => setMultiMode(false)}
               onRefresh={() => void refreshMulti()}
               refreshing={multiRefreshing}

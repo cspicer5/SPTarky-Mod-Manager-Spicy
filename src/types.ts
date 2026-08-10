@@ -279,6 +279,13 @@ export interface ServerSyncReport {
     notOnServer: number;
     unknownVersion: number;
   };
+  /** Whether the server runs the SPTarky companion — the versions above are only exact if so. */
+  companionPresent?: boolean;
+  companionVersion?: string;
+  /** Why it is unusable, when reachable but not trusted. Absent on an ordinary server. */
+  companionReason?: string;
+  /** Client plugins on the server machine. Undefined means NOT KNOWN, not none. */
+  serverClientMods?: { id: string; version?: string; enabled: boolean }[];
   readyToPlay: boolean;
 }
 
@@ -894,6 +901,10 @@ export interface ModManagerAPI {
   getSptSemver: () => Promise<string | undefined>;
   getSptVersionOverride: () => Promise<string | null>;
   setSptVersionOverride: (value: string) => Promise<void>;
+  /** The server companion, installed into the LOCAL instance's user/mods. */
+  getCompanionInstallState: () => Promise<CompanionInstallState>;
+  installCompanion: () => Promise<CompanionActionResult>;
+  removeCompanion: () => Promise<CompanionActionResult>;
   getForgeSptVersions: () => Promise<ForgeSptVersion[]>;
   getForgeCache: () => Promise<{ statusCache: ForgeStatusCacheEntry[] | null; checkedAt: string | null }>;
   setForgeCache: (statusCache: ForgeStatusCacheEntry[]) => Promise<void>;
@@ -995,4 +1006,27 @@ declare global {
   interface Window {
     modManagerAPI: ModManagerAPI;
   }
+}
+/**
+ * What the app knows about the companion in the currently selected instance.
+ *
+ * `canInstall: false` is not a failure — a client-only folder has no user/mods and never will.
+ * The reason is carried so the UI can say which of the two it is.
+ */
+export interface CompanionInstallState {
+  canInstall: boolean;
+  installed: boolean;
+  targetDir?: string;
+  /** The installed file is not the build this app ships — an older copy, most likely. */
+  differsFromBundled?: boolean;
+  /** The owner switched a token on in the mod's own config.json. */
+  requiresToken?: boolean;
+  reason?: string;
+  bundledVersion?: string;
+}
+
+export interface CompanionActionResult {
+  ok: boolean;
+  message: string;
+  targetDir?: string;
 }

@@ -29,12 +29,23 @@ import http from "http";
 import zlib from "zlib";
 import { ModInfo } from "./types";
 import { compareVersions } from "./modManager";
+import {
+  readCapabilities,
+  readManifest,
+  NO_COMPANION,
+  COMPANION_TOKEN_HEADER,
+  type CompanionCapabilities,
+  type RemoteMod
+} from "./companion";
 
 export interface SptServerMod {
   modGuid?: string;
   name: string;
   author?: string;
+  /** What is really installed. Corrected from the companion's ledger when there is one. */
   version?: string;
+  /** Only set when the ledger overrode it — i.e. the mod's own claim was wrong. */
+  declaredVersion?: string;
   sptVersion?: string;
   url?: string;
   license?: string;
@@ -53,6 +64,16 @@ export interface SptServerSnapshot {
   fikaOptional: string[];
   error?: string;
   fetchedAt: string;
+  /** Whether this server runs the SPTarky companion, and what it offers. */
+  companion?: CompanionCapabilities;
+  /**
+   * The server machine's CLIENT plugins. Only ever present when the companion could actually
+   * see them — undefined means "not known", which is a different thing from an empty list and
+   * must not be rendered as "it has none".
+   */
+  clientMods?: RemoteMod[];
+  /** Gaps the companion reported while gathering, in words. */
+  companionWarnings?: string[];
 }
 
 /** Normalises whatever the user typed into a base URL. Defaults to HTTPS — see above. */
@@ -80,7 +101,12 @@ export function normaliseServerUrl(input: string): { origin: string; secure: boo
  */
 const insecureAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: false });
 
-function request(origin: string, path: string, timeoutMs: number): Promise<{ status: number; body: Buffer }> {
+function request(
+  origin: string,
+  path: string,
+  timeoutMs: number,
+  extraHeaders?: Record<string, string>
+): Promise<{ status: number; body: Buffer }> {
   const url = new URL(origin + path);
   const isHttps = url.protocol === "https:";
   const transport = isHttps ? https : http;
@@ -93,7 +119,7 @@ function request(origin: string, path: string, timeoutMs: number): Promise<{ sta
         path,
         method: "GET",
         timeout: timeoutMs,
-        headers: { Accept: "application/json", "User-Agent": "SPTarky-Mod-Manager" },
+        headers: { Accept: "application/json", "User-Agent": "SPTarky-Mod-Manager", ...(extraHeaders ?? {}) },
         ...(isHttps ? { agent: insecureAgent } : {})
       },
       (res) => {
@@ -159,7 +185,7 @@ function toServerMod(displayName: string, raw: any): SptServerMod {
  * and it is usually off), so it is reported as `reachable: false` with the reason rather
  * than as an exception the UI has to catch.
  */
-export async function fetchServerSnapshot(input: string, timeoutMs = 8000): Promise<SptServerSnapshot> {
+export async function fetchServerSnapshot(input: string, timeoutMs = 8000, token?: string): Promise<SptServerSnapshot> {
   const fetchedAt = new Date().toISOString();
   const parsed = normaliseServerUrl(input);
   if (!parsed) {
@@ -203,7 +229,106 @@ export async function fetchServerSnapshot(input: string, timeoutMs = 8000): Prom
     /* not a Fika server, or older Fika — not an error */
   }
 
-  return { url: origin, reachable: true, sptVersion, mods, fikaRequired, fikaOptional, fetchedAt };
+  // The companion, if this server has one. Everything above works without it; everything below
+  // is the part a stock server cannot answer.
+  const { companion, clientMods, companionWarnings } = await readCompanion(origin, token, timeoutMs, mods);
+
+  return {
+    url: origin,
+    reachable: true,
+    sptVersion,
+    mods,
+    fikaRequired,
+    fikaOptional,
+    fetchedAt,
+    companion,
+    clientMods,
+    companionWarnings
+  };
+}
+
+/**
+ * Asks the server whether it runs the SPTarky companion, and uses it if so.
+ *
+ * Kept separate and entirely optional. Almost no server will have it, so every failure path
+ * here has to leave the snapshot exactly as a stock server would produce it — the companion may
+ * only ADD to what is known, never take away or throw.
+ *
+ * When it is present, the mods array is corrected IN PLACE from the manifest's ledger. That is
+ * the whole point of the mod: /launcher/server/loadedServerMods reports what each mod DECLARES
+ * about itself, which is wrong whenever an author forgets to bump it — Artem reports 3.0.0 with
+ * 3.0.1 installed. The ledger on that machine recorded what was actually installed.
+ */
+async function readCompanion(
+  origin: string,
+  token: string | undefined,
+  timeoutMs: number,
+  mods: SptServerMod[]
+): Promise<{ companion: CompanionCapabilities; clientMods?: RemoteMod[]; companionWarnings?: string[] }> {
+  const headers = token ? { [COMPANION_TOKEN_HEADER]: token } : undefined;
+
+  let caps: CompanionCapabilities;
+  try {
+    const { status, body } = await request(origin, "/sptarky/version", timeoutMs, headers);
+    const text = body.toString("utf-8").trim();
+    caps = readCapabilities(status, text ? safeJson(text) : null);
+  } catch {
+    // Unreachable is not a finding about the companion — the server itself answered a moment
+    // ago, so this is a transport hiccup, not evidence of absence.
+    return { companion: NO_COMPANION };
+  }
+
+  if (!caps.present || !caps.manifest) return { companion: caps };
+
+  try {
+    const { status, body } = await request(origin, "/sptarky/manifest", timeoutMs, headers);
+    if (status !== 200) return { companion: caps };
+    const manifest = readManifest(safeJson(body.toString("utf-8")));
+    if (!manifest) return { companion: caps };
+
+    applyLedgerVersions(mods, manifest.serverMods);
+
+    return {
+      companion: caps,
+      // Only handed over when the companion could actually SEE the client half. An empty list
+      // from a server-only box would otherwise read as "this server has no client mods".
+      clientMods: manifest.clientKnown ? manifest.clientMods : undefined,
+      companionWarnings: manifest.warnings.length ? manifest.warnings : undefined
+    };
+  } catch {
+    return { companion: caps };
+  }
+}
+
+/**
+ * Replaces declared versions with ledger-recorded ones, matching on GUID.
+ *
+ * GUID only, deliberately. A remote server never reports its folder names, so the two sides
+ * agree on nothing else that is reliable: "WTT-CAG" on disk declares itself "WTT - Clothing and
+ * Gear", and matching those by name would pair the wrong mods together.
+ */
+function applyLedgerVersions(mods: SptServerMod[], remote: RemoteMod[]): void {
+  const byGuid = new Map<string, RemoteMod>();
+  for (const r of remote) {
+    if (r.guid && r.versionSource === "ledger" && r.version) byGuid.set(r.guid.toLowerCase(), r);
+  }
+  if (byGuid.size === 0) return;
+
+  for (const mod of mods) {
+    if (!mod.modGuid) continue;
+    const match = byGuid.get(mod.modGuid.toLowerCase());
+    if (!match?.version || match.version === mod.version) continue;
+    mod.declaredVersion = mod.version;
+    mod.version = match.version;
+  }
+}
+
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -279,6 +404,13 @@ export interface ServerSyncReport {
     notOnServer: number;
     unknownVersion: number;
   };
+  /** Whether the server runs the SPTarky companion — the versions below are only exact if so. */
+  companionPresent?: boolean;
+  companionVersion?: string;
+  /** Why it is unusable, when reachable but not trusted. Absent on an ordinary server. */
+  companionReason?: string;
+  /** Client plugins on the server machine. Undefined means NOT KNOWN, not none. */
+  serverClientMods?: { id: string; version?: string; enabled: boolean }[];
   /** True when nothing stands between you and joining the server. */
   readyToPlay: boolean;
 }
@@ -423,6 +555,12 @@ export function buildServerSyncReport(
     fetchedAt: snapshot.fetchedAt,
     fikaRequired: snapshot.fikaRequired,
     fikaOptional: snapshot.fikaOptional,
+    companionPresent: snapshot.companion?.present ?? false,
+    companionVersion: snapshot.companion?.version,
+    // Only carried when there is something a person should act on. An ordinary server without
+    // the companion has no "reason", and inventing one would make a normal state look broken.
+    companionReason: snapshot.companion?.reason,
+    serverClientMods: snapshot.clientMods?.map((m) => ({ id: m.id, version: m.version, enabled: m.enabled })),
     rows,
     counts,
     // "Newer locally" and "not on server" are mismatches worth showing but do not stop you

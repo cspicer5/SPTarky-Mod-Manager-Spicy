@@ -68,6 +68,13 @@ import {
 } from "./headless";
 import { fetchServerSnapshot, buildServerSyncReport, normaliseServerUrl } from "./sptServer";
 import {
+  readInstallState,
+  installCompanion,
+  removeCompanion,
+  COMPANION_DLL,
+  BUNDLED_COMPANION_VERSION
+} from "./companionInstall";
+import {
   bundleCacheDir,
   describeBundlePlan,
   fetchBundleManifest,
@@ -2326,4 +2333,41 @@ ipcMain.handle("import-mod-list", async () => {
   } catch (err) {
     return { success: false, message: "Error reading the file: " + (err as Error).message };
   }
+});
+/* --------------------------------------------------------------------------
+ * The server companion: shipping it, and putting it into a local instance
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Where the bundled DLL is, across the three shapes this app runs in.
+ *
+ * Same candidate-list approach as the addon catalogue, and for the same reason: dev, packaged
+ * with the file inside app.asar, and packaged with it unpacked beside the executable are all
+ * real, and guessing one breaks the other two.
+ */
+function bundledCompanionDll(): string {
+  const candidates = [
+    path.join(app.getAppPath(), "companion", "dist", COMPANION_DLL),
+    path.join(process.resourcesPath ?? "", "companion", "dist", COMPANION_DLL),
+    path.join(__dirname, "..", "companion", "dist", COMPANION_DLL)
+  ];
+  return candidates.find((p) => fs.existsSync(p)) ?? candidates[0];
+}
+
+ipcMain.handle("get-companion-install-state", () => {
+  const roots = rootsFor("main");
+  return {
+    ...readInstallState(roots?.serverRoot, bundledCompanionDll()),
+    bundledVersion: BUNDLED_COMPANION_VERSION
+  };
+});
+
+ipcMain.handle("install-companion", () => {
+  const roots = rootsFor("main");
+  return installCompanion(roots?.serverRoot, bundledCompanionDll());
+});
+
+ipcMain.handle("remove-companion", () => {
+  const roots = rootsFor("main");
+  return removeCompanion(roots?.serverRoot);
 });

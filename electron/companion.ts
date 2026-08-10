@@ -29,6 +29,12 @@
 
 export const COMPANION_ROUTE_PREFIX = "/sptarky";
 
+/**
+ * Where the token travels. A header, never the URL — SPT logs every request path, so a token in
+ * the URL would end up written to disk on the very machine it protects.
+ */
+export const COMPANION_TOKEN_HEADER = "x-sptarky-token";
+
 /** Bumped when the contract changes in a way an older manager could misread. */
 export const COMPANION_PROTOCOL = 1;
 

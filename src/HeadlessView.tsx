@@ -25,7 +25,8 @@ import {
   ParityReport,
   ParityRow,
   ServerSyncReport,
-  ServerSyncRow
+  ServerSyncRow,
+  CompanionInstallState
 } from "./types";
 import "./headless.css";
 
@@ -314,6 +315,8 @@ function ServerPane({
   onChangeServer,
   onClearServer,
   onLockToServer,
+  companion,
+  onInstallCompanion,
   query,
   onInstall,
   installing
@@ -326,6 +329,9 @@ function ServerPane({
   onClearServer: () => void;
   /** Match the app's SPT version to the one this server runs. */
   onLockToServer: () => void;
+  /** The companion in the LOCAL instance — what installing would do here. */
+  companion: CompanionInstallState | null;
+  onInstallCompanion: () => void;
   query: string;
   /** Fetch this mod from Forge into the MAIN install. The server itself is never written to. */
   onInstall: (row: ServerSyncRow) => void;
@@ -479,6 +485,49 @@ function ServerPane({
         </div>
       )}
 
+      {/* The companion, and what its absence costs. Stated as a limit on what can be KNOWN —
+          never as a finding about the server's mods, because a server that cannot be asked and
+          a server with nothing to report must not read the same. */}
+      {report && (
+        <p className="hl-gutter-note">
+          {report.companionPresent ? (
+            <>
+              <strong>Companion {report.companionVersion ?? ""} connected.</strong> Versions above are what is really
+              installed, read from that machine's own records.
+              {report.serverClientMods && ` Its ${report.serverClientMods.length} client plugins are visible too.`}
+            </>
+          ) : (
+            <>
+              {report.companionReason ?? "This server has no SPTarky companion."} Without it, versions are only what
+              each mod declares about itself — some authors never update theirs — and the server's client plugins
+              cannot be read at all.
+              {companion?.canInstall && !companion.installed && " If this server is this PC, you can install it below."}
+            </>
+          )}
+        </p>
+      )}
+
+      {/* Installing writes to the LOCAL instance, never to the connected server — that is
+          somebody else's filesystem. The target path is spelled out so the button cannot be
+          mistaken for something that reaches across the network. */}
+      {report && !report.companionPresent && companion?.canInstall && !companion.installed && (
+        <div className="hl-pane-actions">
+          <button onClick={onInstallCompanion} title={`Writes to ${companion.targetDir}`}>
+            Install companion into this PC's SPT ({companion.targetDir})
+          </button>
+        </div>
+      )}
+
+      {companion?.installed && companion.differsFromBundled && (
+        <p className="hl-gutter-note">
+          The companion installed on this PC is not the build this manager ships.{" "}
+          <button className="hl-inline-btn" onClick={onInstallCompanion}>
+            Update it
+          </button>{" "}
+          and restart the server.
+        </p>
+      )}
+
       {report && report.fikaRequired.length === 0 && (
         <p className="hl-gutter-note">
           This server declares no required client plugins, so client-side parity cannot be checked against it. The host
@@ -616,6 +665,8 @@ export default function InstancesView({
   onChangeServer,
   onClearServer,
   onLockToServer,
+  companion,
+  onInstallCompanion,
   onExitMultiMode,
   onRefresh,
   refreshing,
@@ -653,6 +704,8 @@ export default function InstancesView({
   onClearServer: () => void;
   /** Match the app's SPT version to the one the connected server runs. */
   onLockToServer: () => void;
+  companion: CompanionInstallState | null;
+  onInstallCompanion: () => void;
   onExitMultiMode: () => void;
   onRefresh: () => void;
   refreshing: boolean;
@@ -776,6 +829,8 @@ export default function InstancesView({
             onChangeServer={onChangeServer}
             onClearServer={onClearServer}
             onLockToServer={onLockToServer}
+            companion={companion}
+            onInstallCompanion={onInstallCompanion}
             query={searchQuery}
             onInstall={onInstallFromServer}
             installing={installingFromServer}
