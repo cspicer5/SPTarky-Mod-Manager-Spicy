@@ -984,7 +984,9 @@ export default function InstancesView({
   onSyncAllFromServer,
   syncingAllFromServer,
   preferServerSource,
-  onToggleServerSource
+  onToggleServerSource,
+  showPrepatchers,
+  onToggleShowPrepatchers
 }: {
   mainPath: string | null;
   headlessPath: string | null;
@@ -1030,6 +1032,10 @@ export default function InstancesView({
   /** Where mods come from when matching the server: its own files, or the catalogue. */
   preferServerSource: boolean;
   onToggleServerSource: (next: boolean) => void;
+  /** Prepatchers are hidden by default — they come with their parent mod, so a section of them
+      is noise between the things actually being reconciled. */
+  showPrepatchers: boolean;
+  onToggleShowPrepatchers: (next: boolean) => void;
 }) {
   /**
    * How many mods this install is BEHIND the server on.
@@ -1063,10 +1069,21 @@ export default function InstancesView({
    * mod you do not have still shows the gap where it would sit.
    */
   const q = searchQuery.trim().toLowerCase();
+  /*
+   * Built whenever there is a SECOND instance to line up against — a server, a headless client,
+   * or both.
+   *
+   * This was gated on a reachable server alone, which meant the commonest setup of all — this PC
+   * plus a headless client, no remote server — fell straight back to the unaligned lists and got
+   * none of this. Main against headless is its own comparison and needs no server to exist: with
+   * none connected the server rows are simply empty and the sections come from what is installed
+   * here.
+   */
+  const serverAligned = Boolean(serverUrl && server?.reachable);
   const alignedSections =
-    serverUrl && server?.reachable
+    serverAligned || headlessConfigured
       ? buildAlignedSections(
-          server.rows,
+          serverAligned ? server!.rows : [],
           mainMods,
           headlessConfigured ? { mods: headlessMods, parityRows: parity?.rows ?? [], addonRows: parity?.addons } : undefined
         )
@@ -1081,6 +1098,15 @@ export default function InstancesView({
                 (slot.row?.serverName ?? "").toLowerCase().includes(q)
             )
           }))
+          /*
+           * Prepatchers are HIDDEN unless asked for.
+           *
+           * They arrive with the mod that ships them and are synced by syncing that mod, so in
+           * the ordinary case a whole section of them is noise between the things a person is
+           * actually reconciling. The toggle exists for the case that is not ordinary — a
+           * patcher that somehow did not come across — where seeing it is the only way to know.
+           */
+          .filter((section) => section.side !== "patcher" || showPrepatchers)
           .filter((section) => section.slots.length > 0)
       : undefined;
 
@@ -1139,6 +1165,20 @@ export default function InstancesView({
           </button>
           <button onClick={onChangeServer}>{serverUrl ? "Change server" : "Add server"}</button>
           <button onClick={onChangeHeadless}>{headlessPath ? "Change headless" : "Add headless"}</button>
+          {/* Prepatchers are hidden by default because they travel WITH their parent mod — sync
+              the mod and the patcher comes too. This is the escape hatch for when one somehow
+              did not, which is the only time seeing them helps. */}
+          <button
+            onClick={() => onToggleShowPrepatchers(!showPrepatchers)}
+            className={showPrepatchers ? "hl-source-toggle on" : ""}
+            title={
+              showPrepatchers
+                ? "Hide prepatchers. They arrive with the mod that ships them, so they normally need no attention of their own."
+                : "Show prepatchers (BepInEx/patchers). They come with their parent mod, so this is only worth opening if you suspect one did not come across."
+            }
+          >
+            {showPrepatchers ? "Hide prepatchers" : "Prepatchers"}
+          </button>
           <button onClick={onExitMultiMode}>Single view</button>
         </div>
       </div>

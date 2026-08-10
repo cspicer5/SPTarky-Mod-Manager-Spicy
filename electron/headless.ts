@@ -26,6 +26,7 @@
 import fs from "fs";
 import path from "path";
 import { ModInfo, ModType } from "./types";
+import { compareVersions } from "./modManager";
 
 /* --------------------------------------------------------------------------
  * Detection
@@ -580,7 +581,11 @@ export function buildParityReport(
     }
 
     if (twin) {
-      const drift = !!mod.version && !!twin.version && mod.version !== twin.version;
+      // Compared NUMERICALLY, not as text. "5.3.11" and "5.3.11.0" are the same version written
+      // two ways — Tyfon.UIFixes.Net reports one on each machine — and calling that a mismatch
+      // trains people to ignore the marker that matters. Third place this has bitten: the same
+      // string comparison was wrong in the server pane's version line and in its verdict.
+      const drift = !!mod.version && !!twin.version && compareVersions(mod.version, twin.version) !== 0;
       rows.push({
         key,
         modKey: normaliseModKey(mod.id),

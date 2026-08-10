@@ -581,6 +581,9 @@ export default function App() {
    * mod does not stop the install.
    */
   const [preferServerSource, setPreferServerSource] = useState(true);
+  /** Prepatchers are hidden by default: they travel with the mod that ships them, so a section
+      of them sits between the things actually being reconciled and says nothing new. */
+  const [showPrepatchers, setShowPrepatchers] = useState(false);
   const [serverSync, setServerSync] = useState<ServerSyncReport | null>(null);
   const [serverPrompt, setServerPrompt] = useState(false);
   const [serverInput, setServerInput] = useState("");
@@ -3165,6 +3168,8 @@ export default function App() {
               installingFromServer={installingFromServer}
               preferServerSource={preferServerSource}
               onToggleServerSource={setPreferServerSource}
+              showPrepatchers={showPrepatchers}
+              onToggleShowPrepatchers={setShowPrepatchers}
               onSyncAllFromServer={handleSyncAllFromServer}
               syncingAllFromServer={syncingAllFromServer}
               onSyncBundles={handleBundleButton}
