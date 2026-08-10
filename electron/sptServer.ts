@@ -52,6 +52,15 @@ export interface SptServerMod {
   isBundleMod?: boolean;
   incompatibilities?: string[];
   dependencies?: string[];
+  /**
+   * The mod's FOLDER on the server, from the companion's manifest.
+   *
+   * `/launcher/server/loadedServerMods` reports declared names only — a stock server never tells
+   * you its folder names, which is why matching has to prefer the GUID. But pulling files needs
+   * the folder, since that is what the file routes are addressed by, so the companion supplies
+   * it and it is carried here. Absent on a server without one.
+   */
+  folder?: string;
 }
 
 export interface SptServerSnapshot {
@@ -121,11 +130,25 @@ export function normaliseServerUrl(input: string): { origin: string; secure: boo
  */
 const insecureAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: false });
 
-function request(
+/** Shared shape for callers that talk to a companion — the token header and a timeout. */
+export interface ServerRequestOptions {
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+}
+
+export function request(
   origin: string,
   path: string,
   timeoutMs: number,
-  extraHeaders?: Record<string, string>
+  extraHeaders?: Record<string, string>,
+  /**
+   * `raw` turns OFF the decompression sniff below. Mandatory for file downloads: the sniff
+   * decides by looking at the first byte, and a mod's own bytes can begin 0x78 by coincidence —
+   * at which point a perfectly good DLL would be run through inflate. A failed inflate falls
+   * back to the original, but one that SUCCEEDS on non-compressed data would corrupt the file
+   * silently, and silent corruption of an installed mod is the worst outcome available here.
+   */
+  options?: { raw?: boolean }
 ): Promise<{ status: number; body: Buffer }> {
   const url = new URL(origin + path);
   const isHttps = url.protocol === "https:";
@@ -148,12 +171,14 @@ function request(
         res.on("end", () => {
           let body = Buffer.concat(chunks);
           // Raw zlib regardless of Content-Encoding. Sniffed rather than trusted: 0x78 is a
-          // zlib header, 0x1f8b is gzip.
-          try {
-            if (body[0] === 0x78) body = zlib.inflateSync(body);
-            else if (body[0] === 0x1f && body[1] === 0x8b) body = zlib.gunzipSync(body);
-          } catch {
-            /* not compressed after all — use as-is */
+          // zlib header, 0x1f8b is gzip. Skipped entirely for file downloads — see `raw` above.
+          if (!options?.raw) {
+            try {
+              if (body[0] === 0x78) body = zlib.inflateSync(body);
+              else if (body[0] === 0x1f && body[1] === 0x8b) body = zlib.gunzipSync(body);
+            } catch {
+              /* not compressed after all — use as-is */
+            }
           }
           resolve({ status: res.statusCode ?? 0, body });
         });
@@ -331,16 +356,25 @@ async function readCompanion(
  * Gear", and matching those by name would pair the wrong mods together.
  */
 function applyLedgerVersions(mods: SptServerMod[], remote: RemoteMod[]): void {
+  // Indexed by GUID for BOTH jobs below. Every entry is kept, not just ledger-backed ones,
+  // because the folder name is useful even where the version is only declared — it is what the
+  // file routes are addressed by, and a stock server never reports it.
   const byGuid = new Map<string, RemoteMod>();
   for (const r of remote) {
-    if (r.guid && r.versionSource === "ledger" && r.version) byGuid.set(r.guid.toLowerCase(), r);
+    if (r.guid) byGuid.set(r.guid.toLowerCase(), r);
   }
   if (byGuid.size === 0) return;
 
   for (const mod of mods) {
     if (!mod.modGuid) continue;
     const match = byGuid.get(mod.modGuid.toLowerCase());
-    if (!match?.version || match.version === mod.version) continue;
+    if (!match) continue;
+
+    // The folder, so this mod can be pulled from the server rather than looked up.
+    if (match.id) mod.folder = match.id;
+
+    // The version the remote MANAGER recorded, which beats what the mod declares about itself.
+    if (match.versionSource !== "ledger" || !match.version || match.version === mod.version) continue;
     mod.declaredVersion = mod.version;
     mod.version = match.version;
   }
@@ -432,6 +466,16 @@ export interface ServerSyncRow {
   matchedBy?: "guid" | "package" | "name";
   url?: string;
   detail?: string;
+  /**
+   * The mod's FOLDER name on the server — what the companion's file routes are addressed by.
+   *
+   * Distinct from `name`, which is chosen for a person to read, and from `serverName`, which is
+   * only set when the two sides disagree. Pulling files needs the exact folder, and a display
+   * name fetches nothing: Manimal's CS Gas declares itself "Manimal-CSGas" and lives in a folder
+   * called "CSGas". Absent when the server could not tell us — a stock server never reports
+   * folder names at all.
+   */
+  serverModId?: string;
   /**
    * Forge's addon id, on addon rows that came from the catalogue. Its presence is what makes an
    * addon installable in one click; without it there is nothing to look up.
@@ -561,6 +605,8 @@ export function buildServerSyncReport(
       // the user recognises, because it is the folder they installed.
       name: local?.name ?? mod.name,
       serverName: local && local.name !== mod.name ? mod.name : undefined,
+      // Only the companion knows this; a stock server reports declared names only.
+      serverModId: mod.folder,
       guid: mod.modGuid,
       author: mod.author,
       serverVersion: mod.version,
@@ -729,8 +775,13 @@ export function buildServerSyncReport(
       const row: ServerSyncRow = {
         key: "client:" + clientKey(remote.id),
         side: "client",
-        name: local?.name ?? remote.displayName ?? remote.id,
+        // The FOLDER name, not the author's declared one. Every other row in this section is a
+        // folder, and a lone declared name broke that column's meaning — the same mod read
+        // "CSGas" in the server section and "Manimal-CSGas" here. The declared name is still
+        // worth having, so it goes to the tooltip rather than the label.
+        name: local?.name ?? remote.id,
         serverName: local && local.name !== remote.id ? remote.id : undefined,
+        serverModId: remote.id,
         // The CATALOGUE identity, not the assembly's. This is what the Install button looks the
         // mod up with, so it has to be the identifier the catalogue understands — the remote
         // machine's ledger recorded it at install time. The `[BepInPlugin]` GUID would be the

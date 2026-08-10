@@ -36,7 +36,8 @@ import {
   dismissForgeUpdate,
   undismissForgeUpdate,
   copyClientModToHeadless,
-  removeModFromHeadless
+  removeModFromHeadless,
+  recordServerPullInstall
 } from "./modManager";
 import {
   checkModDependencies,
@@ -67,6 +68,7 @@ import {
   HeadlessClass
 } from "./headless";
 import { fetchServerSnapshot, buildServerSyncReport, normaliseServerUrl } from "./sptServer";
+import { installModFromServer } from "./serverFiles";
 import {
   readInstallState,
   installCompanion,
@@ -1864,6 +1866,54 @@ ipcMain.handle("get-server-sync", async () => {
   return { configured: true, report: buildServerSyncReport(snapshot, localMods, localSpt ?? undefined, localAddons) };
 });
 
+/**
+ * Installs a mod by pulling its files from the SERVER, rather than from the catalogue.
+ *
+ * The point of the whole companion, finally wired up. The catalogue answers "what is the newest
+ * build of this mod"; the server answers "what am I actually running", and those are different
+ * questions whose answers routinely differ. This one also works for mods the catalogue cannot
+ * help with at all — private builds, mods delisted since, or anything installed by hand on the
+ * host.
+ *
+ * Writes only into the local instance. The server is read-only in both directions: this GETs
+ * files from it and never sends anything back.
+ */
+ipcMain.handle(
+  "install-mod-from-server",
+  async (_event, args: { modId: string; half: "server" | "client"; version?: string }) => {
+    const serverUrl = store.get("serverUrl");
+    if (!serverUrl) return { success: false, message: "No SPT server is configured." };
+    const roots = rootsFor("main");
+    if (!roots) return { success: false, message: "No SPT instance configured." };
+
+    const targetRoot =
+      args.half === "server" ? path.join(roots.serverRoot, "user", "mods") : path.join(roots.clientRoot, "BepInEx", "plugins");
+
+    // No token header, deliberately consistent with `get-server-sync`: the companion's token is
+    // default-off and this app has nowhere to store one yet. When that arrives it belongs on
+    // both call sites at once, not smuggled into whichever was written last.
+    const result = await installModFromServer(serverUrl, args.half, args.modId, targetRoot, {
+      onProgress: (done, total, bytes) => {
+        mainWindow?.webContents.send("server-pull-progress", { modId: args.modId, done, total, bytes });
+      }
+    });
+
+    if (result.success) {
+      // Recorded with the version the SERVER reported, not one inferred from the files. This is
+      // the whole reason a pull beats a catalogue download: no lookup chose the build, so there
+      // is nothing to be wrong about.
+      recordServerPullInstall(roots.clientRoot, {
+        id: args.modId,
+        type: args.half === "server" ? "server" : "client",
+        installedPath: path.join(targetRoot, args.modId),
+        version: args.version,
+        serverUrl
+      });
+    }
+    return result;
+  }
+);
+
 /* ==========================================================================
  * Bundle sync (v1.3.3)
  *
@@ -2183,19 +2233,28 @@ ipcMain.handle("open-release-page", (_event, url: string) => {
   return { success: false };
 });
 
-ipcMain.handle("find-forge-downloads-for-names", async (_event, entries: { name: string; guid?: string }[]) => {
-  try {
-    return await findForgeDownloadsForNames(
-      entries,
-      (done, total) => {
-        mainWindow?.webContents.send("forge-check-progress", { done, total });
-      },
-      store.get("sptPath") ?? undefined
-    );
-  } catch {
-    return {};
+ipcMain.handle(
+  "find-forge-downloads-for-names",
+  async (_event, entries: { name: string; guid?: string; wantVersion?: string }[], sptVersion?: string) => {
+    try {
+      // The SPT version is passed through so a build that cannot load here is never chosen. It
+      // was previously omitted entirely, which sent every lookup down the unfiltered path and
+      // resolved to whatever was newest in the catalogue — the same shape of fault as the preset
+      // sync bug, and on a button that promises to MATCH a server.
+      const spt = sptVersion || store.get("sptVersionOverride") || (store.get("sptPath") ? detectSptSemver(store.get("sptPath")!) : undefined);
+      return await findForgeDownloadsForNames(
+        entries,
+        (done, total) => {
+          mainWindow?.webContents.send("forge-check-progress", { done, total });
+        },
+        store.get("sptPath") ?? undefined,
+        spt ?? undefined
+      );
+    } catch {
+      return {};
+    }
   }
-});
+);
 
 // A guid may be supplied; when it is, the match is exact rather than a name search. A guess
 // is still allowed here — unlike the unattended preset sync, this one is a person asking

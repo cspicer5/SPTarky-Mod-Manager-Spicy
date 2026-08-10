@@ -756,6 +756,33 @@ export function recordPayloadInstall(
   } as RegistryEntry);
 }
 
+/**
+ * Records a mod pulled straight from a server.
+ *
+ * The best-evidenced install path there is. Everything else infers a version — from an archive
+ * name, from what the mod declares, from which catalogue build was chosen — whereas here the
+ * files came from the machine being matched and the version is the one THAT machine recorded for
+ * them. Nothing was looked up and nothing was guessed, so the evidence names the server.
+ */
+export function recordServerPullInstall(
+  sptPath: string,
+  entry: { id: string; type: ModType; installedPath: string; version?: string; serverUrl: string }
+): void {
+  const existing = loadRegistry(sptPath).find((e) => e.id === entry.id && e.type === entry.type);
+  addToRegistry(sptPath, {
+    ...(existing ?? { id: entry.id, type: entry.type, installedAt: new Date().toISOString() }),
+    id: entry.id,
+    type: entry.type,
+    installedAt: new Date().toISOString(),
+    installedVersion: entry.version ?? existing?.installedVersion,
+    versionOrigin: entry.version ? "server" : existing?.versionOrigin,
+    versionEvidence: entry.version ? `Pulled from ${entry.serverUrl}` : existing?.versionEvidence,
+    // Re-fingerprinted, or the very next scan reports the mod as `stale-record` and falls back to
+    // whatever it declares about itself — which is the guess the ledger exists to replace.
+    fingerprint: fingerprintPath(entry.installedPath)
+  } as RegistryEntry);
+}
+
 export interface SupersededMod {
   /** The GUID both copies declare — the evidence that they are one mod. */
   guid: string;
@@ -3726,7 +3753,14 @@ export function pickForgeVersionForSpt(
 }
 
 export async function findForgeDownloadsForNames(
-  entries: { name: string; guid?: string }[],
+  /**
+   * `wantVersion` is the build to fetch when it is known — the version a server is actually
+   * running, or the one a preset recorded. Without it this resolves to the newest release, which
+   * for "Match server" is precisely the wrong answer: it is a button whose whole promise is to
+   * arrive at the SAME version, and installing something newer than the server breaks the parity
+   * it was pressed to achieve. Same fault as the preset sync bug, one path along.
+   */
+  entries: { name: string; guid?: string; wantVersion?: string }[],
   onProgress?: (done: number, total: number) => void,
   cacheRoot?: string,
   /** When given, each mod resolves to its newest release built for THIS SPT version. */
@@ -3741,14 +3775,21 @@ export async function findForgeDownloadsForNames(
   );
   const out: Record<string, { downloadLink: string; version?: string; forgeName?: string; guid?: string }> = {};
   const budget = newForgeBudget(entries.length);
-  for (const { name } of entries) {
+  for (const { name, wantVersion } of entries) {
     const info = matches.get(name);
     if (!info) continue;
 
-    // With an SPT version in hand, pick the newest release built for IT rather than the
-    // newest release overall — those are often not the same thing, and installing the
-    // latter produces mods that will not load.
-    const chosen = sptVersion ? pickForgeVersionForSpt(info.versions, sptVersion) : undefined;
+    // Order of preference: the exact version asked for, then the newest build compatible with
+    // this SPT, and only then the newest overall. The first is what makes "match" mean match;
+    // the second stops a mod arriving that cannot load. A leading "v" is stripped because
+    // catalogues and mod authors disagree about it and "v1.0.2" is not a different release.
+    const sameVersion = (a?: string, b?: string) =>
+      (a ?? "").trim().replace(/^v/i, "") === (b ?? "").trim().replace(/^v/i, "");
+    const exactWanted = wantVersion
+      ? (info.versions ?? []).find((v) => v.link && sameVersion(v.version, wantVersion))
+      : undefined;
+
+    const chosen = exactWanted ?? (sptVersion ? pickForgeVersionForSpt(info.versions, sptVersion) : undefined);
     if (chosen?.link) {
       out[name] = {
         downloadLink: chosen.link,

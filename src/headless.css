@@ -478,6 +478,18 @@
   background: rgba(150, 116, 172, 0.06);
 }
 
+/* Where mods come from when matching a server. Styled as a state, not an action: it reports what
+   the button beside it will do rather than doing anything itself, so it reads as "currently:
+   server" rather than as a second thing to press. */
+.hl-source-toggle.on {
+  border-color: var(--ok) !important;
+  color: var(--ok-strong) !important;
+}
+
+.hl-source-toggle.on:hover {
+  background: rgba(122, 148, 86, 0.14);
+}
+
 /* Everything between the pane's path line and its list. Present in every pane, empty or not.
  *
  * In aligned mode its height is FIXED rather than minimum: the server pane carries a readiness

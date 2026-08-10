@@ -151,7 +151,13 @@ console.log("\nwhat makes a row fetchable");
 
   const quicksell = rowFor(report, "client:quicksell");
   check("a plugin with a catalogue record can be installed", quicksell.installable, true);
-  check("under the name its author published", quicksell.name, "Quick Sell");
+  // The FOLDER name, not the author's declared one. Every row in this section is a folder, and a
+  // lone declared name broke the column: the same mod read "CSGas" in the server section and
+  // "Manimal-CSGas" here. The declared name lives in the tooltip instead.
+  check("shown under its folder name", quicksell.name, "QuickSell");
+  // And the folder is what a file pull is addressed by, so it travels separately from anything
+  // chosen for display.
+  check("with the server-side folder carried for a pull", quicksell.serverModId, "QuickSell");
   check("and it is the CATALOGUE id that travels, not the assembly's", quicksell.guid, "com.swiftxp.showmethemoney");
 
   // The guard. An assembly GUID looks like a perfectly good identifier and is the wrong one;

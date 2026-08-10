@@ -181,10 +181,13 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
     return () => ipcRenderer.removeListener("forge-check-progress", handler);
   },
   openReleasePage: (url: string) => ipcRenderer.invoke("open-release-page", url),
-  findForgeDownloadsForNames: (entries: { name: string; guid?: string }[]) =>
-    ipcRenderer.invoke("find-forge-downloads-for-names", entries),
+  findForgeDownloadsForNames: (entries: { name: string; guid?: string; wantVersion?: string }[], sptVersion?: string) =>
+    ipcRenderer.invoke("find-forge-downloads-for-names", entries, sptVersion),
   findForgeDownloadForName: (name: string, sptVersion?: string, guid?: string) =>
     ipcRenderer.invoke("find-forge-download-for-name", name, sptVersion, guid),
+  /** Pulls a mod's files straight from the connected server. See electron/serverFiles.ts. */
+  installModFromServer: (args: { modId: string; half: "server" | "client"; version?: string }) =>
+    ipcRenderer.invoke("install-mod-from-server", args),
   installForgeMod: (
     jobId: string,
     downloadLink: string,

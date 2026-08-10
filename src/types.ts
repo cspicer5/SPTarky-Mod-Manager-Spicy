@@ -266,6 +266,12 @@ export interface ServerSyncRow {
   matchedBy?: "guid" | "package" | "name";
   url?: string;
   detail?: string;
+  /**
+   * The mod's FOLDER name on the server — what the companion's file routes are addressed by.
+   * Not the display name: Manimal's CS Gas declares itself "Manimal-CSGas" and lives in "CSGas".
+   * Absent when the server could not tell us, which is every server without a companion.
+   */
+  serverModId?: string;
   /** Forge's addon id, on addon rows. Its presence is what makes an addon installable at all. */
   forgeAddonId?: number;
   /** The mod an addon patches. An addon has nowhere to go without it. */
@@ -1007,9 +1013,21 @@ export interface ModManagerAPI {
   onAppUpdateProgress: (callback: (data: { received: number; total: number }) => void) => () => void;
   onForgeCheckProgress: (callback: (data: { done: number; total: number }) => void) => () => void;
   openReleasePage: (url: string) => Promise<{ success: boolean }>;
+  /** `wantVersion` targets an exact build — the version a server runs, or one a preset recorded. */
   findForgeDownloadsForNames: (
-    entries: { name: string; guid?: string }[]
+    entries: { name: string; guid?: string; wantVersion?: string }[],
+    sptVersion?: string
   ) => Promise<Record<string, { downloadLink: string; version?: string; forgeName?: string; guid?: string }>>;
+  /**
+   * Pulls a mod's files straight from the connected server, byte for byte, instead of looking it
+   * up in the catalogue. The version recorded is the one that machine reported — no lookup chose
+   * the build, so there is nothing for it to get wrong.
+   */
+  installModFromServer: (args: {
+    modId: string;
+    half: "server" | "client";
+    version?: string;
+  }) => Promise<{ success: boolean; message: string; files?: number; bytes?: number }>;
   /** Pass the guid when there is one: a folder name is not the published name. */
   findForgeDownloadForName: (
     name: string,

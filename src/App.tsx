@@ -568,6 +568,19 @@ export default function App() {
   }
 
   const [syncingAllFromServer, setSyncingAllFromServer] = useState(false);
+  /**
+   * Where mods come from when matching a server. ON by default, meaning "from the server".
+   *
+   * The default is the server because it is the only source that can answer the question being
+   * asked — the exact build that machine is running. The catalogue can offer the newest release,
+   * or the newest built for your SPT, and neither is necessarily what the host has. Turning this
+   * off is for when you would rather have the catalogue's copy: a server whose files you do not
+   * trust, or a slow link where the catalogue is nearer than the host.
+   *
+   * Either way the catalogue remains the fallback — a server that cannot serve one particular
+   * mod does not stop the install.
+   */
+  const [preferServerSource, setPreferServerSource] = useState(true);
   const [serverSync, setServerSync] = useState<ServerSyncReport | null>(null);
   const [serverPrompt, setServerPrompt] = useState(false);
   const [serverInput, setServerInput] = useState("");
@@ -1251,6 +1264,39 @@ export default function App() {
      * NAME would land on the parent mod and reinstall that instead, which would wipe out the
      * very patch this row is trying to add.
      */
+    /*
+     * Straight from the server, when that is available and the user has not turned it off.
+     *
+     * Preferred because it answers the question actually being asked. The catalogue can only
+     * offer "the newest build", or "the newest built for your SPT"; the server has the exact
+     * bytes it is running, which is what matching it means. It also covers mods the catalogue
+     * cannot help with at all — a private build, one delisted since, or one the host installed
+     * by hand.
+     *
+     * Addons are excluded: they have no folder of their own to pull, living inside their
+     * parent, so there is nothing for the file routes to serve.
+     */
+    if (preferServerSource && serverSync?.companionPresent && row.side !== "addon" && row.serverModId) {
+      setInstallingFromServer(row.key);
+      try {
+        const result = await window.modManagerAPI.installModFromServer({
+          modId: row.serverModId,
+          half: row.side === "client" ? "client" : "server",
+          version: row.serverVersion
+        });
+        if (result.success) {
+          if (!options.quiet) pushToast(tMsg(result.message), true);
+          return true;
+        }
+        // Falls through to the catalogue rather than stopping. A server that cannot serve this
+        // particular mod is an ordinary state — the companion may be older, or the mod may sit
+        // somewhere its file routes do not reach — and the catalogue is still a route to it.
+        if (!options.quiet) pushToast(`${tMsg(result.message)} Trying the catalogue instead…`, false);
+      } finally {
+        setInstallingFromServer(null);
+      }
+    }
+
     if (row.side === "addon") {
       if (row.forgeAddonId === undefined) {
         if (!options.quiet) pushToast(`"${row.name}" did not come from the catalogue, so it cannot be fetched.`, false);
@@ -1273,7 +1319,14 @@ export default function App() {
     const lookupName = row.side === "client" ? row.name : row.serverName ?? row.name;
     setInstallingFromServer(row.key);
     try {
-      const found = await window.modManagerAPI.findForgeDownloadsForNames([{ name: lookupName, guid: row.guid }]);
+      // The version the SERVER runs, and the SPT it runs on. Without these the lookup falls to
+      // the newest release in the catalogue — which for a button called "Match server" is the
+      // one answer that is certainly wrong, and is how a sync arrives with builds that will not
+      // load. Same fault the preset sync had.
+      const found = await window.modManagerAPI.findForgeDownloadsForNames(
+        [{ name: lookupName, guid: row.guid, wantVersion: row.serverVersion }],
+        serverSync?.sptVersion
+      );
       const hit = found[lookupName];
       if (!hit) {
         pushToast(
@@ -3102,6 +3155,8 @@ export default function App() {
               headlessConfigured={!!headlessPath}
               onInstallFromServer={handleInstallFromServer}
               installingFromServer={installingFromServer}
+              preferServerSource={preferServerSource}
+              onToggleServerSource={setPreferServerSource}
               onSyncAllFromServer={handleSyncAllFromServer}
               syncingAllFromServer={syncingAllFromServer}
               onSyncBundles={handleBundleButton}

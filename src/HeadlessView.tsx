@@ -933,7 +933,9 @@ export default function InstancesView({
   bundleBusy,
   bundleOutOfSync,
   onSyncAllFromServer,
-  syncingAllFromServer
+  syncingAllFromServer,
+  preferServerSource,
+  onToggleServerSource
 }: {
   mainPath: string | null;
   headlessPath: string | null;
@@ -976,6 +978,9 @@ export default function InstancesView({
   bundleOutOfSync: number;
   onSyncAllFromServer: () => void;
   syncingAllFromServer: boolean;
+  /** Where mods come from when matching the server: its own files, or the catalogue. */
+  preferServerSource: boolean;
+  onToggleServerSource: (next: boolean) => void;
 }) {
   /**
    * How many mods this install is BEHIND the server on.
@@ -1043,6 +1048,24 @@ export default function InstancesView({
           {/* Takes everything the server has that this install lacks or has an older copy of.
               Counts only those two: being NEWER than the server is not a thing to fix, and a
               local extra the server never had is not available to fetch. */}
+          {/* Where the files come from. Sits immediately left of the button it governs, because
+              it changes what that button DOES rather than being a setting about the pane.
+
+              Only offered when the server can actually serve files — without a companion there
+              is no choice to make, and a toggle that silently does nothing is worse than none. */}
+          {serverUrl && server?.companionPresent && (
+            <button
+              onClick={() => onToggleServerSource(!preferServerSource)}
+              className={`hl-source-toggle ${preferServerSource ? "on" : ""}`}
+              title={
+                preferServerSource
+                  ? "Mods are pulled straight from the server — the exact build it is running, byte for byte. The catalogue is still used if the server cannot serve one. Click to prefer the catalogue instead."
+                  : "Mods are downloaded from the catalogue, matched to the version the server reports. Click to pull them from the server itself instead."
+              }
+            >
+              Source: {preferServerSource ? "Server" : "Catalogue"}
+            </button>
+          )}
           {serverUrl && (
             <button
               onClick={onSyncAllFromServer}

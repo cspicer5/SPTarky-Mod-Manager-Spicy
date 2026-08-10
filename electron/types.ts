@@ -146,7 +146,12 @@ export interface InstanceConfig {
  * off the filename. "declared-at-install" is what the mod itself claimed at the moment it
  * went in — kept because it at least pins a point in time.
  */
-export type VersionOrigin = "forge" | "github" | "archive-name" | "declared-at-install" | "preset";
+/**
+ * `server` is the strongest of these: the files came byte-for-byte from the machine being
+ * matched, and the version recorded is the one that machine reported for them. There is no
+ * catalogue lookup in between to pick a different build.
+ */
+export type VersionOrigin = "forge" | "github" | "archive-name" | "declared-at-install" | "preset" | "server";
 
 /**
  * A cheap signature of a mod's files on disk, taken at install time.
