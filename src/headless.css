@@ -151,6 +151,13 @@
   font-size: 11px;
 }
 
+/* The main pane's counterpart carries no verdict — it is not ready or unready, it is just what
+   you have — so it takes a neutral fill rather than looking like an unstyled box. */
+.hl-server-status:not(.ok):not(.warn) {
+  background: var(--bg-panel-raised);
+  color: var(--text-dim);
+}
+
 .hl-server-status.ok {
   background: rgba(122, 148, 86, 0.14);
   color: var(--ok-strong);
@@ -469,6 +476,27 @@
 
 .hl-section-addon {
   background: rgba(150, 116, 172, 0.06);
+}
+
+/* Everything between the pane's path line and its list. Present in every pane, empty or not.
+ *
+ * In aligned mode its height is FIXED rather than minimum: the server pane carries a readiness
+ * box and a row of counts that the main pane has no equivalent of, and letting the taller one
+ * grow offsets every row beneath it. A constant offset is what "the rows aren't lined up" looked
+ * like — right order, right blanks, uniformly shifted down the page. */
+.hl-pane-extra {
+  display: block;
+}
+
+.hl-pane-extra-fixed {
+  height: 72px;
+  overflow: hidden;
+}
+
+/* Kept to one line so the block's height cannot change with the number of counts. */
+.hl-pane-extra-fixed .hl-server-counts {
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 
 /* ---- aligned mode: the two panes rendered row-for-row -------------------------------

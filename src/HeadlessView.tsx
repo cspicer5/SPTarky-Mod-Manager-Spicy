@@ -157,6 +157,7 @@ function PaneShell({
   collapsed,
   onToggleCollapse,
   headerExtra,
+  aligned,
   children
 }: {
   title: string;
@@ -166,6 +167,18 @@ function PaneShell({
   collapsed: boolean;
   onToggleCollapse: () => void;
   headerExtra?: React.ReactNode;
+  /**
+   * Reserve the SAME height above the list in every pane.
+   *
+   * Equal row heights are not enough to line two panes up — the lists have to START level too,
+   * and the server pane carries a readiness box and a row of counts that the main pane does not.
+   * That offset every row below it by a constant, which is exactly what "the rows aren't lined
+   * up" looked like: correct order, correct blanks, uniformly shifted.
+   *
+   * A fixed height rather than a minimum, because a minimum lets the taller pane grow and puts
+   * the offset straight back.
+   */
+  aligned?: boolean;
   children: React.ReactNode;
 }) {
   if (collapsed) {
@@ -194,7 +207,9 @@ function PaneShell({
       <div className="hl-pane-path" title={location ?? ""}>
         {location ?? "Not configured"}
       </div>
-      {headerExtra}
+      {/* Always rendered, even when empty, so every pane reserves the same block and the lists
+          below them begin on the same line. */}
+      <div className={`hl-pane-extra${aligned ? " hl-pane-extra-fixed" : ""}`}>{headerExtra}</div>
       {children}
     </div>
   );
@@ -332,6 +347,27 @@ function InstancePane({
       count={mods.length}
       collapsed={collapsed}
       onToggleCollapse={onToggleCollapse}
+      aligned={!!alignedSections}
+      headerExtra={
+        alignedSections ? (
+          /* The counterpart to the server's readiness box. It fills the reserved block with
+             something worth reading rather than blank space, and being the same markup it is
+             the same height, which is what keeps the two lists starting on the same line. */
+          <>
+            <div className="hl-server-status">
+              <strong>This PC</strong>
+              <span>{mods.length} installed</span>
+            </div>
+            <ul className="hl-server-counts">
+              {alignedSections.map((s) => (
+                <li key={s.side}>
+                  {s.slots.filter((slot) => slot.localHas).length} {s.side === "addon" ? "addons" : s.side}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : undefined
+      }
     >
       {mods.length === 0 ? (
         <p className="empty-list">{filtersActive ? "Nothing here matches the current filters." : emptyMessage}</p>
@@ -618,29 +654,33 @@ function ServerPane({
       count={report ? serverModCount : "…"}
       collapsed={collapsed}
       onToggleCollapse={onToggleCollapse}
+      aligned={sections.length > 0}
       headerExtra={
         report ? (
-          <div className={`hl-server-status ${report.readyToPlay ? "ok" : "warn"}`}>
-            <strong>{report.readyToPlay ? "Ready to play" : "Not ready"}</strong>
-            <span>
-              SPT {report.sptVersion ?? "?"}
-              {report.sptMatches === false && <em className="hl-spt-mismatch"> ≠ yours ({report.localSptVersion})</em>}
-            </span>
-          </div>
+          <>
+            <div className={`hl-server-status ${report.readyToPlay ? "ok" : "warn"}`}>
+              <strong>{report.readyToPlay ? "Ready to play" : "Not ready"}</strong>
+              <span>
+                SPT {report.sptVersion ?? "?"}
+                {report.sptMatches === false && <em className="hl-spt-mismatch"> ≠ yours ({report.localSptVersion})</em>}
+              </span>
+            </div>
+            {/* Moved up out of the body. Everything above the list has to live in the reserved
+                block, or it pushes the list down and the panes stop lining up. */}
+            {counts && (
+              <ul className="hl-server-counts">
+                {counts.needInstalling > 0 && <li className="bad">{counts.needInstalling} to install</li>}
+                {counts.needUpdating > 0 && <li className="bad">{counts.needUpdating} to update</li>}
+                {counts.unknownVersion > 0 && <li>{counts.unknownVersion} can't compare</li>}
+                {counts.newerLocally > 0 && <li className="warn">{counts.newerLocally} newer here</li>}
+                {counts.notOnServer > 0 && <li className="warn">{counts.notOnServer} not on server</li>}
+                <li className="ok">{counts.inSync} in sync</li>
+              </ul>
+            )}
+          </>
         ) : undefined
       }
     >
-      {counts && (
-        <ul className="hl-server-counts">
-          {counts.needInstalling > 0 && <li className="bad">{counts.needInstalling} to install</li>}
-          {counts.needUpdating > 0 && <li className="bad">{counts.needUpdating} to update</li>}
-          {counts.unknownVersion > 0 && <li>{counts.unknownVersion} can't compare</li>}
-          {counts.newerLocally > 0 && <li className="warn">{counts.newerLocally} newer here</li>}
-          {counts.notOnServer > 0 && <li className="warn">{counts.notOnServer} not on server</li>}
-          <li className="ok">{counts.inSync} in sync</li>
-        </ul>
-      )}
-
       {sections.length === 0 ? (
         <p className="empty-list">{query ? "Nothing here matches the search." : "No server mods reported."}</p>
       ) : (
