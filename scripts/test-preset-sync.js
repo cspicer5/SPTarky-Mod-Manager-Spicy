@@ -328,6 +328,52 @@ function main() {
     check("a mod with no guid carries none", none.guid, undefined);
   }
 
+  /* ------------------------------------------------------------------------------------------ *
+   * Which BUILD a preset sync installs.
+   *
+   * Reported from a real sync: a friend applied a preset and got mods NEWER than his SPT could
+   * run. Two faults compounded.
+   *
+   * `wantVersion` — the version the preset recorded, and the whole point of a preset — was set on
+   * every step and then read by nothing in the codebase.
+   *
+   * And findForgeDownloadForName's primary branch returned latestVersionLink with NO SPT filter;
+   * sptVersion was only applied by the fallback. So anything matched there took the newest build
+   * regardless of compatibility. Adding GUIDs to presets made this universal rather than rare,
+   * because a GUID always matches in the primary branch — the change that made matching exact
+   * also made every match unfiltered.
+   * ------------------------------------------------------------------------------------------ */
+  {
+    const { pickForgeVersionForSpt } = require(path.join(__dirname, "..", "dist-electron", "modManager.js"));
+
+    const versions = [
+      { version: "3.0.0", link: "l300", sptConstraint: "~4.1.0" }, // newest, but needs SPT 4.1
+      { version: "2.5.0", link: "l250", sptConstraint: "~4.0.0" },
+      { version: "2.0.4", link: "l204", sptConstraint: "~4.0.0" }
+    ];
+
+    console.log("\nchoosing a build for the target SPT");
+    const onTarget = pickForgeVersionForSpt(versions, "4.0.13");
+    check("the newest COMPATIBLE build is chosen", onTarget && onTarget.version, "2.5.0");
+    check("not simply the newest published one", onTarget && onTarget.version === "3.0.0", false);
+
+    // Refusing beats installing something that cannot load: a reported failure is recoverable,
+    // a silently broken install is what sent someone hunting through mod folders.
+    check("nothing compatible yields nothing", pickForgeVersionForSpt(versions, "3.9.0"), undefined);
+
+    // With no SPT known, the newest is all there is to go on — unchanged, and the fallback the
+    // resolver documents.
+    const noSpt = pickForgeVersionForSpt(versions, undefined);
+    check("an unknown SPT falls back to the newest", noSpt && noSpt.version, "3.0.0");
+
+    // The preset's own recorded version has to be reachable by exact match, including when it is
+    // NOT the newest compatible one — that is the difference between "match this preset" and
+    // "install something that works".
+    const recorded = versions.find((v) => v.version === "2.0.4");
+    check("an older recorded version is still selectable", recorded && recorded.link, "l204");
+  }
+
+
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
   process.exit(failures === 0 ? 0 : 1);
 }

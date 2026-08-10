@@ -979,18 +979,26 @@ ipcMain.handle("sync-install-to-preset", async (_event, id: string, fromStore?: 
          * needing confirmation is refused here rather than installed: reporting a failure is
          * recoverable, and silently installing the wrong mod is not.
          */
+        /*
+         * wantVersion is the version the preset RECORDED, and it is the point of a preset.
+         * It was carried on the step from the start and then read by nothing, so every sync
+         * installed whatever was newest instead — which is how a friend ended up with mods too
+         * new for his SPT.
+         */
         const found = await findForgeDownloadForName(step.name, localSptVersion(), {
           guid: step.guid,
-          allowGuess: false
+          allowGuess: false,
+          wantVersion: step.wantVersion
         });
         if (!found.found || !found.downloadLink) {
           failed.push({
             name: step.name,
             message: found.guessed
               ? `Only an uncertain match was found${found.forgeName ? ` ("${found.forgeName}")` : ""} — not installed. Link it by hand to be sure.`
-              : step.guid
-                ? "Not found in the catalogue."
-                : "Not found in the catalogue, and this preset records no GUID for it."
+              : (found.reason ??
+                (step.guid
+                  ? "Not found in the catalogue."
+                  : "Not found in the catalogue, and this preset records no GUID for it."))
           });
         } else {
           const r = await installForgeModVersion(

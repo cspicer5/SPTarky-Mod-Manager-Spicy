@@ -3803,8 +3803,16 @@ export async function findForgeDownloadsForNames(
 export async function findForgeDownloadForName(
   name: string,
   sptVersion?: string,
-  options: { guid?: string; allowGuess?: boolean } = {}
-): Promise<{ found: boolean; downloadLink?: string; version?: string; forgeName?: string; guessed?: boolean }> {
+  options: { guid?: string; allowGuess?: boolean; wantVersion?: string } = {}
+): Promise<{
+  found: boolean;
+  downloadLink?: string;
+  version?: string;
+  forgeName?: string;
+  guessed?: boolean;
+  /** Set when nothing could be offered, phrased for a person. */
+  reason?: string;
+}> {
   // Uses the same multi-strategy matcher as the update check, so restoring a modlist finds
   // as much as the update check does. The guid turns that into an exact, batched lookup.
   const matches = await matchForgeMods([{ folderName: name, guid: options.guid }]);
@@ -3813,6 +3821,53 @@ export async function findForgeDownloadForName(
     if (info.needsConfirmation && options.allowGuess === false) {
       return { found: false, guessed: true, forgeName: info.forgeName };
     }
+
+    /*
+     * Pick a BUILD, rather than taking latestVersionLink.
+     *
+     * This branch used to return the newest published build with no SPT filtering at all —
+     * sptVersion was only ever applied by the fallback below. Anything matched here therefore
+     * installed the latest version regardless of whether it runs on the target SPT, and a
+     * friend syncing a preset got a set of mods too new for his install.
+     *
+     * It got worse when presets started carrying GUIDs, because a GUID always matches here and
+     * so nothing reached the filtered path any more. The fix that made matching exact also made
+     * every match unfiltered.
+     *
+     * Order of preference: the version the preset actually recorded, then the newest build
+     * compatible with this SPT, and otherwise nothing.
+     */
+    const sameVersion = (a?: string, b?: string) =>
+      (a ?? "").trim().replace(/^v/i, "") === (b ?? "").trim().replace(/^v/i, "");
+    const exactWanted = options.wantVersion
+      ? (info.versions ?? []).find((v) => v.link && sameVersion(v.version, options.wantVersion))
+      : undefined;
+
+    const chosen = exactWanted ?? pickForgeVersionForSpt(info.versions, sptVersion);
+    if (chosen?.link) {
+      return {
+        found: true,
+        downloadLink: chosen.link,
+        version: chosen.version,
+        forgeName: info.forgeName,
+        guessed: info.needsConfirmation
+      };
+    }
+
+    // A build list with nothing compatible is a real answer, and a better one than installing
+    // something that will not load. Refusing is recoverable; a broken install is not.
+    if ((info.versions ?? []).some((v) => v.link)) {
+      return {
+        found: false,
+        forgeName: info.forgeName,
+        reason: sptVersion
+          ? `No published build of this mod is compatible with SPT ${sptVersion}.`
+          : "No published build of this mod could be selected."
+      };
+    }
+
+    // No version list at all (an older cache, say) — fall back to what the matcher offered,
+    // since refusing on missing metadata would be worse than the previous behaviour.
     return {
       found: true,
       downloadLink: info.latestVersionLink,
