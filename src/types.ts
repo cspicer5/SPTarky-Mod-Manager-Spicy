@@ -244,6 +244,8 @@ export type ServerSyncIssue =
 
 export interface ServerSyncRow {
   key: string;
+  /** Which half this row is about. Client rows appear only when a companion reported them. */
+  side?: "server" | "client";
   /** Local folder name when matched, otherwise whatever the server declares. */
   name: string;
   /** The server's own name, kept only when it differs (Fika's server half calls itself "server"). */

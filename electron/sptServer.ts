@@ -369,6 +369,8 @@ export type ServerSyncIssue =
 
 export interface ServerSyncRow {
   key: string;
+  /** Which half this row is about. Client rows appear only when a companion reported them. */
+  side?: "server" | "client";
   /** Display name — the local folder name when matched, otherwise what the server declares. */
   name: string;
   /** What the server calls it, kept when it differs so the row can be traced back. */
@@ -447,9 +449,10 @@ export function buildServerSyncReport(
     };
   }
 
-  // Only server mods can be compared: /launcher/server/loadedServerMods reports the server
-  // side alone. Client plugins are invisible to it, so folding them in would report every
-  // one of them as "not on server" — noise, not information.
+  // Without the companion only server mods can be compared: /launcher/server/loadedServerMods
+  // reports the server side alone, so folding client plugins in would report every one of them
+  // as "not on server" — noise, not information. WITH the companion, the client half is
+  // genuinely known and is compared below.
   const localServer = localMods.filter((m) => m.type === "server");
 
   const byGuid = new Map<string, ModInfo>();
@@ -471,6 +474,7 @@ export function buildServerSyncReport(
 
     const row: ServerSyncRow = {
       key: norm(mod.modGuid) || norm(mod.name),
+      side: "server",
       // Prefer the LOCAL folder name when the two are matched. Declared names are not
       // written for humans scanning a list: Fika's server half declares itself literally
       // "server" (GUID "Fika"), which is faithful and useless. The local name is the one
@@ -520,6 +524,7 @@ export function buildServerSyncReport(
     if (claimed.has(mod.id + " " + mod.type)) continue;
     rows.push({
       key: norm(mod.guid) || norm(mod.originalName),
+      side: "server",
       name: mod.name,
       guid: mod.guid,
       localVersion: mod.version,
@@ -528,6 +533,120 @@ export function buildServerSyncReport(
       detail: "Installed here but not loaded by the server. It will have no effect in a raid there."
     });
     counts.notOnServer++;
+  }
+
+  // --- the client half, which only the companion can report ---------------------------
+  //
+  // Gated on clientMods being DEFINED rather than non-empty. Undefined means the server could
+  // not be asked (no companion, or no BepInEx beside it), and in that case every local plugin
+  // must stay out of the report entirely — listing them all as "not on server" would be a
+  // confident claim built on having no information at all.
+  if (snapshot.clientMods) {
+    const localClient = localMods.filter((m) => m.type !== "server");
+
+    // Client plugins match by NAME, not GUID. The companion reports what is on disk — a folder
+    // or a loose .dll — and reading the BepInPlugin GUID out of an assembly is not something it
+    // does. Both sides are folder identities from the same convention, so this is a like-for-
+    // like comparison rather than the name-guessing that server mods have to avoid.
+    // A multimap, not a map. Several local rows routinely share one key: a plugin commonly
+    // ships as BOTH `Mod.dll` and a `Mod/` folder beside it, and both reduce to the same
+    // identity. Keeping only the last one silently left the other unclaimed, and it was then
+    // reported as "not on server" — a mod present on both machines shown as a difference.
+    // Caught by comparing a server against itself, where every row must come out in sync.
+    const localByName = new Map<string, ModInfo[]>();
+    const addLocal = (key: string, mod: ModInfo) => {
+      const list = localByName.get(key);
+      if (list) {
+        if (!list.includes(mod)) list.push(mod);
+      } else {
+        localByName.set(key, [mod]);
+      }
+    };
+    for (const mod of localClient) {
+      addLocal(clientKey(mod.originalName), mod);
+      addLocal(clientKey(mod.name), mod);
+      if (mod.id) addLocal(clientKey(mod.id), mod);
+    }
+
+    const claimedClient = new Set<string>();
+
+    // Collapse the remote side by identity first. A plugin shipping as both `Mod.dll` and a
+    // `Mod/` folder arrives as two entries, and emitting a row for each put the same mod on
+    // screen twice — seen against the real remote server, where BlackDiv appeared as a pair.
+    // The entry carrying a version wins, since the folder half usually has none.
+    const remoteByKey = new Map<string, RemoteMod>();
+    for (const entry of snapshot.clientMods) {
+      const key = clientKey(entry.id);
+      const held = remoteByKey.get(key);
+      if (!held || (!held.version && entry.version)) remoteByKey.set(key, entry);
+    }
+
+    for (const remote of remoteByKey.values()) {
+      // SPT ships its own files into BepInEx/plugins. They are not mods, nobody installs or
+      // removes them, and reporting them would put permanent noise at the top of the list.
+      if (isSptOwnedPlugin(remote.id)) continue;
+
+      const matches = localByName.get(clientKey(remote.id)) ?? [];
+      // Every local part sharing this identity is accounted for, not just the one shown.
+      for (const m of matches) claimedClient.add(m.id + " " + m.type);
+      // Prefer the part that carries a version — the folder half often has none.
+      const local = matches.find((m) => m.version) ?? matches[0];
+
+      const row: ServerSyncRow = {
+        key: "client:" + clientKey(remote.id),
+        side: "client",
+        name: local?.name ?? remote.id,
+        serverName: local && local.name !== remote.id ? remote.id : undefined,
+        serverVersion: remote.version,
+        localVersion: local?.version,
+        localModId: local?.id,
+        matchedBy: local ? "name" : undefined
+      };
+
+      if (!local) {
+        row.issue = "missing-locally";
+        row.detail = "The server machine has this client plugin and you do not.";
+        counts.needInstalling++;
+      } else if (!local.version || !remote.version) {
+        row.issue = "unknown-local-version";
+        row.detail = remote.version
+          ? "This plugin does not declare a version locally, so it cannot be compared."
+          : "The server did not report a version for this plugin.";
+        counts.unknownVersion++;
+      } else {
+        const cmp = compareVersions(local.version, remote.version);
+        if (cmp < 0) {
+          row.issue = "outdated-locally";
+          row.detail = `The server machine has ${remote.version}; you have ${local.version}.`;
+          counts.needUpdating++;
+        } else if (cmp > 0) {
+          row.issue = "newer-locally";
+          row.detail = `You have ${local.version}; the server machine has ${remote.version}.`;
+          counts.newerLocally++;
+        } else {
+          counts.inSync++;
+        }
+      }
+      rows.push(row);
+    }
+
+    for (const mod of localClient) {
+      if (claimedClient.has(mod.id + " " + mod.type)) continue;
+      if (isSptOwnedPlugin(mod.id) || isSptOwnedPlugin(mod.originalName)) continue;
+      rows.push({
+        key: "client:" + clientKey(mod.originalName || mod.name),
+        side: "client",
+        name: mod.name,
+        localVersion: mod.version,
+        localModId: mod.id,
+        issue: "not-on-server",
+        // Worded carefully: a client plugin the host does not run is often FINE (cosmetics,
+        // UI tweaks). Only Fika's required list makes one mandatory, and that is reported
+        // separately, so this must not read as a fault.
+        detail: "You have this client plugin and the server machine does not. Often harmless — only matters if the server requires matching clients."
+      });
+      counts.notOnServer++;
+    }
   }
 
   const sptMatches =
@@ -567,4 +686,32 @@ export function buildServerSyncReport(
     // joining; a missing or outdated mod does. An SPT version mismatch always does.
     readyToPlay: counts.needInstalling === 0 && counts.needUpdating === 0 && sptMatches !== false
   };
+}
+
+/**
+ * Identity for a client plugin, on both sides of the comparison.
+ *
+ * Drops a trailing `.dll` because the same mod is a bare folder on one machine and
+ * `Mod.dll` on another depending on how it shipped, and a leading numeric ordering prefix
+ * because people rename plugins to control BepInEx load order — `01-SomeMod` and `SomeMod`
+ * are the same plugin and must not be reported as one missing and one extra.
+ */
+function clientKey(name: string | undefined): string {
+  return (name ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\.dll$/, "")
+    .replace(/^\d+[-_.\s]+/, "");
+}
+
+/**
+ * SPT's own files under BepInEx/plugins, which are not mods.
+ *
+ * They arrive with SPT itself, nobody installs or removes them, and on a healthy pair of
+ * machines they always differ in uninteresting ways — so reporting them would put permanent
+ * noise at the top of a list whose whole job is to show what needs attention.
+ */
+function isSptOwnedPlugin(name: string | undefined): boolean {
+  const key = clientKey(name);
+  return key === "spt" || key.startsWith("spt-") || key.startsWith("spt.");
 }
