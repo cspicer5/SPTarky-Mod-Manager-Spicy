@@ -248,7 +248,9 @@ export type ServerSyncIssue =
   | "not-on-server"
   | "unknown-local-version"
   /** Present on disk but parked in a .disabled folder, while the server runs it. */
-  | "disabled-locally";
+  | "disabled-locally"
+  /** Enabled here and turned OFF on the server — again a toggle, not an install. */
+  | "enabled-locally";
 
 export interface ServerSyncRow {
   key: string;
@@ -274,6 +276,11 @@ export interface ServerSyncRow {
    * Absent when the server could not tell us, which is every server without a companion.
    */
   serverModId?: string;
+  /**
+   * How this row is put right. Absent means "fetch it"; `toggle` means the files are already
+   * here and only the on/off state differs, so the repair is a switch rather than a download.
+   */
+  fixBy?: "toggle";
   /** Forge's addon id, on addon rows. Its presence is what makes an addon installable at all. */
   forgeAddonId?: number;
   /** The mod an addon patches. An addon has nowhere to go without it. */

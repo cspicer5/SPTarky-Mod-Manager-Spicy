@@ -1286,6 +1286,34 @@ export default function App() {
     // because it is a property of the data, not of the button — a client plugin that declares no
     // ID, or an addon that never came from the catalogue. Refusing here as well as hiding the
     // button matters for "Match server", which acts on rows without a button being pressed.
+    /*
+     * The files are already here and only the switch differs. Toggling, not downloading.
+     *
+     * Handled before anything else because every path below fetches something, and fetching a
+     * mod that is sitting on disk in the .disabled folder would be both wasteful and wrong — it
+     * would leave the disabled copy exactly where it was.
+     */
+    if (row.fixBy === "toggle") {
+      const local = mods.find((m) => m.id === row.localModId && (row.side === "server" ? m.type === "server" : m.type !== "server"));
+      if (!local) {
+        if (!options.quiet) pushToast(`Couldn't find "${row.name}" to switch. Try rescanning.`, false);
+        return false;
+      }
+      setInstallingFromServer(row.key);
+      try {
+        const result = await window.modManagerAPI.toggleMod(local);
+        if (!options.quiet || !result.success) {
+          pushToast(
+            result.success ? `${local.name} is now ${local.enabled ? "off" : "on"}, matching the server.` : tMsg(result.message),
+            result.success
+          );
+        }
+        return result.success;
+      } finally {
+        setInstallingFromServer(null);
+      }
+    }
+
     if (row.installable === false) {
       if (!options.quiet) pushToast(row.notInstallableReason ?? `"${row.name}" cannot be installed automatically.`, false);
       return false;
@@ -1417,8 +1445,14 @@ export default function App() {
    * those and make a failure impossible to attribute.
    */
   async function handleSyncAllFromServer() {
+    // Everything the server has that this install does not match — including mods that are
+    // merely switched the wrong way, which are a toggle rather than a download.
     const rows = (serverSync?.rows ?? []).filter(
-      (r) => r.issue === "missing-locally" || r.issue === "outdated-locally"
+      (r) =>
+        r.issue === "missing-locally" ||
+        r.issue === "outdated-locally" ||
+        r.issue === "disabled-locally" ||
+        r.issue === "enabled-locally"
     );
     if (rows.length === 0) {
       pushToast("Nothing to take from the server — every mod it has is already here.", true);

@@ -82,6 +82,13 @@ export interface SptServerSnapshot {
    */
   clientMods?: RemoteMod[];
   /**
+   * The server machine's server mods as the COMPANION sees them — including the ones sitting in
+   * user/mods.disabled, which /launcher/server/loadedServerMods cannot report because it lists
+   * what LOADED. Without this a mod turned off over there is indistinguishable from one that was
+   * never installed, and "you have this and the server does not" is the wrong repair for it.
+   */
+  remoteServerMods?: RemoteMod[];
+  /**
    * The server machine's addon ledger. Undefined means it has none — that machine has never
    * installed an addon through this manager — which is NOT the same as having no addons, and
    * must not be compared against as though it were.
@@ -276,7 +283,7 @@ export async function fetchServerSnapshot(input: string, timeoutMs = 8000, token
 
   // The companion, if this server has one. Everything above works without it; everything below
   // is the part a stock server cannot answer.
-  const { companion, clientMods, addons, companionWarnings } = await readCompanion(origin, token, timeoutMs, mods);
+  const { companion, clientMods, remoteServerMods, addons, companionWarnings } = await readCompanion(origin, token, timeoutMs, mods);
 
   return {
     url: origin,
@@ -288,6 +295,7 @@ export async function fetchServerSnapshot(input: string, timeoutMs = 8000, token
     fetchedAt,
     companion,
     clientMods,
+    remoteServerMods,
     addons,
     companionWarnings
   };
@@ -310,7 +318,13 @@ async function readCompanion(
   token: string | undefined,
   timeoutMs: number,
   mods: SptServerMod[]
-): Promise<{ companion: CompanionCapabilities; clientMods?: RemoteMod[]; addons?: RemoteAddon[]; companionWarnings?: string[] }> {
+): Promise<{
+  companion: CompanionCapabilities;
+  clientMods?: RemoteMod[];
+  remoteServerMods?: RemoteMod[];
+  addons?: RemoteAddon[];
+  companionWarnings?: string[];
+}> {
   const headers = token ? { [COMPANION_TOKEN_HEADER]: token } : undefined;
 
   let caps: CompanionCapabilities;
@@ -339,6 +353,7 @@ async function readCompanion(
       // Only handed over when the companion could actually SEE the client half. An empty list
       // from a server-only box would otherwise read as "this server has no client mods".
       clientMods: manifest.clientKnown ? manifest.clientMods : undefined,
+      remoteServerMods: manifest.serverMods,
       // Same rule for addons: no ledger on that machine means unknown, not none.
       addons: manifest.addonsKnown ? readRemoteAddons(manifest.addons) : undefined,
       companionWarnings: manifest.warnings.length ? manifest.warnings : undefined
@@ -448,7 +463,9 @@ export type ServerSyncIssue =
   | "not-on-server"
   | "unknown-local-version"
   /** Present on disk but parked in a .disabled folder, while the server runs it. */
-  | "disabled-locally";
+  | "disabled-locally"
+  /** Enabled here and turned OFF on the server — again a toggle, not an install. */
+  | "enabled-locally";
 
 export interface ServerSyncRow {
   key: string;
@@ -478,6 +495,15 @@ export interface ServerSyncRow {
    * folder names at all.
    */
   serverModId?: string;
+  /**
+   * How this row is put right. Absent means "fetch it" — install or update, the ordinary case.
+   *
+   * `toggle` means the files are already here and only the on/off state differs, so the repair is
+   * a switch rather than a download. Kept as its own field because the UI and "Match server" both
+   * have to act differently, and inferring it from the issue kind in two places is how the two
+   * would eventually disagree.
+   */
+  fixBy?: "toggle";
   /**
    * Forge's addon id, on addon rows that came from the catalogue. Its presence is what makes an
    * addon installable in one click; without it there is nothing to look up.
@@ -659,8 +685,54 @@ export function buildServerSyncReport(
     rows.push(row);
   }
 
+  /*
+   * Local server mods the server did not load.
+   *
+   * "Did not load" covers two different situations, and only the companion can tell them apart:
+   * either the server does not have the mod at all, or it HAS it and has it switched off. The
+   * stock endpoint reports what LOADED, so both look identical through it — and "you have this
+   * and the server does not" is the wrong repair for the second, which is a toggle.
+   */
+  const remoteDisabledServer = new Map<string, RemoteMod>();
+  for (const entry of snapshot.remoteServerMods ?? []) {
+    if (entry.enabled) continue;
+    if (entry.guid) remoteDisabledServer.set(norm(entry.guid), entry);
+    remoteDisabledServer.set(norm(entry.id), entry);
+  }
+
   for (const mod of localServer) {
-    if (claimed.has(mod.id + " " + mod.type)) continue;
+    if (claimed.has(mod.id + " " + mod.type)) continue;
+
+    const offThere =
+      (mod.guid ? remoteDisabledServer.get(norm(mod.guid)) : undefined) ??
+      remoteDisabledServer.get(norm(mod.originalName)) ??
+      remoteDisabledServer.get(norm(mod.id));
+
+    if (offThere && mod.enabled) {
+      rows.push({
+        key: norm(mod.guid) || norm(mod.originalName),
+        side: "server",
+        name: mod.name,
+        guid: mod.guid,
+        serverModId: offThere.id,
+        localVersion: mod.version,
+        serverVersion: offThere.version,
+        localModId: mod.id,
+        issue: "enabled-locally",
+        fixBy: "toggle",
+        detail: "The server has this mod installed but switched OFF, and you have it on. Turn it off to match."
+      });
+      counts.needUpdating++;
+      continue;
+    }
+
+    // Off on BOTH sides is agreement, not a difference. Reporting it would put a permanent row
+    // on screen for two machines that already match.
+    if (offThere && !mod.enabled) {
+      counts.inSync++;
+      continue;
+    }
+
     rows.push({
       key: norm(mod.guid) || norm(mod.originalName),
       side: "server",
@@ -829,6 +901,18 @@ export function buildServerSyncReport(
         row.issue = "missing-locally";
         row.detail = "The server machine has this client plugin and you do not.";
         counts.needInstalling++;
+      } else if (local.enabled !== remote.enabled) {
+        /*
+         * Checked BEFORE the version, because a plugin that is switched off is not running at
+         * all — which outranks it being a build behind. The repair is a toggle, not a download,
+         * and treating it as "missing" would have someone reinstall a mod that is already there.
+         */
+        row.issue = remote.enabled ? "disabled-locally" : "enabled-locally";
+        row.fixBy = "toggle";
+        row.detail = remote.enabled
+          ? "You have this plugin but it is switched off, and the server runs it. Turn it on to match."
+          : "You have this plugin switched on and the server has it off. Turn it off to match.";
+        counts.needUpdating++;
       } else if (!local.version || !remote.version) {
         row.issue = "unknown-local-version";
         row.detail = remote.version

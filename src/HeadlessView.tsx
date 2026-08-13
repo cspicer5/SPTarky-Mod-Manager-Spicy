@@ -80,6 +80,7 @@ const SERVER_ISSUE_LABEL: Record<string, string> = {
   "missing-locally": "Missing here",
   "outdated-locally": "Behind server",
   "disabled-locally": "Disabled here",
+  "enabled-locally": "Enabled here",
   "newer-locally": "Newer here",
   "not-on-server": "Not on server",
   "unknown-local-version": "Can't compare"
@@ -641,7 +642,20 @@ function ServerPane({
             a client plugin with no ID, an addon that never came from the catalogue. The row
             says why in its place, because a button that quietly installs the wrong mod is far
             worse than one that is not there. */}
-        {(row.issue === "missing-locally" || row.issue === "outdated-locally") &&
+        {/* A row whose files are already here and only differ in on/off state. The repair is a
+            switch, so it says so — offering "Install" would have someone re-download a mod that
+            is sitting on disk. */}
+        {row.fixBy === "toggle" && (
+          <button
+            className="hl-install-btn"
+            onClick={() => onInstall(row)}
+            disabled={installing !== null}
+            title={row.detail ?? ""}
+          >
+            {installing === row.key ? "…" : row.issue === "disabled-locally" ? "Enable" : "Disable"}
+          </button>
+        )}
+        {row.fixBy !== "toggle" && (row.issue === "missing-locally" || row.issue === "outdated-locally") &&
           (row.installable === false ? (
             <span className="hl-cannot-install" title={row.notInstallableReason ?? ""}>
               by hand
@@ -1044,7 +1058,13 @@ export default function InstancesView({
    * server is behind, and "matching" it would roll the local install backwards.
    */
   const serverBehind = (server?.rows ?? []).filter(
-    (r) => r.issue === "missing-locally" || r.issue === "outdated-locally"
+    (r) =>
+      r.issue === "missing-locally" ||
+      r.issue === "outdated-locally" ||
+      // A mod switched the wrong way is out of step just as surely as a missing one,
+      // and it is the cheapest of all to put right.
+      r.issue === "disabled-locally" ||
+      r.issue === "enabled-locally"
   ).length;
   // Collapsed panes are remembered per session so a chosen comparison stays put across a
   // rescan. Server starts collapsed when nothing is connected — an empty invitation should

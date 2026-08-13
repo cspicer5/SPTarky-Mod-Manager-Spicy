@@ -314,6 +314,91 @@ console.log("\naddons when one machine has no records");
   check("and the server's addon shows as missing", rowFor(emptyLocal, "addon:id:9").issue, "missing-locally");
 }
 
+console.log("\nmods switched the wrong way are a TOGGLE, not a download");
+{
+  /*
+   * The files are already on disk; only the switch differs. Fetching would be both wasteful and
+   * wrong — it would leave the copy sitting in the .disabled folder exactly where it was.
+   */
+  const report = buildServerSyncReport(
+    snapshot({
+      clientMods: [
+        // The server runs it, this install has it parked.
+        { id: "SAIN", type: "client", version: "4.4.3", versionSource: "declared", enabled: true, area: "plugins" },
+        // The server has it parked, this install runs it.
+        { id: "AmandsGraphics", type: "client", version: "1.7.0", versionSource: "declared", enabled: false, area: "plugins" }
+      ]
+    }),
+    [localMod({ id: "SAIN", version: "4.4.3", enabled: false }), localMod({ id: "AmandsGraphics", version: "1.7.0", enabled: true })]
+  );
+
+  const sain = rowFor(report, "client:sain");
+  check("off here and on there is flagged", sain.issue, "disabled-locally");
+  check("as a toggle", sain.fixBy, "toggle");
+  // Never "missing": the mod is right there, and reinstalling it would not turn it on.
+  check("and never as missing", sain.issue === "missing-locally", false);
+
+  const amands = rowFor(report, "client:amandsgraphics");
+  check("on here and off there is flagged the other way", amands.issue, "enabled-locally");
+  check("also a toggle", amands.fixBy, "toggle");
+
+  check("both count as work to do", report.counts.needUpdating, 2);
+  check("and neither as something to install", report.counts.needInstalling, 0);
+}
+
+console.log("\nagreeing to have something switched off is not a difference");
+{
+  const report = buildServerSyncReport(
+    snapshot({
+      clientMods: [{ id: "SAIN", type: "client", version: "4.4.3", versionSource: "declared", enabled: false, area: "plugins" }]
+    }),
+    [localMod({ id: "SAIN", version: "4.4.3", enabled: false })]
+  );
+  check("off on both sides is in sync", rowFor(report, "client:sain").issue, undefined);
+  check("with nothing to do", report.counts.needUpdating, 0);
+}
+
+console.log("\na SERVER mod the server has but keeps switched off");
+{
+  /*
+   * /launcher/server/loadedServerMods reports what LOADED, so a mod turned off over there is
+   * indistinguishable from one that was never installed — and "you have this and the server does
+   * not" is the wrong repair. Only the companion's own folder scan can tell them apart.
+   */
+  const withCompanionView = buildServerSyncReport(
+    snapshot({
+      mods: [],
+      remoteServerMods: [
+        { id: "SVM", type: "server", version: "2.1.2", versionSource: "declared", guid: "com.servervaluemodifier", enabled: false }
+      ]
+    }),
+    [localMod({ id: "SVM", type: "server", guid: "com.servervaluemodifier", version: "2.1.2", enabled: true })]
+  );
+  const row = withCompanionView.rows[0];
+  check("it is reported as switched on here", row.issue, "enabled-locally");
+  check("as a toggle", row.fixBy, "toggle");
+  check("and NOT as absent from the server", row.issue === "not-on-server", false);
+
+  // Off on both sides: agreement, so no row at all.
+  const bothOff = buildServerSyncReport(
+    snapshot({
+      mods: [],
+      remoteServerMods: [{ id: "SVM", type: "server", versionSource: "declared", guid: "com.servervaluemodifier", enabled: false }]
+    }),
+    [localMod({ id: "SVM", type: "server", guid: "com.servervaluemodifier", enabled: false })]
+  );
+  check("both off produces no row", bothOff.rows.length, 0);
+  check("counted as in sync", bothOff.counts.inSync, 1);
+
+  // Without a companion there is no folder view, so the old reading stands — it is the honest
+  // one when the only evidence is "it did not load".
+  const noCompanion = buildServerSyncReport(
+    snapshot({ mods: [] }),
+    [localMod({ id: "SVM", type: "server", guid: "com.servervaluemodifier", enabled: true })]
+  );
+  check("with no companion it stays 'not on server'", noCompanion.rows[0].issue, "not-on-server");
+}
+
 console.log("\nthe companion is never compared as a mod");
 {
   // It is infrastructure this manager installs, and whether a machine has it is a per-machine
