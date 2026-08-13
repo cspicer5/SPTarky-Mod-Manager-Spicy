@@ -37,6 +37,7 @@ import { browseInstallState, compareSemver } from "./browseInstallState";
 import { planSptVersionLock } from "./serverLock";
 import CompanionStatus, { readServerCompanion } from "./CompanionStatus";
 import { isCompanionMod } from "./companionState";
+import { versionOnOpen, overrideToStore, needsConfirmation, onInstanceChanged } from "./sptVersionChoice";
 import DependencyPanel from "./DependencyPanel";
 import InstancesView from "./HeadlessView";
 import PresetsPanel from "./PresetsPanel";
@@ -162,9 +163,39 @@ export default function App() {
    * catalogue. But installing against the wrong one produces mods that load and then
    * misbehave in game, far from here, so it must not happen by accident.
    */
+  /**
+   * Changing the SPT version everything is answered against.
+   *
+   * Leaving the version this instance actually IS has consequences that show up far from this
+   * dropdown: update checks resolve builds for the wrong SPT, browse filters to versions that
+   * cannot load here, and compatibility verdicts start describing a different install. That is a
+   * legitimate thing to want — checking what exists for the next SPT before upgrading — but it
+   * should be deliberate, so it is confirmed rather than announced after the fact. A toast
+   * arrives once the damage is done and is gone a few seconds later.
+   *
+   * Declining leaves state untouched, and the select is controlled, so the dropdown snaps back
+   * to the instance's version on its own.
+   */
   function handleSptVersionChange(next: string) {
+    if (needsConfirmation(next, detectedSptVersion)) {
+      const ok = window.confirm(
+        `This install is SPT ${detectedSptVersion}. Switch to ${next}?\n\n` +
+          `Update checks, browsing and compatibility will all be answered for ${next} rather than for what you have. ` +
+          `Mods you install while it is set this way may not load.\n\n` +
+          `Useful for looking ahead before you upgrade — just not something to leave set by accident.`
+      );
+      if (!ok) return;
+    }
     setSptVersionInput(next);
-    window.modManagerAPI.setSptVersionOverride(next);
+    /*
+     * Stored ONLY when it diverges. Choosing the instance's own version clears the override
+     * rather than pinning that number, so the stored value means one thing — "the user chose to
+     * differ" — and every reader already falls back to detection when it is absent.
+     *
+     * That is what makes an in-place SPT upgrade behave: 4.0.13 pinned as though it were a
+     * choice would shadow 4.0.14 forever, silently answering for the version you used to have.
+     */
+    window.modManagerAPI.setSptVersionOverride(overrideToStore(next, detectedSptVersion));
     if (detectedSptVersion && next && next !== detectedSptVersion) {
       pushToast(t("toast.sptVersionOverridden", { chosen: next, detected: detectedSptVersion }), false);
     }
@@ -1579,11 +1610,11 @@ export default function App() {
         const semver = await window.modManagerAPI.getSptSemver();
         const override = await window.modManagerAPI.getSptVersionOverride();
         setDetectedSptVersion(semver || "");
-        if (override) setSptVersionInput(override);
-        else if (semver) {
-          setSptVersionInput(semver);
-          window.modManagerAPI.setSptVersionOverride(semver);
-        }
+        // The instance's own version unless the user deliberately chose otherwise. Nothing is
+        // written back for the ordinary case: an adopted value stored as though it were a choice
+        // is indistinguishable from one later, and would keep answering for the version this
+        // install used to be after SPT is upgraded underneath it.
+        setSptVersionInput(versionOnOpen({ detected: semver || "", stored: override || "" }));
 
         window.modManagerAPI.getForgeSptVersions().then(setForgeSptVersions);
 
@@ -1606,13 +1637,21 @@ export default function App() {
       pushToast(tMsg(result.message) || t("toast.instanceConfigured"), true);
       refreshMods();
       setSptVersion(await window.modManagerAPI.getSptVersion());
+      /*
+       * A DIFFERENT install: adopt its version, and overwrite whatever was stored.
+       *
+       * An override belongs to the instance it was set for. Carrying it across meant picking a
+       * 4.1 folder while everything downstream kept answering for the 4.0 install you left —
+       * silently, since the dropdown showed the old number as though it had been detected. Worse,
+       * `detectedSptVersion` was never updated here, so the "overridden" marker and the warning
+       * were both comparing against an install that is no longer open.
+       */
       const semver = await window.modManagerAPI.getSptSemver();
-      if (semver) {
-        setSptVersionInput(semver);
-      } else {
-        const override = await window.modManagerAPI.getSptVersionOverride();
-        setSptVersionInput(override || "");
-      }
+      setDetectedSptVersion(semver || "");
+      const stored = (await window.modManagerAPI.getSptVersionOverride()) || "";
+      const moved = onInstanceChanged(semver || "", stored);
+      setSptVersionInput(moved.value);
+      window.modManagerAPI.setSptVersionOverride(moved.store);
       // Without this, the SPT version dropdown showed only the placeholder the first time
       // someone selected the folder — it only populated after closing and reopening the
       // app (when the startup effect, which already fetched this, finally ran with a saved
