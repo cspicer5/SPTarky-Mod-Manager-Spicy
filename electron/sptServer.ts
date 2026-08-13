@@ -563,6 +563,13 @@ export interface ServerSyncReport {
    * local scan; an empty patchers folder is a real answer, not knowing what is in it is not.
    */
   patchersCompared?: boolean;
+  /**
+   * Prepatcher differences, counted apart from everything else and never blocking readiness.
+   * A prepatcher arrives with its parent mod and cannot be fetched on its own, so it is a
+   * diagnostic rather than a task — but it still has to be SAID, or the hidden section becomes
+   * a place findings go to disappear.
+   */
+  patcherDiffs?: number;
   /** True when nothing stands between you and joining the server. */
   readyToPlay: boolean;
 }
@@ -1014,6 +1021,18 @@ export function buildServerSyncReport(
    * server that produced those five false positives, this produces two differences and both are
    * real: a patcher disabled here and running there, and one here the server does not have.
    */
+  /*
+   * Prepatcher differences are counted SEPARATELY and never block readiness.
+   *
+   * They are not installable on their own — they arrive with the mod that ships them — and the
+   * section is hidden unless asked for. Feeding them into the shared counts produced the worst
+   * combination available: "Not ready", "1 to install", nothing visible in the list, and a
+   * Match server button that could only fail. A state nobody can see or act on must not be the
+   * thing standing between someone and a raid.
+   *
+   * Still reported, though — `patcherDiffs` is what the pane uses to say "look in there".
+   */
+  let patcherDiffs = 0;
   const patchersCompared = Boolean(snapshot.clientMods && localPatchers);
   if (snapshot.clientMods && localPatchers) {
     const localByKey = new Map<string, { id: string; enabled: boolean; version?: string }>();
@@ -1060,8 +1079,9 @@ export function buildServerSyncReport(
 
       if (!local) {
         row.issue = "missing-locally";
-        row.detail = "The server runs this prepatcher and you do not have it. It belongs to a mod — installing that mod brings it.";
-        counts.needInstalling++;
+        row.detail =
+          "The server has this prepatcher and you do not. Prepatchers arrive with the mod that ships them, so either that mod is missing here — or it was removed THERE and its patcher was left behind. A leftover on the server is the commoner of the two, and it is the server that needs tidying, not this install.";
+        patcherDiffs++;
       } else if (!local.enabled && remote.enabled) {
         // Present but parked, which is its own state. "Missing" would be wrong — the file is
         // right there — and "behind" would be wrong too, since the version may match exactly.
@@ -1069,23 +1089,23 @@ export function buildServerSyncReport(
         // differently here than it does there, and the fix is to enable it rather than fetch it.
         row.issue = "disabled-locally";
         row.detail = "You have this prepatcher but it is disabled, and the server runs it. Enable the mod it belongs to, or the mod will not behave the same here.";
-        counts.needUpdating++;
+        patcherDiffs++;
       } else if (!local.version || !remote.version) {
         row.issue = "unknown-local-version";
         row.detail = "One side reports no version for this prepatcher, so it cannot be compared.";
-        counts.unknownVersion++;
+        patcherDiffs++;
       } else {
         const cmp = compareVersions(local.version, remote.version);
         if (cmp < 0) {
           row.issue = "outdated-locally";
           row.detail = `The server runs ${remote.version}; you have ${local.version}. Update the mod that ships it.`;
-          counts.needUpdating++;
+          patcherDiffs++;
         } else if (cmp > 0) {
           row.issue = "newer-locally";
           row.detail = `You have ${local.version}; the server runs ${remote.version}.`;
-          counts.newerLocally++;
+          patcherDiffs++;
         } else {
-          counts.inSync++;
+          /* in sync: nothing to report for a prepatcher */
         }
       }
       rows.push(row);
@@ -1103,7 +1123,7 @@ export function buildServerSyncReport(
         issue: "not-on-server",
         detail: "You have this prepatcher and the server does not. It patches the game before it loads, so it can change behaviour the server is not expecting."
       });
-      counts.notOnServer++;
+      patcherDiffs++;
     }
   }
 
@@ -1236,6 +1256,7 @@ export function buildServerSyncReport(
     serverClientMods: snapshot.clientMods?.map((m) => ({ id: m.id, version: m.version, enabled: m.enabled })),
     addonsCompared,
     patchersCompared,
+    patcherDiffs,
     rows,
     counts,
     // "Newer locally" and "not on server" are mismatches worth showing but do not stop you

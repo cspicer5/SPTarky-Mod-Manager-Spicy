@@ -500,12 +500,15 @@ function ServerPane({
   query,
   onInstall,
   installing,
-  alignedSections
+  alignedSections,
+  showPrepatchers
 }: {
   report: ServerSyncReport | null;
   url: string | null;
   /** The shared row model. Both panes walk it in step; see serverAlignment.ts. */
   alignedSections?: AlignedSection[];
+  /** Whether the prepatcher section is open — decides if its differences need pointing at. */
+  showPrepatchers: boolean;
   collapsed: boolean;
   onToggleCollapse: () => void;
   onChangeServer: () => void;
@@ -767,6 +770,18 @@ function ServerPane({
                 {counts.newerLocally > 0 && <li className="warn">{counts.newerLocally} newer here</li>}
                 {counts.notOnServer > 0 && <li className="warn">{counts.notOnServer} not on server</li>}
                 <li className="ok">{counts.inSync} in sync</li>
+                {/* Prepatchers live in a section that is hidden by default, so a difference in
+                    there would otherwise be invisible — and it must not be, having once made the
+                    pane read "Not ready" with nothing in the list and no button that could work.
+                    It does not block readiness; it just says where to look. */}
+                {(report?.patcherDiffs ?? 0) > 0 && !showPrepatchers && (
+                  <li
+                    className="hl-count-hint"
+                    title="Prepatchers arrive with the mod that ships them, so these are rarely something to act on — often a file left behind on one machine when its mod was removed. Press Prepatchers to see them."
+                  >
+                    {report?.patcherDiffs} prepatcher diff{(report?.patcherDiffs ?? 0) === 1 ? "" : "s"} (hidden)
+                  </li>
+                )}
               </ul>
             )}
           </>
@@ -1248,6 +1263,7 @@ export default function InstancesView({
             companion={companion}
             onInstallCompanion={onInstallCompanion}
             alignedSections={alignedSections}
+            showPrepatchers={showPrepatchers}
             query={searchQuery}
             onInstall={onInstallFromServer}
             installing={installingFromServer}

@@ -328,6 +328,12 @@ export interface ServerSyncReport {
   addonsCompared?: boolean;
   /** Whether BepInEx/patchers could be compared. Needs a companion and a local patcher scan. */
   patchersCompared?: boolean;
+  /**
+   * Prepatcher differences, counted apart and never blocking readiness — a prepatcher
+   * arrives with its parent and cannot be fetched alone, so it is a diagnostic rather than
+   * a task. Surfaced anyway, or the hidden section becomes a place findings disappear.
+   */
+  patcherDiffs?: number;
   readyToPlay: boolean;
 }
 
