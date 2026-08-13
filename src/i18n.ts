@@ -139,8 +139,13 @@ const en: Dict = {
   "forge.updatedChip": "Updated",
   "forge.blockedTitle": "Blocked updates (would break a dependency):",
   "forge.incompatibleTitle": "Incompatible with this SPT version:",
-  "forge.infoOnlyTitle": "No local version to compare (showing what the catalogue has):",
+  "forge.infoOnlyTitle": "Worth a look, but not offered as an update:",
   "forge.infoHasVersion": "Catalogue has v{version}",
+  /* A current release numbered BELOW what is installed. The catalogue's own update check cannot
+     report it — it compares numbers and concludes you are ahead — so it is stated plainly with
+     both versions, and left as a judgement rather than pushed as an update. */
+  "forge.infoRenumbered":
+    "you have v{current}, and the catalogue's current build is v{version} — a LOWER number. The author may have renumbered (WTT - Clothing and Gear went 1.0.0-pre2 → 0.1.3), or you may be ahead of the catalogue. Check the mod page before taking it.",
   "forge.allUpToDateDetailed": "Every mod identified in the catalogue is up to date.",
   "forge.unmatchedPrefix": "Not found in the catalogue:",
   "forge.skippedByBudget": "{count} mod(s) weren't checked: the catalogue's request limit was reached. Run the check again to finish — whatever was already resolved is cached and won't be looked up again.",

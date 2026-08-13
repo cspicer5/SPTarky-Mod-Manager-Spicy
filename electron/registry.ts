@@ -1,10 +1,14 @@
 /* ==========================================================================
  * Where the mod registry lives.
  *
- * SPT Forge (forge.sp-tarkov.com) shut down on 2026-08-10. Its catalogue lives
- * on at a successor that mirrors the same database: the same numeric mod ids,
- * the same guids, the same /api/v0 surface. That is what makes this a change of
- * ADDRESS and not a re-match — every id pinned in an install's
+ * SPT Forge (forge.sp-tarkov.com) shut down on 2026-08-10 and has since been
+ * REBUILT at sp-mod.com, which is now the default. forge-alt.katrinfoxvr.com,
+ * the successor this app moved to at the shutdown, is still live and is kept
+ * as a backup.
+ *
+ * All three serve the same database: the same numeric mod ids, the same guids,
+ * the same /api/v0 surface. That is what makes each move a change of ADDRESS
+ * and not a re-match — every id pinned in an install's
  * .spt-mod-manager-forge-match.json still resolves, and the two harvests in
  * data/ stay valid as-is.
  *
@@ -28,9 +32,12 @@
  *      a 404, the reverse of Forge. Nothing may build a page URL by pasting an
  *      id into a path — use modPageUrl(), and prefer the API's own detail_url.
  *
- *   3. content_length, additional_authors and the created_at/updated_at
- *      timestamps come back null. Only content_length is read (the download
- *      size in the browse pane), and it already degrades to "unknown".
+ *   3. On the BACKUP host, content_length, additional_authors and the
+ *      created_at/updated_at timestamps come back null. Only content_length is
+ *      read (the download size in the browse pane), and it already degrades to
+ *      "unknown". sp-mod.com populates it, so this is a difference the backup
+ *      has and the default does not — worth knowing before blaming the app for
+ *      sizes disappearing after a switch.
  *
  * One Forge bug is FIXED here rather than inherited: filter[include_legacy] no
  * longer nullifies the filters it is combined with. The workarounds in
@@ -39,10 +46,31 @@
  * ========================================================================== */
 
 /**
- * The successor's API root. Overridable, because this is the second address
- * this catalogue has had: a third would otherwise need a release to reach.
+ * The catalogue's API root — now the REBUILT Forge at sp-mod.com.
+ *
+ * Third address for this data and, like the second, a change of ADDRESS rather
+ * than a re-match. Verified live on 2026-08-13 before switching, because "it
+ * should be the same" is exactly the assumption worth checking:
+ *   - SAIN 791, BigBrain 902, WTT-CommonLib 2310 — same ids, same guids
+ *   - the same /api/v0 envelope: {success, data, links, meta}
+ *   - every endpoint this app calls answers identically on both hosts:
+ *     /mods (filter[id], filter[guid], filter[include_legacy]), /mods/updates,
+ *     /spt/versions, /mod-categories
+ *   - `content_length` is POPULATED here, where the backup returns null — the
+ *     browse pane's download size stops being "unknown"
+ *   - `detail_url` is absolute and points at sp-mod.com, so page links need no
+ *     construction and `getRegistrySiteBase()` derives the right site by
+ *     stripping /api/v0
+ *
+ * `REGISTRY_BACKUP_API_BASE` is the previous successor, still live and still
+ * serving the same data. It is not failed over to automatically — a silent
+ * switch would make "which catalogue answered this?" unanswerable — but it is
+ * named here so the setting has something to paste.
  */
-export const DEFAULT_REGISTRY_API_BASE = "https://forge-alt.katrinfoxvr.com/api/v0";
+export const DEFAULT_REGISTRY_API_BASE = "https://sp-mod.com/api/v0";
+
+/** The former successor, kept as a backup someone can point the setting at. */
+export const REGISTRY_BACKUP_API_BASE = "https://forge-alt.katrinfoxvr.com/api/v0";
 
 /**
  * Rate limit published by the successor: ~300 requests / 60s per client IP,

@@ -1,6 +1,6 @@
 {
   "name": "sptarky-mod-manager-spicy",
-  "version": "1.4.3-dev.2",
+  "version": "1.4.3-dev.3",
   "description": "A Mod Manager for Single Player Tarkov (SPT). Fork of SPT Mod Manager by Matheus Guida (TioEmir).",
   "license": "MIT",
   "author": "cspicer5",
@@ -38,7 +38,7 @@
     "test:sptpick": "tsc -p electron/tsconfig.json && node scripts/test-spt-version-pick.js",
     "test:constraints": "tsc -p electron/tsconfig.json && node scripts/test-spt-constraints.js",
     "test:layout": "tsc -p electron/tsconfig.json && node scripts/test-spt-layout.js",
-    "test": "npm run test:parity && npm run test:sync && npm run test:update && npm run test:ledger && npm run test:presets && npm run test:store && npm run test:payloads && npm run test:addons && npm run test:presetsync && npm run test:bulk && npm run test:sptpick && npm run test:constraints && npm run test:layout && npm run test:registry && npm run test:browse && npm run test:deps && npm run test:bundles && npm run test:companion && npm run test:serversync && npm run test:alignment && npm run test:serverfiles && npm run test:serverlock && npm run test:companioninstall && npm run test:asar",
+    "test": "npm run test:parity && npm run test:sync && npm run test:update && npm run test:ledger && npm run test:presets && npm run test:store && npm run test:payloads && npm run test:addons && npm run test:presetsync && npm run test:bulk && npm run test:sptpick && npm run test:versioncompare && npm run test:constraints && npm run test:layout && npm run test:registry && npm run test:browse && npm run test:deps && npm run test:bundles && npm run test:companion && npm run test:serversync && npm run test:alignment && npm run test:serverfiles && npm run test:serverlock && npm run test:companioninstall && npm run test:asar",
     "test:registry": "tsc -p electron/tsconfig.json && node scripts/test-registry.js",
     "test:browse": "node scripts/test-browse-state.js",
     "test:deps": "tsc -p electron/tsconfig.json && node scripts/test-dependencies.js",
@@ -48,7 +48,8 @@
     "test:companioninstall": "tsc -p electron/tsconfig.json && node scripts/test-companion-install.js",
     "test:serversync": "tsc -p electron/tsconfig.json && node scripts/test-server-sync.js",
     "test:alignment": "node scripts/test-alignment.js",
-    "test:serverfiles": "tsc -p electron/tsconfig.json && node scripts/test-server-files.js"
+    "test:serverfiles": "tsc -p electron/tsconfig.json && node scripts/test-server-files.js",
+    "test:versioncompare": "tsc -p electron/tsconfig.json && node scripts/test-version-compare.js"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

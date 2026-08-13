@@ -4039,6 +4039,8 @@ export async function checkForgeUpdates(
   // Without surfacing this, a guess is indistinguishable from a verified match — which is
   // exactly how the previous version silently mapped fika-server onto SVM.
   const unconfirmed: ForgeUnconfirmedMatch[] = [];
+  /** Candidates whose catalogue release is numbered lower than the installed one — see below. */
+  const renumbered: (ForgeUpdateItem & { guid: string })[] = [];
   for (const mod of mods) {
     const info = matches.get(mod.originalName);
     if (info?.needsConfirmation) {
@@ -4068,6 +4070,30 @@ export async function checkForgeUpdates(
       // Has a local version — goes into the real comparison against Forge.
       pairs.push(`${info.identifier}:${mod.version}`);
       nameByIdentifier.set(info.identifier, mod.name);
+
+      /*
+       * A release the catalogue offers that is numbered LOWER than what you have.
+       *
+       * The update check is the catalogue's, not ours: we post guid:version pairs and it
+       * decides. So when an author RENUMBERS downward, its answer is "up to date" and the newer
+       * build never surfaces. WTT - Clothing and Gear went 1.0.0-pre1, 1.0.0-pre2, then 0.1.3 —
+       * 0.1.3 is the current release and is the lowest number of the three, so an install on
+       * pre-2 is told there is nothing to get.
+       *
+       * Collected here and reconciled after the response, because a mod the catalogue DID
+       * classify as an update must not also be reported as this.
+       */
+      const newest = pickForgeVersionForSpt(info.versions, trimmedVersion);
+      if (newest?.version && compareVersions(newest.version, mod.version) < 0) {
+        renumbered.push({
+          guid: info.identifier,
+          name: mod.name,
+          currentVersion: mod.version,
+          recommendedVersion: newest.version,
+          downloadLink: newest.link,
+          reason: "catalogue_version_lower"
+        });
+      }
     } else if (info.latestVersion) {
       // No local version to compare against (e.g. a .dll-only mod with no package.json) —
       // show the latest known version as information, without claiming an "update is
@@ -4105,6 +4131,28 @@ export async function checkForgeUpdates(
 
   const data = json.data || {};
   const nameFor = (guid: string, fallback?: string) => nameByIdentifier.get(guid) || fallback || guid;
+
+  /*
+   * The lower-numbered releases the catalogue's own check could not report.
+   *
+   * Anything it DID call an update is dropped: that path already offers the right build, and two
+   * rows for one mod saying different things is worse than the gap this closes. What remains is
+   * the genuinely odd case — a current release numbered below what is installed — reported as
+   * information rather than as an update, because whether to take it is a judgement. Sometimes
+   * the author renumbered; sometimes you are simply ahead of the catalogue.
+   */
+  const offeredGuids = new Set<string>((data.updates || []).map((u: any) => String(u.current_version?.guid ?? "")));
+  for (const item of renumbered) {
+    if (offeredGuids.has(item.guid)) continue;
+    infoOnly.push({
+      name: item.name,
+      currentVersion: item.currentVersion,
+      recommendedVersion: item.recommendedVersion,
+      downloadLink: item.downloadLink,
+      guid: item.guid,
+      reason: "catalogue_version_lower"
+    });
+  }
 
   return {
     sptVersionUsed: data.spt_version || trimmedVersion,
@@ -4442,17 +4490,57 @@ export interface AppUpdateInfo {
 // Two version comparators in one app would eventually disagree, and the disagreement would
 // surface as "the app says I need an update in one place and not in another".
 export function compareVersions(a: string, b: string): number {
-  const parse = (v: string) =>
-    v
-      .trim()
-      .replace(/^v/i, "")
-      .split(".")
-      .map((n) => parseInt(n, 10) || 0);
-  const pa = parse(a);
-  const pb = parse(b);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+  const split = (v: string) => {
+    const cleaned = v.trim().replace(/^v/i, "");
+    // The first `-` OR `+` starts the pre-release tag.
+    //
+    // Strict semver says `+build` is metadata and ignored for precedence. That rule is wrong for
+    // this ecosystem: mods here use `+preN` as a SEQUENCE, and WTT - Clothing and Gear shipped
+    // 1.0.0+pre1 then 1.0.0+pre2. Ignoring it makes those two the same version, so moving from
+    // one to the other is never offered as an update — which is half of the bug this fixes.
+    const at = cleaned.search(/[-+]/);
+    const release = at < 0 ? cleaned : cleaned.slice(0, at);
+    const pre = at < 0 ? "" : cleaned.slice(at + 1);
+    return {
+      parts: release.split(".").map((n) => parseInt(n, 10) || 0),
+      pre
+    };
+  };
+
+  const pa = split(a);
+  const pb = split(b);
+
+  // The numeric release, padded — "5.3.11" and "5.3.11.0" are one version written two ways, and
+  // calling that a difference is noise that trains people to ignore real ones.
+  for (let i = 0; i < Math.max(pa.parts.length, pb.parts.length); i++) {
+    const diff = (pa.parts[i] ?? 0) - (pb.parts[i] ?? 0);
     if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+
+  // Same release. A pre-release is BELOW the release it leads to: 1.0.0-pre2 < 1.0.0.
+  if (!pa.pre && !pb.pre) return 0;
+  if (!pa.pre) return 1;
+  if (!pb.pre) return -1;
+
+  // Both pre-release: compare dot-separated identifiers, numeric ones numerically so that
+  // pre10 sorts above pre9 rather than below it as text would have it.
+  const ida = pa.pre.split(".");
+  const idb = pb.pre.split(".");
+  for (let i = 0; i < Math.max(ida.length, idb.length); i++) {
+    const xa = ida[i];
+    const xb = idb[i];
+    if (xa === undefined) return -1; // fewer identifiers sorts lower
+    if (xb === undefined) return 1;
+    // "pre1" and "pre2" are one identifier each, so they are compared by their trailing number
+    // when the leading text matches — the shape every mod here actually uses.
+    const ma = /^(\D*)(\d+)$/.exec(xa);
+    const mb = /^(\D*)(\d+)$/.exec(xb);
+    if (ma && mb && ma[1].toLowerCase() === mb[1].toLowerCase()) {
+      const diff = Number(ma[2]) - Number(mb[2]);
+      if (diff !== 0) return diff > 0 ? 1 : -1;
+      continue;
+    }
+    if (xa.toLowerCase() !== xb.toLowerCase()) return xa.toLowerCase() < xb.toLowerCase() ? -1 : 1;
   }
   return 0;
 }

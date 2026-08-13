@@ -2985,7 +2985,19 @@ export default function App() {
                 <>
                   <p><strong>{t("forge.infoOnlyTitle")}</strong></p>
                   {forgeResult.infoOnly.map((info) => (
-                    <p key={`info-${info.name}`}>{info.name}: {t("forge.infoHasVersion", { version: info.recommendedVersion ?? "" })}</p>
+                    <p key={`info-${info.name}`}>
+                      {info.name}:{" "}
+                      {/* Two very different situations share this list. "No local version" means
+                          nothing could be compared; a lower-numbered catalogue build means the
+                          comparison HAPPENED and came out backwards. Saying "catalogue has
+                          v0.1.3" for the second would read as reassurance. */}
+                      {info.reason === "catalogue_version_lower"
+                        ? t("forge.infoRenumbered", {
+                            current: info.currentVersion ?? "?",
+                            version: info.recommendedVersion ?? "?"
+                          })
+                        : t("forge.infoHasVersion", { version: info.recommendedVersion ?? "" })}
+                    </p>
                   ))}
                 </>
               )}
