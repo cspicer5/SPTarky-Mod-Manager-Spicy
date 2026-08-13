@@ -399,6 +399,47 @@ console.log("\na SERVER mod the server has but keeps switched off");
   check("with no companion it stays 'not on server'", noCompanion.rows[0].issue, "not-on-server");
 }
 
+console.log("\nno local mod is ever reported twice");
+{
+  /*
+   * The invariant, and the bug it exists for.
+   *
+   * Two loops share one claim set: the first records the local mods a server row matched, the
+   * second reports whatever is left as "not on server". They built the key inline and drifted —
+   * one used a NUL byte as the separator, the other a space — so nothing was ever seen as
+   * claimed and EVERY matched mod also produced a "not on server" row. 34 mods reported as 65.
+   *
+   * Invisible in a diff, and it survived for months because the NUL was originally on both
+   * sides and matched itself. The key is built in one place now; this is the check that would
+   * have caught it either way.
+   */
+  const report = buildServerSyncReport(
+    snapshot({
+      mods: [
+        { name: "AES", modGuid: "com.dono.aes", version: "0.7.9" },
+        { name: "SVM", modGuid: "fika.ghostfenixx.svm", version: "2.1.2" }
+      ]
+    }),
+    [
+      localMod({ id: "AES", type: "server", guid: "com.dono.aes", version: "0.7.9" }),
+      localMod({ id: "SVM", type: "server", guid: "fika.ghostfenixx.svm", version: "2.1.2" }),
+      localMod({ id: "LocalOnly", type: "server", guid: "com.local.only", version: "1.0.0" })
+    ]
+  );
+
+  const perLocal = new Map();
+  for (const row of report.rows) {
+    if (!row.localModId) continue;
+    const k = `${row.side ?? "server"}:${row.localModId}`;
+    perLocal.set(k, (perLocal.get(k) ?? 0) + 1);
+  }
+  check("every local mod appears in exactly one row", [...perLocal.values()].filter((n) => n > 1).length, 0);
+  check("two matched and one local-only", report.rows.length, 3);
+  check("the matched pair are in sync", report.counts.inSync, 2);
+  check("and only the genuine extra is 'not on server'", report.counts.notOnServer, 1);
+  check("named correctly", report.rows.find((r) => r.issue === "not-on-server").localModId, "LocalOnly");
+}
+
 console.log("\nthe companion is never compared as a mod");
 {
   // It is infrastructure this manager installs, and whether a machine has it is a per-machine

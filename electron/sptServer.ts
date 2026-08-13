@@ -625,6 +625,17 @@ export function buildServerSyncReport(
     byName.set(norm(mod.name), mod);
   }
 
+  /*
+   * Identity for the claim set below, in ONE place.
+   *
+   * The two loops that share this set built the key inline, and drifted: one used a NUL byte
+   * as the separator and the other a space, so nothing a matched row claimed was ever seen as
+   * claimed. Every local server mod then produced BOTH a matched row and a 'not on server'
+   * one — 34 mods reported as 65. Invisible in a diff, and it survived because the NUL was in
+   * both halves originally and matched itself.
+   */
+  const claimKey = (mod: { id: string; type: string }) => `${mod.id}\u0000${mod.type}`;
+
   const rows: ServerSyncRow[] = [];
   const claimed = new Set<string>();
 
@@ -633,7 +644,7 @@ export function buildServerSyncReport(
     const viaGuid = mod.modGuid ? byGuid.get(norm(mod.modGuid)) : undefined;
     const local = viaGuid ?? byName.get(norm(mod.name));
     const matchedBy = viaGuid ? "guid" : local ? "name" : undefined;
-    if (local) claimed.add(local.id + " " + local.type);
+    if (local) claimed.add(claimKey(local));
 
     const row: ServerSyncRow = {
       key: norm(mod.modGuid) || norm(mod.name),
@@ -701,7 +712,7 @@ export function buildServerSyncReport(
   }
 
   for (const mod of localServer) {
-    if (claimed.has(mod.id + " " + mod.type)) continue;
+    if (claimed.has(claimKey(mod))) continue;
 
     const offThere =
       (mod.guid ? remoteDisabledServer.get(norm(mod.guid)) : undefined) ??
