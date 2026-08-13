@@ -5,7 +5,7 @@ import Seven from "node-7z";
 import { path7za } from "7zip-bin";
 import { createExtractorFromFile } from "node-unrar-js";
 import { ModInfo, ModType, RegistryEntry, ModListComparison, ModFingerprint, VersionOrigin } from "./types";
-import { readAssemblyModMetadata } from "./peMetadata";
+import { readAssemblyModMetadata, readAssemblyVersionStrings } from "./peMetadata";
 import { getRegistryApiBase, modPageUrl, parseModRef, readCategoryLabel } from "./registry";
 
 /**
@@ -79,12 +79,93 @@ export function detectSptVersion(sptPath: string): string | undefined {
 // understand "Tarkov 0.16.9.40087". On SPT 4.0+ installs that no longer expose the field
 // this deliberately returns undefined — better to ask the user than to send Forge
 // something wrong.
+/**
+ * Which SPT this install IS.
+ *
+ * Read from `SPT.Server.exe` first, because SPT 4.x stopped putting it anywhere else. Its
+ * `core.json` carries `compatibleTarkovVersion` and no `sptVersion` at all — so the previous
+ * reader returned nothing on EVERY 4.x install, silently. That is not a small gap: this number
+ * decides which builds an update check resolves, what browse filters to, and whether a mod is
+ * called compatible, and with it missing the app fell back to whatever was last stored — which
+ * is why switching from a 4.0 install to a 4.1 one appeared to change nothing.
+ *
+ * `AssemblyFileVersion` is preferred over `AssemblyInformationalVersion` because only the first
+ * is a plain version: SPT ships informational as "4.0.13-RELEASE+2891fd4.20260302.…", and a
+ * catalogue cannot be filtered by that. The qualifier is stripped from the fallback for the same
+ * reason.
+ *
+ * core.json is still read last, so SPT 3.x installs keep working.
+ */
 export function detectSptSemver(sptPath: string): string | undefined {
+  const exe = findServerExe(sptPath);
+  if (exe) {
+    try {
+      /*
+       * The managed assembly BESIDE the exe, not the exe itself.
+       *
+       * .NET publishes SPT.Server.exe as an apphost: a native launcher with Win32 version
+       * resources but no CLI metadata at all, so a reader that walks metadata tables gets
+       * nothing from it. The IL — and the assembly attributes — live in SPT.Server.dll.
+       */
+      const managed = exe.replace(/.exe$/i, ".dll");
+      const source = fs.existsSync(managed) ? managed : exe;
+      const versions = readAssemblyVersionStrings(fs.readFileSync(source));
+      const fromFile = versions?.file?.trim();
+      // Four-part file versions are normal here ("4.0.13" or "4.0.13.0"); both are fine, since
+      // comparison pads trailing zeroes.
+      if (fromFile && /^\d+(\.\d+)*$/.test(fromFile)) return fromFile;
+
+      // Informational, with the build metadata and any "-RELEASE"/"-BETA" qualifier removed.
+      const informational = versions?.informational?.split("+")[0].trim();
+      if (informational) {
+        const numeric = /^(\d+(?:\.\d+)*)/.exec(informational);
+        if (numeric) return numeric[1];
+      }
+    } catch {
+      /* unreadable exe — fall through to core.json rather than failing the whole scan */
+    }
+  }
+
   const core = findCoreJson(sptPath);
   if (!core) return undefined;
   if (typeof core.sptVersion === "string") return core.sptVersion;
   if (typeof core.akiVersion === "string") return core.akiVersion;
   return undefined;
+}
+
+/**
+ * Finds SPT.Server.exe at or below a path.
+ *
+ * Bounded, and it searches DOWN because callers pass the client root while 4.1 keeps the server
+ * in `SPT_Runtime/` beside it — the same rename that the layout detection already survives by
+ * looking for markers rather than for a folder name.
+ */
+function findServerExe(root: string): string | undefined {
+  const MAX_DEPTH = 3;
+  const IGNORED = new Set(["user", "bepinex", "database", "node_modules", ".git", "cache", "logs"]);
+
+  const search = (dir: string, depth: number): string | undefined => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return undefined;
+    }
+    for (const name of SERVER_EXE_CANDIDATES) {
+      if (entries.some((e) => e.isFile() && e.name.toLowerCase() === name.toLowerCase())) {
+        return path.join(dir, name);
+      }
+    }
+    if (depth >= MAX_DEPTH) return undefined;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || IGNORED.has(entry.name.toLowerCase())) continue;
+      const found = search(path.join(dir, entry.name), depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  };
+
+  return search(root, 0);
 }
 
 /**

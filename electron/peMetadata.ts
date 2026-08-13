@@ -520,6 +520,31 @@ function readAssemblyVersion(t: Tables): string | undefined {
   return trimmed;
 }
 
+/**
+ * Both assembly version attributes, unmerged.
+ *
+ * `readAssemblyVersion` above collapses them into one best guess, which is right for a mod. It is
+ * wrong for reading an application's version, where the two say different things and the caller
+ * needs to choose: SPT.Server.exe carries
+ *   AssemblyInformationalVersion = "4.0.13-RELEASE+2891fd4.20260302.…"
+ *   AssemblyFileVersion          = "4.0.13"
+ * and only the second is a version a catalogue can be filtered by.
+ */
+export function readAssemblyVersionStrings(buf: Buffer): { informational?: string; file?: string } | null {
+  try {
+    const image = parseCliImage(buf);
+    if (!image) return null;
+    const tables = parseTables(image);
+    if (!tables) return null;
+    return {
+      informational: readAssemblyAttributeString(tables, "AssemblyInformationalVersionAttribute"),
+      file: readAssemblyAttributeString(tables, "AssemblyFileVersionAttribute")
+    };
+  } catch {
+    return null;
+  }
+}
+
 /* --- Server mods: AbstractModMetadata ----------------------------------------------- */
 
 /**
