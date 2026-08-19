@@ -185,6 +185,50 @@ function isDangerousEntryPath(entryPath: string): boolean {
 }
 
 /**
+ * What an archive ACTUALLY is, read from its first bytes.
+ *
+ * Dispatching on the file extension was wrong in a way that only shows up on somebody else's
+ * mod. The catalogue's download URL for Couturier ends in `/2.0.4`, so there is no extension to
+ * read; the code defaulted to `.zip`, and the file it redirects to is `Couturier2.0.4.7z`. AdmZip
+ * was handed a 7-Zip archive and reported "No END header found" — a message about the reader's
+ * confusion rather than about the file.
+ *
+ * Sniffing fixes the class rather than that one mod: a mislabelled download, a file renamed by
+ * hand, an author shipping a .7z named .zip. The name is a hint; the bytes are the fact.
+ */
+export function detectArchiveFormat(archivePath: string): ".zip" | ".7z" | ".rar" | undefined {
+  const head = Buffer.alloc(8);
+  try {
+    const fd = fs.openSync(archivePath, "r");
+    try {
+      fs.readSync(fd, head, 0, 8, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
+
+  // PK is a normal archive;  is an empty one and  a spanned one. All three
+  // are zips, and rejecting the last two would refuse archives that open perfectly well.
+  if (head[0] === 0x50 && head[1] === 0x4b && (head[2] === 0x03 || head[2] === 0x05 || head[2] === 0x07)) return ".zip";
+  if (head[0] === 0x37 && head[1] === 0x7a && head[2] === 0xbc && head[3] === 0xaf && head[4] === 0x27 && head[5] === 0x1c) return ".7z";
+  if (head[0] === 0x52 && head[1] === 0x61 && head[2] === 0x72 && head[3] === 0x21) return ".rar"; // RAR4 and RAR5 share this
+  return undefined;
+}
+
+/**
+ * The format to treat an archive as: what the bytes say, falling back to the name.
+ *
+ * The fallback is for the honest failure. A truncated or corrupt download matches no signature
+ * at all, and routing it by extension lets the real extractor produce a real error about that
+ * file instead of this function inventing one.
+ */
+function archiveFormatFor(archivePath: string): string {
+  return detectArchiveFormat(archivePath) ?? path.extname(archivePath).toLowerCase();
+}
+
+/**
  * Checks an archive's entry list BEFORE extracting anything — never after.
  * A malicious mod (or a corrupted/tampered archive) could in principle try to write
  * outside the temporary extraction folder. .zip is already protected by the library
@@ -194,7 +238,7 @@ function isDangerousEntryPath(entryPath: string): boolean {
  * outright than to extract partially or try to "fix" filenames ourselves.
  */
 async function validateArchiveEntries(archivePath: string): Promise<void> {
-  const ext = path.extname(archivePath).toLowerCase();
+  const ext = archiveFormatFor(archivePath);
 
   // A large .zip is extracted by 7za (see extractArchive), so it loses AdmZip's
   // sanitisation — it needs the same entry validation as a .7z.
@@ -246,7 +290,8 @@ function extractWithSevenZip(archivePath: string, destDir: string): Promise<void
 }
 
 async function extractArchive(archivePath: string, destDir: string): Promise<void> {
-  const ext = path.extname(archivePath).toLowerCase();
+  // What the file IS, not what it is called — see detectArchiveFormat.
+  const ext = archiveFormatFor(archivePath);
   await validateArchiveEntries(archivePath);
 
   if (ext === ".zip") {
@@ -276,7 +321,15 @@ async function extractArchive(archivePath: string, destDir: string): Promise<voi
     return;
   }
 
-  throw new Error(`Unsupported archive format: ${ext}. Use .zip, .7z, or .rar.`);
+  /*
+   * No signature matched AND the name says nothing usable. That is almost always a download
+   * that did not finish, or an error page saved under an archive name — so it says so, rather
+   * than repeating a reader's complaint about a header it could not find.
+   */
+  throw new Error(
+    `That file is not a .zip, .7z or .rar — its contents match none of them. ` +
+      `It is most likely an incomplete download; try downloading it again.`
+  );
 }
 
 /**
@@ -4474,7 +4527,18 @@ export async function installForgeModVersion(
     const disposition = res.headers.get("content-disposition");
     const dispositionMatch = disposition && /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
     const dispositionName = dispositionMatch ? decodeURIComponent(dispositionMatch[1]) : undefined;
-    const nameToInspect = dispositionName || new URL(downloadLink).pathname;
+    /*
+     * The FINAL url after redirects, not the one we asked for.
+     *
+     * A catalogue download link is an endpoint, not a filename: Couturier's is
+     * `/mod/download/2239/couturier-gear-and-clothing-pack/2.0.4`, whose extension reads as
+     * ".4" and falls through to the ".zip" default. It redirects to `Couturier2.0.4.7z` on the
+     * author's own host, and `res.url` is where the bytes actually came from.
+     *
+     * The extension only decides the temporary file's NAME now — extraction sniffs the content
+     * either way — but a file named for what it is beats one named for what we assumed.
+     */
+    const nameToInspect = dispositionName || new URL(res.url || downloadLink).pathname;
     const inferredExt = path.extname(nameToInspect).toLowerCase();
     if (inferredExt === ".zip" || inferredExt === ".7z" || inferredExt === ".rar") {
       ext = inferredExt;
