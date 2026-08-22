@@ -144,7 +144,8 @@ import {
   snapshotVersions,
   restoreClobberedVersions,
   addonsNeedingReinstall,
-  listFilesRelative
+  listFilesRelative,
+  checkAddonUpdates
 } from "./addons";
 import { InstanceConfig, InstanceId, ModInfo, ModType } from "./types";
 
@@ -1251,8 +1252,10 @@ ipcMain.handle("get-addon-suggestions", async () => {
   if (catalogue.length === 0) {
     return { success: false, message: "The addon catalogue is missing from this build." };
   }
+  // One scan, shared by the suggestions and the update check below.
+  const installedMods = scanInstance("main");
   const suggestions = suggestAddons(
-    scanInstance("main"),
+    installedMods,
     forgeIdsByFolder(roots.clientRoot),
     catalogue,
     installedAddonIds(roots.clientRoot)
@@ -1267,7 +1270,24 @@ ipcMain.handle("get-addon-suggestions", async () => {
     // Everything this app has installed as an addon, including the many that have no folder
     // of their own and are therefore invisible in the mod list. Each is flagged when a later
     // reinstall of its parent has silently wiped its files.
-    ledger: withReinstallFlags(roots.clientRoot)
+    ledger: withReinstallFlags(roots.clientRoot),
+    /*
+     * Whether each installed addon is behind, and if not, why not.
+     *
+     * Answered here rather than in its own call because everything it needs is already in
+     * hand: the catalogue was just refreshed, and refreshing it twice for one panel would be
+     * the same request made again for no reason.
+     *
+     * The judgement is against the PARENT's installed version, not the addon's own number —
+     * see checkAddonUpdates. An addon whose newest build wants a parent you do not have is not
+     * an update you can take.
+     */
+    updates: checkAddonUpdates(
+      loadAddonLedger(roots.clientRoot),
+      catalogue,
+      (name, type) => installedMods.find((m) => m.id.toLowerCase() === name.toLowerCase() && m.type === type)?.version,
+      (name, type) => installedMods.some((m) => m.id.toLowerCase() === name.toLowerCase() && m.type === type)
+    )
   };
 });
 

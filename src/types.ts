@@ -344,6 +344,41 @@ export interface ServerSyncReport {
  * one side only. Server-side patches are structurally irrelevant: a headless client has no
  * server and never loads user/mods.
  */
+/**
+ * Where an installed addon stands against the catalogue.
+ *
+ * More than update / no-update because an addon is built against a PARENT VERSION, and the
+ * interesting cases are all about that: a newer build that wants a parent you do not have is
+ * not an update anyone can take. See electron/addons.ts for the rules.
+ */
+export type AddonUpdateStatus =
+  | "up-to-date"
+  | "update"
+  | "needs-parent-update"
+  | "no-build-for-parent"
+  | "delisted"
+  | "detached"
+  | "parent-missing"
+  | "unknown";
+
+export interface AddonUpdateRow {
+  name: string;
+  forgeAddonId?: number;
+  parentName: string;
+  parentType: ModType;
+  installedVersion?: string;
+  parentVersion?: string;
+  status: AddonUpdateStatus;
+  /** Present only for `update` — the one status that is actionable. */
+  availableVersion?: string;
+  downloadLink?: string;
+  /** The newest build and the parent it wants, when THAT is what is in the way. */
+  blockedVersion?: string;
+  requiresParent?: string;
+  detailUrl?: string;
+  detail: string;
+}
+
 export interface AddonParityRow {
   name: string;
   parentName: string;
@@ -843,6 +878,8 @@ export interface ModManagerAPI {
     catalogueLive?: boolean;
     /** Everything installed as an addon, including those with no folder of their own. */
     ledger?: InstalledAddonRecord[];
+    /** Whether each of those is behind — and when it is not an update, why not. */
+    updates?: AddonUpdateRow[];
     message?: string;
   }>;
   /** Drops an addon from the list. Never deletes files — see the handler for why. */

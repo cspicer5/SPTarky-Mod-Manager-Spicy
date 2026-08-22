@@ -34,7 +34,7 @@
 import fs from "fs";
 import path from "path";
 import { ModInfo, ModType } from "./types";
-import { checkSptCompatibility } from "./modManager";
+import { checkSptCompatibility, compareVersions } from "./modManager";
 import { getRegistryApiBase } from "./registry";
 
 export const ADDON_CATALOGUE_FILE = "forge-addons.json";
@@ -232,9 +232,26 @@ export function pickAddonVersionForParent(
   const declared = withLink.find((v) => checkSptCompatibility(v.modConstraint, parentVersion) === "compatible");
   if (declared) return { version: declared, fit: "declared" };
 
-  // An addon that declares nothing at all is a maybe, not a no.
-  const silent = withLink.find((v) => !v.modConstraint?.trim());
+  /*
+   * An addon that declares nothing is a maybe, not a no — and a WILDCARD declares nothing.
+   *
+   * `*` means "any parent version", but the range parser answers "unknown" for it rather than
+   * "compatible", so a build constrained to `*` matched neither branch and the addon came back
+   * as having no build at all. That is not a harmless miss: the caller reads "nothing fits your
+   * parent" as evidence the patch has been folded into the mod, so CAG BRNVG patch — which fits
+   * anything — was reported as absorbed into WTT-CAG and due for removal.
+   *
+   * Treated as unconstrained rather than as compatible, because that is what it is: the build
+   * says nothing about which parent it wants, and the caller is told the fit was never checked.
+   */
+  const silent = withLink.find((v) => declaresNoParentVersion(v.modConstraint));
   return silent ? { version: silent, fit: "unconstrained" } : undefined;
+}
+
+/** Constraints that say "any version", which is the same as saying nothing. */
+function declaresNoParentVersion(constraint: string | undefined): boolean {
+  const trimmed = constraint?.trim().toLowerCase() ?? "";
+  return trimmed === "" || trimmed === "*" || trimmed === "x" || trimmed === "any";
 }
 
 export interface AddonSuggestion {
@@ -656,9 +673,196 @@ export function checkAddonFit(
   addonConstraint: string | undefined,
   parentVersion: string | undefined
 ): "fits" | "outgrown" | "unknown" {
-  if (!addonConstraint?.trim() || !parentVersion?.trim()) return "unknown";
+  if (declaresNoParentVersion(addonConstraint) || !parentVersion?.trim()) return "unknown";
   const verdict = checkSptCompatibility(addonConstraint, parentVersion);
   return verdict === "compatible" ? "fits" : verdict === "incompatible" ? "outgrown" : "unknown";
+}
+
+
+/* --------------------------------------------------------------------------
+ * Are the installed addons out of date?
+ * ----------------------------------------------------------------------- */
+
+/**
+ * What an installed addon's situation is, once the catalogue has been consulted.
+ *
+ * Deliberately more than "update / no update", because an addon is not a mod: it is built against
+ * a PARENT VERSION, and the interesting cases are all about that relationship rather than about
+ * the addon's own number.
+ */
+export type AddonUpdateStatus =
+  /** The installed build is the best one offered for the parent you have. */
+  | "up-to-date"
+  /** A newer build exists AND it fits the parent you have. The only status that is a download. */
+  | "update"
+  /**
+   * A newer build exists but wants a NEWER PARENT. Not an update anyone can take: installing it
+   * would put an addon built for a mod version you do not run into the install. The parent is the
+   * thing to update, and saying so is more use than either offering it or hiding it.
+   */
+  | "needs-parent-update"
+  /**
+   * Still listed, but nothing it offers fits your parent at all. Usually means the parent has
+   * moved past every build there is — which is what "the addon was folded into the mod" looks
+   * like from out here.
+   */
+  | "no-build-for-parent"
+  /** Its id no longer resolves. Withdrawn, or absorbed into the parent and taken down. */
+  | "delisted"
+  /** The catalogue says the mod it patches was removed. */
+  | "detached"
+  /** The parent is not installed here, so there is nothing for it to attach to. */
+  | "parent-missing"
+  /** Installed from a file: no catalogue id, so it cannot be checked at all. */
+  | "unknown";
+
+export interface AddonUpdateRow {
+  name: string;
+  forgeAddonId?: number;
+  parentName: string;
+  parentType: ModType;
+  installedVersion?: string;
+  parentVersion?: string;
+  status: AddonUpdateStatus;
+  /** The build to install. Present only for `update` — the one status that is actionable. */
+  availableVersion?: string;
+  downloadLink?: string;
+  /** The newest build's number and the parent it wants, when THAT is what is in the way. */
+  blockedVersion?: string;
+  requiresParent?: string;
+  detailUrl?: string;
+  detail: string;
+}
+
+/**
+ * Checks every installed addon against the catalogue.
+ *
+ * Pure: the caller refreshes the catalogue and supplies the installed parent versions, so this is
+ * testable without a network or an install. That matters because the rules below ARE the feature,
+ * and every one of them is a judgement about somebody's game.
+ *
+ * The rule that shapes all of it: **an addon update is filtered by the PARENT's version, exactly
+ * as a mod update is filtered by the SPT version.** Offering the newest build regardless is the
+ * same fault that shipped once already in preset sync — it installs something built for a version
+ * you do not have. Measured on the reference install: "NVG support for WTT-Content Backport"
+ * 1.1.0 requires parent ~3.0.0 while the parent is 2.0.0, so the honest answer is "update the
+ * parent first", not "here is an update".
+ */
+export function checkAddonUpdates(
+  ledger: InstalledAddonRecord[],
+  catalogue: ForgeAddon[],
+  parentVersionOf: (name: string, type: ModType) => string | undefined,
+  /** Whether the parent is installed at all — separate from its version, which may be unknown. */
+  parentInstalled: (name: string, type: ModType) => boolean
+): AddonUpdateRow[] {
+  const byId = new Map<number, ForgeAddon>();
+  for (const addon of catalogue) byId.set(addon.id, addon);
+
+  return ledger.map((record): AddonUpdateRow => {
+    const base = {
+      name: record.name,
+      forgeAddonId: record.forgeAddonId,
+      parentName: record.parentName,
+      parentType: record.parentType,
+      installedVersion: record.version,
+      parentVersion: parentVersionOf(record.parentName, record.parentType)
+    };
+
+    if (record.forgeAddonId === undefined) {
+      return {
+        ...base,
+        status: "unknown",
+        detail: `Installed from a file, so there is no catalogue entry to compare it against.`
+      };
+    }
+
+    const addon = byId.get(record.forgeAddonId);
+    if (!addon) {
+      // The scenario with no other signal: an addon absorbed into its parent is simply taken
+      // down. Stated as the two possibilities it actually is, rather than guessed between.
+      return {
+        ...base,
+        status: "delisted",
+        detail:
+          `No longer listed on its own. It has either been withdrawn or folded into ${record.parentName} itself — ` +
+          `check that mod's page, and if it is built in now, drop this from the list.`
+      };
+    }
+
+    const withBase = { ...base, detailUrl: addon.detailUrl };
+
+    if (addon.isDetached) {
+      return {
+        ...withBase,
+        status: "detached",
+        detail: `The catalogue says the mod this patches was removed, so this addon stands alone now.`
+      };
+    }
+
+    if (!parentInstalled(record.parentName, record.parentType)) {
+      return {
+        ...withBase,
+        status: "parent-missing",
+        detail: `${record.parentName} is not installed here, so this patch has nothing to attach to.`
+      };
+    }
+
+    const parentVersion = base.parentVersion;
+    const best = pickAddonVersionForParent(addon, parentVersion);
+    // The newest build overall, which tells "nothing newer exists" apart from "something newer
+    // exists and you cannot have it yet".
+    const newest = addon.versions.find((v) => v.link);
+
+    if (!best) {
+      return {
+        ...withBase,
+        status: "no-build-for-parent",
+        blockedVersion: newest?.version,
+        requiresParent: newest?.modConstraint,
+        detail: parentVersion
+          ? `Nothing it offers is built for ${record.parentName} ${parentVersion}. That usually means the patch is ` +
+            `part of ${record.parentName} itself now — check before reinstalling it.`
+          : `Nothing it offers could be matched to ${record.parentName}, whose version is unknown here.`
+      };
+    }
+
+    const offered = best.version.version;
+    const newerThanInstalled = record.version ? compareVersions(offered, record.version) > 0 : true;
+
+    if (newerThanInstalled) {
+      return {
+        ...withBase,
+        status: "update",
+        availableVersion: offered,
+        downloadLink: best.version.link,
+        detail:
+          best.fit === "declared"
+            ? `${offered} is available and is built for ${record.parentName} ${parentVersion}.`
+            : `${offered} is available. It declares no parent version, so whether it suits ` +
+              `${record.parentName} ${parentVersion ?? "as installed"} is not stated.`
+      };
+    }
+
+    // Nothing newer FITS. If something newer exists at all, the parent is what is holding it
+    // back — which is the thing worth saying.
+    if (newest && record.version && compareVersions(newest.version, record.version) > 0) {
+      return {
+        ...withBase,
+        status: "needs-parent-update",
+        blockedVersion: newest.version,
+        requiresParent: newest.modConstraint,
+        detail:
+          `${newest.version} is out, but it needs ${record.parentName} ${newest.modConstraint ?? "a newer version"} ` +
+          `and you have ${parentVersion ?? "an unknown version"}. Update ${record.parentName} first and this follows.`
+      };
+    }
+
+    return {
+      ...withBase,
+      status: "up-to-date",
+      detail: `${record.version ?? offered} is the newest build for ${record.parentName} ${parentVersion ?? "as installed"}.`
+    };
+  });
 }
 
 /* --------------------------------------------------------------------------

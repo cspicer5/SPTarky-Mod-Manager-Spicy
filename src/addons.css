@@ -284,3 +284,32 @@
   color: var(--danger-strong);
   border-color: var(--danger);
 }
+
+/* Where an installed addon stands against the catalogue.
+ *
+ * Only two of these carry any weight. `update` is a thing to press; `needs-parent-update` is a
+ * thing to read, because a newer build exists that cannot be taken until the mod it patches moves
+ * — pressing anything there would install an addon built for a version that is not there.
+ * The rest are quiet: they describe a situation rather than asking for an action, and an addon
+ * that is simply up to date gets no badge at all. */
+.addon-update-update {
+  background: rgba(122, 148, 86, 0.16);
+  color: var(--ok-strong);
+}
+
+.addon-update-needs-parent-update {
+  background: rgba(200, 117, 46, 0.16);
+  color: var(--accent-strong);
+}
+
+.addon-update-no-build-for-parent,
+.addon-update-delisted,
+.addon-update-detached {
+  border: 1px dashed var(--border-soft);
+  color: var(--text-dim);
+}
+
+.addon-update-parent-missing,
+.addon-update-unknown {
+  color: var(--text-faint);
+}

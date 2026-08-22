@@ -18,7 +18,7 @@
  * install.
  */
 import { useState } from "react";
-import { AddonSuggestion, AddonLink, AddonIntegration, InstalledAddonRecord, ModInfo, ModType } from "./types";
+import { AddonSuggestion, AddonLink, AddonIntegration, InstalledAddonRecord, ModInfo, ModType , AddonUpdateRow, AddonUpdateStatus } from "./types";
 import "./addons.css";
 
 const FIT_LABEL: Record<string, string> = {
@@ -88,6 +88,24 @@ function SuggestionRow({
   );
 }
 
+/**
+ * What each update status is called on screen.
+ *
+ * Worded as a CONDITION, not an instruction — the button beside it says what to do, and most
+ * of these have no button because there is nothing to press. `needs-parent-update` is the one
+ * worth reading twice: a newer build exists and you cannot take it until the parent moves.
+ */
+const ADDON_UPDATE_LABEL: Record<AddonUpdateStatus, string> = {
+  "up-to-date": "",
+  update: "Update available",
+  "needs-parent-update": "Waiting on the mod",
+  "no-build-for-parent": "No build for your version",
+  delisted: "No longer listed",
+  detached: "Mod removed",
+  "parent-missing": "Mod not installed",
+  unknown: "Can't be checked"
+};
+
 export default function AddonsPanel({
   suggestions,
   links,
@@ -98,6 +116,7 @@ export default function AddonsPanel({
   catalogueSize,
   catalogueLive,
   ledger,
+  updates,
   onForgetAddon,
   onInstallForgeAddon,
   onInstallFromFile,
@@ -115,6 +134,8 @@ export default function AddonsPanel({
   /** False = showing the bundled harvest, whose download links no longer resolve. */
   catalogueLive?: boolean;
   ledger: InstalledAddonRecord[];
+  /** Where each installed addon stands against the catalogue. See electron/addons.ts. */
+  updates: AddonUpdateRow[];
   onForgetAddon: (forgeAddonId?: number, name?: string) => void;
   onInstallForgeAddon: (addonId: number) => void;
   onInstallFromFile: (parentName: string) => void;
@@ -122,6 +143,20 @@ export default function AddonsPanel({
   onSetParent: (id: string, type: ModType, parent: string | null) => void;
   onClose: () => void;
 }) {
+  /*
+   * The update row for a ledger entry.
+   *
+   * Matched on the catalogue id where there is one, and on name plus parent otherwise —
+   * the same identity the ledger itself uses, because an addon installed from a file has
+   * no id and would otherwise never find its row.
+   */
+  const updateFor = (r: InstalledAddonRecord) =>
+    updates.find((u) =>
+      typeof r.forgeAddonId === "number" && typeof u.forgeAddonId === "number"
+        ? u.forgeAddonId === r.forgeAddonId
+        : u.name.toLowerCase() === r.name.toLowerCase() && u.parentName.toLowerCase() === r.parentName.toLowerCase()
+    );
+
   const [tab, setTab] = useState<"available" | "installed" | "integrations">("available");
   const [manualParent, setManualParent] = useState("");
   const [showAllSuggestions, setShowAllSuggestions] = useState(false);
@@ -256,6 +291,22 @@ export default function AddonsPanel({
                       )}
                       {/* Reinstalling a mod replaces its folder and takes any addon inside it
                           along — in silence, because nothing about the parent's row changes. */}
+                      {/* Where this addon stands against the catalogue. Absent when it is
+                          simply up to date — a row saying nothing is the good outcome, and
+                          badging every one of them would bury the two that matter. */}
+                      {(() => {
+                        const u = updateFor(r);
+                        if (!u || u.status === "up-to-date") return null;
+                        return (
+                          <span
+                            className={`addon-badge addon-update-${u.status}`}
+                            title={u.detail}
+                          >
+                            {ADDON_UPDATE_LABEL[u.status]}
+                            {u.availableVersion ? ` — v${u.availableVersion}` : ""}
+                          </span>
+                        );
+                      })()}
                       {r.needsReinstall && (
                         <span
                           className="addon-badge addon-badge-gone"
@@ -276,6 +327,14 @@ export default function AddonsPanel({
                       {r.needsReinstall && typeof r.forgeAddonId === "number" && (
                         <button className="primary" disabled={busy} onClick={() => onInstallForgeAddon(r.forgeAddonId!)}>
                           Reinstall
+                        </button>
+                      )}
+                      {/* Offered ONLY where a newer build actually fits the parent you have.
+                          `needs-parent-update` deliberately gets no button: pressing it would
+                          install an addon built for a mod version that is not there. */}
+                      {updateFor(r)?.status === "update" && typeof r.forgeAddonId === "number" && (
+                        <button className="primary" disabled={busy} onClick={() => onInstallForgeAddon(r.forgeAddonId!)}>
+                          Update
                         </button>
                       )}
                       <button disabled={busy} onClick={() => onForgetAddon(r.forgeAddonId, r.name)}>

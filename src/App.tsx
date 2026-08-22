@@ -30,7 +30,8 @@ import {
   PresetSyncProgress,
   BulkReinstallProgress,
   BulkReinstallOutcome,
-  CompanionInstallState
+  CompanionInstallState,
+  AddonUpdateRow
 } from "./types";
 import { Lang, translate, translateBackendMessage } from "./i18n";
 import { browseInstallState, compareSemver } from "./browseInstallState";
@@ -948,6 +949,13 @@ export default function App() {
   const [addonCatalogueSize, setAddonCatalogueSize] = useState(0);
   const [addonCatalogueLive, setAddonCatalogueLive] = useState(false);
   const [addonLedger, setAddonLedger] = useState<InstalledAddonRecord[]>([]);
+  /**
+   * Where each installed addon stands against the catalogue.
+   *
+   * Arrives with the suggestions rather than from a call of its own: that request has just
+   * refreshed the catalogue, and asking for it twice would be the same fetch made again.
+   */
+  const [addonUpdates, setAddonUpdates] = useState<AddonUpdateRow[]>([]);
   const [addonsScanned, setAddonsScanned] = useState(false);
   const [addonBusy, setAddonBusy] = useState(false);
 
@@ -958,6 +966,7 @@ export default function App() {
       setAddonCatalogueSize(result.catalogueSize ?? 0);
       setAddonCatalogueLive(result.catalogueLive === true);
       setAddonLedger(result.ledger ?? []);
+      setAddonUpdates(result.updates ?? []);
     } else if (result.message) {
       pushToast(result.message, false);
     }
@@ -3173,6 +3182,7 @@ export default function App() {
               catalogueSize={addonCatalogueSize}
               catalogueLive={addonCatalogueLive}
               ledger={addonLedger}
+              updates={addonUpdates}
               onForgetAddon={handleForgetAddon}
               onInstallForgeAddon={handleInstallForgeAddon}
               onInstallFromFile={handleInstallAddonFromFile}
