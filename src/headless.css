@@ -884,7 +884,8 @@
   color: var(--text-faint);
 }
 
-.hl-addon-carried-with-parent .hl-addon-status {
+.hl-addon-carried-with-parent .hl-addon-status,
+.hl-addon-present-on-headless .hl-addon-status {
   color: var(--ok-strong);
   border-color: var(--ok);
 }
@@ -893,6 +894,22 @@
 .hl-addon-needs-attention .hl-addon-status {
   color: var(--accent-strong);
   border-color: var(--accent);
+}
+
+/* Louder than the rest, because nothing else on the page looks wrong when this happens: the
+   parent is present and at the right version, and this is the only line saying the patch
+   inside it is gone. */
+.hl-addon-missing-on-headless .hl-addon-status {
+  color: var(--danger-strong);
+  border-color: var(--danger);
+}
+
+/* Deliberately NOT green. An assumption that happens to be right looks identical to one that
+   is wrong, and painting it the same as a verified row is what would hide the difference. */
+.hl-addon-assumed .hl-addon-status {
+  color: var(--text-faint);
+  border-color: var(--border);
+  border-style: dashed;
 }
 
 .hl-addon-detail {

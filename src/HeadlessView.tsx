@@ -927,16 +927,26 @@ function ParityGutter({ parity }: { parity: ParityReport | null }) {
           <div className="hl-gutter-title">Compatibility addons</div>
           <ul>
             {parity.addons.map((a) => (
-              <li key={`${a.name}:${a.parentName}`} className={`hl-addon-${a.status}`}>
+              <li
+                key={`${a.name}:${a.parentName}`}
+                className={`hl-addon-${a.status}${a.verified === false ? " hl-addon-assumed" : ""}`}
+              >
                 <span className="hl-addon-name">{a.name}</span>
                 <span className="hl-addon-status">
-                  {a.status === "carried-with-parent"
-                    ? "on both"
+                  {/* "assumed" is not a softer way of saying "on both". It means nothing was
+                      looked at — the record predates addons tracking their own files, so the
+                      only thing supporting the verdict is that the parent is synced. */}
+                  {a.status === "carried-with-parent" || a.status === "present-on-headless"
+                    ? a.verified === false
+                      ? "assumed"
+                      : "on both"
                     : a.status === "not-applicable"
                       ? "server-side"
                       : a.status === "parent-missing"
                         ? "sync parent"
-                        : "check"}
+                        : a.status === "missing-on-headless"
+                          ? "missing"
+                          : "check"}
                 </span>
                 <span className="hl-addon-detail">{a.detail}</span>
               </li>
@@ -1089,7 +1099,22 @@ export default function InstancesView({
 
   const rowsByKey = new Map((parity?.rows ?? []).map((r) => [r.key, r]));
   const openCount = ["main", "server", "headless"].filter((k) => !collapsed[k]).length;
-  const outOfStep = (parity?.counts.missingOnHeadless ?? 0) + (parity?.counts.versionDrift ?? 0);
+  /*
+   * What the sync button would actually do, addons included.
+   *
+   * The plugin counts cannot stand in for the addon work: a merged patch missing from the
+   * headless client adds nothing to missingOnHeadless, because its parent's row is present and
+   * correct. Counting only plugins left the button reading "Headless in sync" while a patch was
+   * absent — the one thing the button is there to say.
+   *
+   * "parent-missing" is deliberately not counted: the parent is already in the plugin count,
+   * and syncing it is what fixes the addon, so counting both would double it.
+   */
+  const addonsToSync = (parity?.addons ?? []).filter(
+    (a) => a.status === "missing-on-headless" || a.status === "needs-attention"
+  ).length;
+  const outOfStep =
+    (parity?.counts.missingOnHeadless ?? 0) + (parity?.counts.versionDrift ?? 0) + addonsToSync;
 
   /*
    * The shared row model, built ONCE here and handed to both panes.

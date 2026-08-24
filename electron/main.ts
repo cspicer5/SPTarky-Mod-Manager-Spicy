@@ -33,6 +33,7 @@ import {
   refreshFingerprint,
   SERVER_MODS_DIR,
   CLIENT_PLUGINS_DIR,
+  CLIENT_PLUGINS_DISABLED_DIR,
   dismissForgeUpdate,
   undismissForgeUpdate,
   copyClientModToHeadless,
@@ -378,10 +379,15 @@ ipcMain.handle("get-headless-view", () => {
           name: r.name,
           parentName: r.parentName,
           parentType: r.parentType,
-          mergedIntoParent: r.mergedIntoParent
+          mergedIntoParent: r.mergedIntoParent,
+          // Carried through so a merged addon can be CHECKED on the headless side rather than
+          // assumed present because its parent is. Same file list the main install already uses.
+          parentFiles: r.parentFiles,
+          folders: r.folders
         })),
         mainMods,
-        headlessMods
+        headlessMods,
+        headlessParentDir(headlessPath, headlessMods)
       )
     : [];
 
@@ -1181,6 +1187,25 @@ function parentFolderPath(parent: { id: string; type: ModType }, roots: { client
     : path.join(roots.clientRoot, ...CLIENT_PLUGINS_DIR, parent.id);
 }
 
+/**
+ * Where a merged addon's parent folder sits ON THE HEADLESS CLIENT, or undefined if it is not
+ * there at all.
+ *
+ * Resolved from the scan rather than by assuming the enabled folder, because a parent that is
+ * disabled on the headless side lives in plugins.disabled/ — and looking for its files in
+ * plugins/ would report every patch inside it as missing. Server parents return undefined by
+ * design: a headless client never loads user/mods, so there is nothing there to look in.
+ */
+function headlessParentDir(headlessRoot: string, headlessMods: ModInfo[]) {
+  return (name: string, type: ModType): string | undefined => {
+    if (type === "server") return undefined;
+    const parent = headlessMods.find((m) => m.id.toLowerCase() === name.toLowerCase() && m.type === type);
+    if (!parent) return undefined;
+    const dir = parent.enabled ? CLIENT_PLUGINS_DIR : CLIENT_PLUGINS_DISABLED_DIR;
+    return path.join(headlessRoot, ...dir, parent.id);
+  };
+}
+
 function addonCataloguePaths(): string[] {
   return [
     path.join(process.resourcesPath ?? "", "data", "forge-addons.json"),
@@ -1836,31 +1861,107 @@ ipcMain.handle("sync-all-to-headless", (_event) => {
       row.type !== "server"
   );
 
+  const ledger = loadAddonLedger(sptPath);
+
   // Keyed by parityKey, NOT by name. Several mods ship a server half and a client half under
   // one folder name; keyed by name alone the map ends up holding whichever was scanned last,
   // which is the SERVER half — and the copy is then correctly refused as a server mod, so the
   // client plugin silently never syncs. Cost two plugins on the reference install
   // (acidphantasm-botplacementsystem, WTT-PackNStrap) and reported success while doing it.
   const byKey = new Map(mainMods.map((m) => [parityKey(m), m]));
-  const done: string[] = [];
-  const failed: string[] = [];
 
-  for (const row of wanted) {
-    const mod = byKey.get(row.key);
+  /*
+   * Addons are copied here too, and they are NOT reachable through the plugin rows above.
+   *
+   * A merged addon has no row of its own — its files are inside the parent, so the parent's row
+   * is identical whether the patch is there or not. An addon WITH its own folder does get a row,
+   * but classifies as "unknown" (nothing in the ruleset names a compatibility patch), so the
+   * required/recommended filter drops it. Either way the sync used to report success having
+   * silently left the patch behind, which is the failure the headless model exists to prevent.
+   */
+  const addonRows = buildAddonParity(
+    ledger.map((r) => ({
+      name: r.name,
+      parentName: r.parentName,
+      parentType: r.parentType,
+      mergedIntoParent: r.mergedIntoParent,
+      parentFiles: r.parentFiles,
+      folders: r.folders
+    })),
+    mainMods,
+    headlessMods,
+    headlessParentDir(headlessPath, headlessMods)
+  );
+  const ledgerByName = new Map(ledger.map((r) => [r.name, r]));
+
+  // One copy list, so a parent that is both out of date AND missing a patch is copied once
+  // rather than twice. Keyed by parityKey for the same reason the map above is.
+  const toCopy = new Map<string, ModInfo>();
+  const failed: string[] = [];
+  const claim = (mod: ModInfo | undefined, label: string) => {
     if (!mod) {
+      failed.push(label);
+      return;
+    }
+    toCopy.set(parityKey(mod), mod);
+  };
+
+  for (const row of wanted) claim(byKey.get(row.key), row.name);
+
+  // Addons whose fix is a copy of the parent: the patch merged into that folder on the main
+  // install, so copying the folder is what carries it across.
+  const carried: string[] = [];
+  for (const row of addonRows.filter((r) => r.status === "missing-on-headless")) {
+    claim(
+      mainMods.find((m) => m.id.toLowerCase() === row.parentName.toLowerCase() && m.type === row.parentType),
+      row.name
+    );
+    carried.push(row.name);
+  }
+
+  // Addons with folders of their own: ordinary plugins as far as copying goes.
+  const addonFolders: string[] = [];
+  for (const row of addonRows.filter((r) => r.status === "needs-attention")) {
+    const own = ledgerByName.get(row.name)?.folders?.filter((f) => f.type !== "server") ?? [];
+    if (!own.length) {
+      // No record of what it dropped, so there is nothing to copy and nothing to claim. Saying
+      // so beats a silent skip inside a "synced everything" result.
       failed.push(row.name);
       continue;
     }
+    for (const folder of own) {
+      claim(
+        mainMods.find((m) => m.id.toLowerCase() === folder.id.toLowerCase() && m.type === folder.type),
+        `${row.name} (${folder.id})`
+      );
+    }
+    addonFolders.push(row.name);
+  }
+
+  const done: string[] = [];
+  for (const mod of toCopy.values()) {
     const result = copyClientModToHeadless(sptPath, headlessPath, mod);
     (result.success ? done : failed).push(mod.name);
   }
 
-  if (!wanted.length) return { success: true, message: "Nothing to sync — the headless client already matches.", copied: 0 };
+  if (!toCopy.size && !failed.length) {
+    return { success: true, message: "Nothing to sync — the headless client already matches.", copied: 0 };
+  }
+
+  // The addon counts are reported separately because the plugin count cannot show them: a
+  // merged patch adds nothing to it, so "copied 3 plugins" would be the whole story of a sync
+  // that also restored two patches.
+  const notes = [
+    carried.length ? `${carried.length} patch(es) carried with their parent` : "",
+    addonFolders.length ? `${addonFolders.length} addon folder(s)` : ""
+  ].filter(Boolean);
+
   return {
     success: failed.length === 0,
     copied: done.length,
     message:
       `Copied ${done.length} plugin(s) to the headless client.` +
+      (notes.length ? ` Includes ${notes.join(" and ")}.` : "") +
       (failed.length ? ` ${failed.length} failed: ${failed.slice(0, 3).join(", ")}${failed.length > 3 ? "…" : ""}` : "")
   };
 });

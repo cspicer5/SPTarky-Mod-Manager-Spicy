@@ -437,7 +437,31 @@ export interface AddonParityRow {
   needsHeadless: boolean;
   /** Whether the parent is present on the headless side. */
   parentOnHeadless: boolean;
-  status: "carried-with-parent" | "parent-missing" | "not-applicable" | "needs-attention";
+  status:
+    | "carried-with-parent"
+    | "parent-missing"
+    | "not-applicable"
+    | "needs-attention"
+    /**
+     * The parent IS on the headless client, and the addon's files are NOT in it.
+     *
+     * Only visible because addons record which files they placed. Before that this case was
+     * indistinguishable from a healthy one: the parent had been synced, so the patch was
+     * assumed to have travelled with it — which is true right up until the parent is synced
+     * again from a copy that never had the patch.
+     */
+    | "missing-on-headless"
+    /** Has a folder of its own, and that folder is on the headless client. */
+    | "present-on-headless";
+  /**
+   * Whether the healthy verdict was LOOKED UP or reasoned to.
+   *
+   * False when the record carries no file list — every addon installed before those were
+   * recorded — in which case "the parent is synced, so the patch is too" is the only thing
+   * available, and it is a guess. Surfaced rather than hidden: the same green badge for a
+   * checked fact and an assumption is how a missing patch stays invisible.
+   */
+  verified?: boolean;
   detail: string;
 }
 
@@ -463,9 +487,24 @@ export interface ParityReport {
  * plugin-by-plugin comparison could ever surface this.
  */
 export function buildAddonParity(
-  addons: { name: string; parentName: string; parentType: ModType; mergedIntoParent: boolean }[],
+  addons: {
+    name: string;
+    parentName: string;
+    parentType: ModType;
+    mergedIntoParent: boolean;
+    /** The files this addon put in its parent's folder, recorded at install time. */
+    parentFiles?: string[];
+    /** The folders it produced of its own, when it did not merge. Empty for merged addons. */
+    folders?: { id: string; type: ModType }[];
+  }[],
   mainMods: ModInfo[],
-  headlessMods: ModInfo[]
+  headlessMods: ModInfo[],
+  /**
+   * Where the parent's folder lives ON THE HEADLESS CLIENT, so a merged addon can be checked
+   * rather than assumed. Optional: without it the old inference stands, which is all that was
+   * ever available for records written before addons tracked their files.
+   */
+  headlessParentDir?: (name: string, type: ModType) => string | undefined
 ): AddonParityRow[] {
   const onHeadless = new Set(headlessMods.map((m) => `${m.type}:${m.id.toLowerCase()}`));
   const onMain = new Set(mainMods.map((m) => `${m.type}:${m.id.toLowerCase()}`));
@@ -506,14 +545,84 @@ export function buildAddonParity(
       };
     }
 
+    /*
+     * Its own folder: nothing travels with the parent, so the only question is whether that
+     * folder is on the headless client. Answered from the scan — a folder either appeared in
+     * it or it did not — so this settles rather than advising the user to go and check.
+     *
+     * A record from before folders were tracked has nothing to look at, and says so.
+     */
+    if (!a.mergedIntoParent) {
+      const own = a.folders?.filter((f) => f.type !== "server") ?? [];
+      if (!own.length) {
+        return {
+          ...a,
+          needsHeadless: true,
+          parentOnHeadless,
+          status: "needs-attention" as const,
+          detail: `Has its own folder, but this install has no record of which — check it was synced alongside "${a.parentName}".`
+        };
+      }
+      const absent = own.filter((f) => !onHeadless.has(`${f.type}:${f.id.toLowerCase()}`));
+      if (absent.length) {
+        return {
+          ...a,
+          needsHeadless: true,
+          parentOnHeadless,
+          status: "needs-attention" as const,
+          detail: `Has its own folder and it is not on the headless client (${absent.map((f) => f.id).join(", ")}). Sync to copy it.`
+        };
+      }
+      return {
+        ...a,
+        needsHeadless: true,
+        parentOnHeadless,
+        status: "present-on-headless" as const,
+        verified: true,
+        detail: `Has its own folder (${own.map((f) => f.id).join(", ")}), and it is on the headless client.`
+      };
+    }
+
+    /*
+     * Merged into the parent: LOOK for its files rather than concluding it came along.
+     *
+     * "The parent is synced, so the patch is too" is true most of the time and silent when it
+     * is not — the parent's folder is identical whether the patch is inside it or not. The
+     * files are recorded at install time precisely so this can be checked, and the case it
+     * catches is real: syncing the parent from a copy that never had the patch overwrites the
+     * headless one that did.
+     */
+    const dir = headlessParentDir?.(a.parentName, a.parentType);
+    if (dir && a.parentFiles?.length) {
+      const missing = a.parentFiles.filter((rel) => !fs.existsSync(path.join(dir, ...rel.split("/"))));
+      if (missing.length) {
+        return {
+          ...a,
+          needsHeadless: true,
+          parentOnHeadless,
+          status: "missing-on-headless" as const,
+          detail: `"${a.parentName}" is on the headless client but this patch's files are not in it (${missing.length} of ${a.parentFiles.length} missing). Sync "${a.parentName}" again to put it back.`
+        };
+      }
+      return {
+        ...a,
+        needsHeadless: true,
+        parentOnHeadless,
+        status: "carried-with-parent" as const,
+        verified: true,
+        detail: `Its files are inside "${a.parentName}" on the headless client — checked, not assumed.`
+      };
+    }
+
+    // No file list (an older record) or nowhere to look: the old inference is all there is,
+    // and it is worded as the inference it is.
     return {
       ...a,
       needsHeadless: true,
       parentOnHeadless,
-      status: a.mergedIntoParent ? ("carried-with-parent" as const) : ("needs-attention" as const),
-      detail: a.mergedIntoParent
-        ? `Its files are inside "${a.parentName}", which is already synced, so the headless client has it.`
-        : `Has its own folder — check it was synced alongside "${a.parentName}".`
+      status: "carried-with-parent" as const,
+      verified: false,
+      detail: `Its files are inside "${a.parentName}", which is already synced, so the headless client should have it.`
     };
   });
 }

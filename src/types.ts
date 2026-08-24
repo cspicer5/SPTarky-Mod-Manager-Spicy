@@ -386,7 +386,17 @@ export interface AddonParityRow {
   mergedIntoParent: boolean;
   needsHeadless: boolean;
   parentOnHeadless: boolean;
-  status: "carried-with-parent" | "parent-missing" | "not-applicable" | "needs-attention";
+  status:
+    | "carried-with-parent"
+    | "parent-missing"
+    | "not-applicable"
+    | "needs-attention"
+    /** Parent is on the headless client; this patch's files are not inside it. */
+    | "missing-on-headless"
+    /** Has its own folder, and that folder is on the headless client. */
+    | "present-on-headless";
+  /** True when a healthy verdict was checked on disk; false when it was only inferred. */
+  verified?: boolean;
   detail: string;
 }
 
