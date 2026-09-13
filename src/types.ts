@@ -279,7 +279,7 @@ export interface ServerSyncRow {
   localModId?: string;
   issue?: ServerSyncIssue;
   /** GUID matches are exact; name matches are a weaker fallback and are shown as such. */
-  matchedBy?: "guid" | "package" | "name";
+  matchedBy?: "guid" | "folder" | "package" | "name";
   url?: string;
   detail?: string;
   /**

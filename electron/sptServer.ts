@@ -581,7 +581,7 @@ export interface ServerSyncRow {
   localModId?: string;
   issue?: ServerSyncIssue;
   /** How the two sides were matched. A name match is weaker and is shown as such. */
-  matchedBy?: "guid" | "package" | "name";
+  matchedBy?: "guid" | "folder" | "package" | "name";
   url?: string;
   detail?: string;
   /**
@@ -743,6 +743,7 @@ export function buildServerSyncReport(
    */
   const byDeclaredGuid = new Map<string, ModInfo>();
   const byCatalogueGuid = new Map<string, ModInfo>();
+  const byFolder = new Map<string, ModInfo>();
   const byName = new Map<string, ModInfo>();
   for (const mod of localServer) {
     if (mod.assemblyGuid) byDeclaredGuid.set(norm(mod.assemblyGuid), mod);
@@ -750,6 +751,8 @@ export function buildServerSyncReport(
     // no registry entry. Kept in the weaker index rather than mixed into the first.
     if (mod.guid) byCatalogueGuid.set(norm(mod.guid), mod);
     if (mod.catalogueGuid) byCatalogueGuid.set(norm(mod.catalogueGuid), mod);
+    byFolder.set(norm(mod.id), mod);
+    byFolder.set(norm(mod.originalName), mod);
     byName.set(norm(mod.originalName), mod);
     byName.set(norm(mod.name), mod);
   }
@@ -771,9 +774,39 @@ export function buildServerSyncReport(
   for (const mod of snapshot.mods) {
     if (isCompanionMod(mod.name, mod.modGuid)) continue;
     const viaDeclared = mod.modGuid ? byDeclaredGuid.get(norm(mod.modGuid)) : undefined;
-    const viaCatalogue = !viaDeclared && mod.modGuid ? byCatalogueGuid.get(norm(mod.modGuid)) : undefined;
-    const local = viaDeclared ?? viaCatalogue ?? byName.get(norm(mod.name));
-    const matchedBy = viaDeclared ? "guid" : viaCatalogue ? "package" : local ? "name" : undefined;
+    /*
+     * FOLDER against FOLDER, and it belongs this high up.
+     *
+     * A server reports the name its author wrote for humans; locally a mod IS a directory. On
+     * the reference server 40 of 52 mods report a name that differs from their folder — "Acid's
+     * Progressive Bot System" living in acidphantasm-progressivebotsystem, "ECOTI" in
+     * LennoxP90-COTI, "ORBIT Server" in ORBIT. Comparing the declared name against a folder name
+     * is the one pairing guaranteed to disagree, so each of those produced TWO rows: "Not on
+     * server" on the left and "Missing here" with an Install button on the right, for a mod the
+     * user already had.
+     *
+     * The guids do not rescue it. Only 6 of 42 local server mods carry a declared guid at all,
+     * and the catalogue guid is a DIFFERENT namespace from the ModGuid a server reports — ECOTI
+     * declares com.lennoxp90.coti.server against a package of com.lennoxp90.coti. One mod here
+     * (acidphantasm-progressivebotsystem) has no guid of any kind, so folder is the only
+     * identity it will ever have.
+     *
+     * Ranked above the catalogue guid because this is like-for-like — the install directory on
+     * one machine against the install directory on the other — where guid-vs-catalogue-guid is
+     * a cross-namespace guess that happens to work when the two strings coincide.
+     */
+    const viaFolder = !viaDeclared && mod.folder ? byFolder.get(norm(mod.folder)) : undefined;
+    const viaCatalogue = !viaDeclared && !viaFolder && mod.modGuid ? byCatalogueGuid.get(norm(mod.modGuid)) : undefined;
+    const local = viaDeclared ?? viaFolder ?? viaCatalogue ?? byName.get(norm(mod.name));
+    const matchedBy = viaDeclared
+      ? "guid"
+      : viaFolder
+        ? "folder"
+        : viaCatalogue
+          ? "package"
+          : local
+            ? "name"
+            : undefined;
     if (local) claimed.add(claimKey(local));
 
     const row: ServerSyncRow = {

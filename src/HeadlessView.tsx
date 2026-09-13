@@ -716,6 +716,19 @@ function ServerPane({
             same package
           </span>
         )}
+        {/* Folder against folder — the install directory on one machine against the install
+            directory on the other. Named rather than left silent because the two sides show
+            DIFFERENT text when this fires: the server reports the author's display name and
+            the row is labelled with the local folder, so without this badge the match looks
+            like it was made on a name that plainly does not agree. */}
+        {row.matchedBy === "folder" && (
+          <span
+            className="hl-badge hl-matched-package"
+            title="Matched on the install folder, which is the same on both machines. The server reports the author's display name for this mod, which differs from the folder it lives in."
+          >
+            same folder
+          </span>
+        )}
         {row.url && (
           <a className="hl-server-src" href={row.url} target="_blank" rel="noreferrer" title={row.url}>
             source

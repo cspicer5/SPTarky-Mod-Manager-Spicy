@@ -517,6 +517,87 @@ console.log("\nreadiness");
   check("though it is still reported", ahead.counts.newerLocally, 1);
 }
 
+console.log("\nthe server reports a display name, not a folder");
+{
+  /*
+   * A server states the name its author wrote for people to read; locally a mod IS a directory.
+   * On the reference server 40 of 52 mods report a name that differs from their folder — "Acid's
+   * Progressive Bot System" in acidphantasm-progressivebotsystem, "ECOTI" in LennoxP90-COTI,
+   * "server" in fika-server. Comparing the declared name against a folder name is the one
+   * pairing guaranteed to disagree, so each of those produced TWO rows: "Not on server" on the
+   * left and "Missing here" with an Install button on the right, for a mod already installed.
+   *
+   * Offering to install something the user already has is the worst shape this can fail in.
+   */
+  const report = buildServerSyncReport(
+    snapshot({
+      mods: [
+        {
+          name: "Acid's Progressive Bot System",
+          folder: "acidphantasm-progressivebotsystem",
+          modGuid: "com.acidphantasm.progressivebotsystem",
+          version: "2.4.1"
+        }
+      ]
+    }),
+    // No guid of any kind — measured: this mod has none locally, so the folder is the only
+    // identity it will ever have.
+    [localMod({ id: "acidphantasm-progressivebotsystem", type: "server", version: "0.9.5" })],
+    "4.1.5"
+  );
+  const serverRows = report.rows.filter((r) => r.side === "server");
+  check("it produces ONE row, not two", serverRows.length, 1);
+  check("matched on the folder", serverRows[0].matchedBy, "folder");
+  check("and is compared, not offered for install", serverRows[0].issue, "outdated-locally");
+  // The label is the folder the user installed; the author's name goes alongside rather than
+  // replacing it, or the row stops matching everything else in the column.
+  check("labelled with the local folder", serverRows[0].name, "acidphantasm-progressivebotsystem");
+  check("with the server's own name kept", serverRows[0].serverName, "Acid's Progressive Bot System");
+}
+
+console.log("\nwhat folder matching must NOT do");
+{
+  // A different folder is a different mod. Folder matching is exact — it must never reach for
+  // a near miss, or two unrelated mods collapse into one row and a real difference disappears.
+  const report = buildServerSyncReport(
+    snapshot({ mods: [{ name: "Some Mod", folder: "author-somemod", modGuid: "com.author.somemod", version: "1.0.0" }] }),
+    [localMod({ id: "author-someothermod", type: "server", version: "1.0.0" })],
+    "4.1.5"
+  );
+  const serverRows = report.rows.filter((r) => r.side === "server");
+  check("they stay two rows", serverRows.length, 2);
+  check("the server one is missing here", serverRows.find((r) => r.issue === "missing-locally") !== undefined, true);
+  check("the local one is not on the server", serverRows.find((r) => r.issue === "not-on-server") !== undefined, true);
+
+  /*
+   * A DECLARED guid still outranks the folder. Renaming a folder is something people do; a mod
+   * declaring another mod's guid is not. Measured: only 6 of 42 local server mods carry one, so
+   * this rarely fires — but when it does it is the better evidence.
+   */
+  const renamed = buildServerSyncReport(
+    snapshot({ mods: [{ name: "ECOTI", folder: "LennoxP90-COTI", modGuid: "com.lennoxp90.coti.server", version: "3.0.3" }] }),
+    [localMod({ id: "COTI-renamed-by-me", type: "server", version: "3.0.3", assemblyGuid: "com.lennoxp90.coti.server" })],
+    "4.1.5"
+  );
+  const row = renamed.rows.filter((r) => r.side === "server")[0];
+  check("a renamed folder still matches on its guid", row.matchedBy, "guid");
+  check("and produces one row", renamed.rows.filter((r) => r.side === "server").length, 1);
+}
+
+console.log("\na server with no folder information");
+{
+  // A stock SPT server reports declared names only — no folder. That path has to keep working
+  // exactly as before, or the fix for companion users breaks everyone else.
+  const report = buildServerSyncReport(
+    snapshot({ mods: [{ name: "WTT-Armory", modGuid: "com.wtt.armory", version: "3.0.0" }] }),
+    [localMod({ id: "WTT-Armory", type: "server", version: "3.0.0" })],
+    "4.1.5"
+  );
+  const serverRows = report.rows.filter((r) => r.side === "server");
+  check("it still matches by name", serverRows.length, 1);
+  check("and says so", serverRows[0].matchedBy, "name");
+}
+
 console.log("\nreading the version a server reports");
 {
   /*
