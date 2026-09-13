@@ -454,6 +454,16 @@ export interface AddonParityRow {
      * again from a copy that never had the patch.
      */
     | "missing-on-headless"
+    /**
+     * The addon's files are not intact on the MAIN install either.
+     *
+     * Checked because the ledger is a record of what was installed, not proof of what is on
+     * disk now — and a parent reinstall takes a merged patch with it without changing anything
+     * about the parent's own row. Comparing the headless against a ledger entry whose files no
+     * longer exist locally would report a difference between two copies that are both wrong, or
+     * worse, call them matched. The main install has to be looked at too.
+     */
+    | "missing-on-main"
     /** Has a folder of its own, and that folder is on the headless client. */
     | "present-on-headless";
   /**
@@ -509,7 +519,18 @@ export function buildAddonParity(
    * rather than assumed. Optional: without it the old inference stands, which is all that was
    * ever available for records written before addons tracked their files.
    */
-  headlessParentDir?: (name: string, type: ModType) => string | undefined
+  headlessParentDir?: (name: string, type: ModType) => string | undefined,
+  /**
+   * Where the parent's folder lives ON THE MAIN INSTALL, so the addon can be confirmed there
+   * too rather than taken on the ledger's word.
+   *
+   * The ledger records what was installed; it is not evidence of what is on disk now. A parent
+   * reinstall takes a merged patch with it and changes nothing about the parent's own row, so
+   * an entry can describe files that stopped existing locally weeks ago. Checking only the
+   * headless side against such an entry compares one copy against a record of another, and
+   * reports either a phantom difference or a false match.
+   */
+  mainParentDir?: (name: string, type: ModType) => string | undefined
 ): AddonParityRow[] {
   const onHeadless = new Set(headlessMods.map((m) => `${m.type}:${m.id.toLowerCase()}`));
   const onMain = new Set(mainMods.map((m) => `${m.type}:${m.id.toLowerCase()}`));
@@ -568,6 +589,20 @@ export function buildAddonParity(
           detail: `Has its own folder, but this install has no record of which — check it was synced alongside "${a.parentName}".`
         };
       }
+      // The MAIN install first. Its folder can have been removed since the ledger recorded it,
+      // and reporting it as "not on the headless client" would point at the wrong machine.
+      const goneFromMain = own.filter((f) => !onMain.has(`${f.type}:${f.id.toLowerCase()}`));
+      if (goneFromMain.length) {
+        return {
+          ...a,
+          needsHeadless: true,
+          parentOnHeadless,
+          status: "missing-on-main" as const,
+          detail: `The ledger records this as installed, but its folder (${goneFromMain
+            .map((f) => f.id)
+            .join(", ")}) is not on the main instance. Reinstall it here before syncing.`
+        };
+      }
       const absent = own.filter((f) => !onHeadless.has(`${f.type}:${f.id.toLowerCase()}`));
       if (absent.length) {
         return {
@@ -597,8 +632,45 @@ export function buildAddonParity(
      * catches is real: syncing the parent from a copy that never had the patch overwrites the
      * headless one that did.
      */
+    const hasFileRecord = !!(a.parentFileMarks?.length || a.parentFiles?.length);
+
+    /*
+     * THE MAIN INSTALL FIRST, and on disk rather than from the ledger.
+     *
+     * The ledger says what was installed; it is not evidence of what is there now. A parent
+     * reinstall takes a merged patch with it and changes nothing about the parent's own row, so
+     * an entry can describe files that vanished locally weeks ago. Checking only the headless
+     * against such an entry compares a real folder against a record of one — and then either
+     * invents a difference or, worse, reports the two as matched when neither has the patch.
+     *
+     * mtime IS compared here, unlike on the headless side: these marks were taken on this very
+     * install at install time, so a changed stamp means the file was genuinely rewritten.
+     */
+    const mainDir = mainParentDir?.(a.parentName, a.parentType);
+    const checkedOnMain = !!mainDir && hasFileRecord;
+    if (checkedOnMain) {
+      const mainStates = checkAddonFiles(mainDir, a as InstalledAddonRecord);
+      const missingHere = mainStates.filter((s) => s.state === "missing");
+      const replacedHere = mainStates.filter((s) => s.state === "replaced");
+      if (missingHere.length || replacedHere.length) {
+        const parts = [
+          missingHere.length ? `${missingHere.length} of ${mainStates.length} missing` : null,
+          replacedHere.length ? `${replacedHere.length} replaced by a different build` : null
+        ].filter(Boolean);
+        return {
+          ...a,
+          needsHeadless: true,
+          parentOnHeadless,
+          status: "missing-on-main" as const,
+          detail: `This patch is not intact inside "${a.parentName}" on the MAIN instance (${parts.join(
+            ", "
+          )}) — most likely "${a.parentName}" was reinstalled over it. Reinstall the addon here first; syncing now would copy the gap to the headless client.`
+        };
+      }
+    }
+
     const dir = headlessParentDir?.(a.parentName, a.parentType);
-    if (dir && (a.parentFileMarks?.length || a.parentFiles?.length)) {
+    if (dir && hasFileRecord) {
       /*
        * mtime is IGNORED here, and that is not laziness. The headless client is populated by
        * copying files across, which stamps every one with a fresh mtime — comparing them would
@@ -634,7 +706,11 @@ export function buildAddonParity(
         parentOnHeadless,
         status: "carried-with-parent" as const,
         verified: true,
-        detail: `Its files are inside "${a.parentName}" on the headless client — checked, not assumed.`
+        // Claims only what was actually looked at. Saying "on both" when the main install could
+        // not be resolved would be the same kind of unearned confidence this check replaced.
+        detail: checkedOnMain
+          ? `Its files are inside "${a.parentName}" on BOTH the main instance and the headless client — checked on both, not assumed.`
+          : `Its files are inside "${a.parentName}" on the headless client — checked, not assumed.`
       };
     }
 

@@ -768,17 +768,24 @@ function readModMetadata(modPath: string): {
       return {};
     }
 
-    // SPT 3.x: package.json still counts when it exists.
-    const pkgPath = path.join(modPath, "package.json");
-    if (fs.existsSync(pkgPath)) {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-      const author = typeof pkg.author === "string" ? pkg.author : pkg.author?.name;
-      if (typeof pkg.version === "string") {
-        return { version: pkg.version, author, declaredName: typeof pkg.name === "string" ? pkg.name : undefined };
-      }
-    }
-
-    // SPT 4.0: metadata lives inside the DLL.
+    /*
+     * The DLL FIRST, package.json second.
+     *
+     * This order was the other way round, from when 3.x mods were the norm, and it cost a real
+     * bug. A 4.x mod that ALSO ships a vestigial package.json returned from that branch with no
+     * GUID and the package's version — so FWKnightMaskFix read as "FWKnightMaskFix" 1.0.0 with
+     * no guid at all, while the DLL beside it declared com.umbigopreto.facetheknightmaskfix,
+     * "Face the Knight - Mask Fix", 2.0.0.
+     *
+     * Two consequences, both quiet. The declared version was simply wrong. And with no guid
+     * there was nothing to match the server's declared ModGuid against, so one mod produced two
+     * rows in the server comparison: "Not on server" on the left, "Missing here" with an Install
+     * button on the right, at the same version.
+     *
+     * Nothing loses a source by this swap. A genuine 3.x mod has no DLL to read and still falls
+     * through; so does a 4.x mod whose DLL cannot be parsed. The authoritative source is simply
+     * asked first, and package.json now fills only what the DLL did not say.
+     */
     for (const dll of findFilesRecursive(modPath, ".dll")) {
       const meta = readDllModMetadata(dll);
       if (meta.version || meta.guid) {
@@ -790,6 +797,16 @@ function readModMetadata(modPath: string): {
           declaredName: meta.name,
           sptVersion: meta.sptVersion
         };
+      }
+    }
+
+    // SPT 3.x, and any 4.x mod whose DLL told us nothing.
+    const pkgPath = path.join(modPath, "package.json");
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+      const author = typeof pkg.author === "string" ? pkg.author : pkg.author?.name;
+      if (typeof pkg.version === "string") {
+        return { version: pkg.version, author, declaredName: typeof pkg.name === "string" ? pkg.name : undefined };
       }
     }
     return {};

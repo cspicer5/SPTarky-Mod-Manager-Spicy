@@ -64,6 +64,30 @@ const dirFor = (headlessMods) => (name, type) => {
   return path.join(root, ...(parent.enabled ? PLUGINS : DISABLED), parent.id);
 };
 
+/*
+ * A SEPARATE fake main install. Both sides have to be looked at, so both have to exist here —
+ * a test that only builds a headless folder can only ever prove half the check.
+ */
+const mainRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hl-addons-main-"));
+
+function placeMain(parentId, files, { enabled = true } = {}) {
+  const dir = path.join(mainRoot, ...(enabled ? PLUGINS : DISABLED), parentId);
+  fs.mkdirSync(dir, { recursive: true });
+  for (const rel of files) {
+    const full = path.join(dir, ...rel.split("/"));
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, "x");
+  }
+  return dir;
+}
+
+const mainDirFor = (mainMods) => (name, type) => {
+  if (type === "server") return undefined;
+  const parent = mainMods.find((m) => m.id.toLowerCase() === name.toLowerCase() && m.type === type);
+  if (!parent) return undefined;
+  return path.join(mainRoot, ...(parent.enabled ? PLUGINS : DISABLED), parent.id);
+};
+
 try {
   console.log("merged addons: looking, not assuming");
   {
@@ -96,6 +120,89 @@ try {
     check("a patch whose file is absent is caught", by["Solo Fika Patch"].status, "missing-on-headless");
     check("and names the parent to re-sync", /Sync "Solo" again/.test(by["Solo Fika Patch"].detail), true);
     check("and is still needed there", by["Solo Fika Patch"].needsHeadless, true);
+  }
+
+  console.log("\nBOTH installs are checked, not just the headless");
+  {
+    /*
+     * The ledger records what was INSTALLED. It is not evidence of what is on disk now — a
+     * parent reinstall takes a merged patch with it and changes nothing about the parent's own
+     * row. Checking only the headless against such a record compares a real folder against a
+     * record of one, and then either invents a difference or calls two gaps a match.
+     */
+    const mainMods = [mod("Alpha"), mod("Beta"), mod("Gamma"), mod("Delta")];
+    const headlessMods = [mod("Alpha"), mod("Beta"), mod("Gamma"), mod("Delta")];
+
+    placeMain("Alpha", ["Alpha.dll", "compat/p.dll"]);   // patch intact on main
+    place("Alpha", ["Alpha.dll", "compat/p.dll"]);       // and on the headless
+    placeMain("Beta", ["Beta.dll"]);                     // patch GONE from main...
+    place("Beta", ["Beta.dll", "compat/p.dll"]);         // ...but still on the headless
+    placeMain("Gamma", ["Gamma.dll"]);                   // gone from both
+    place("Gamma", ["Gamma.dll"]);
+    placeMain("Delta", ["Delta.dll", "compat/p.dll"]);   // present on main, absent on headless
+    place("Delta", ["Delta.dll"]);
+
+    const rec = (parent) => ({
+      name: parent + " Patch",
+      parentName: parent,
+      parentType: "client",
+      mergedIntoParent: true,
+      parentFiles: ["compat/p.dll"]
+    });
+    const parity = buildAddonParity(
+      [rec("Alpha"), rec("Beta"), rec("Gamma"), rec("Delta")],
+      mainMods,
+      headlessMods,
+      dirFor(headlessMods),
+      mainDirFor(mainMods)
+    );
+    const by = Object.fromEntries(parity.map((p) => [p.name, p]));
+
+    check("intact on both is confirmed", by["Alpha Patch"].status, "carried-with-parent");
+    check("and says BOTH were looked at", /BOTH the main instance and the headless client/.test(by["Alpha Patch"].detail), true);
+    check("and is verified", by["Alpha Patch"].verified, true);
+
+    // THE case. Previously this reported a healthy row: the headless genuinely has the file, and
+    // nothing ever looked at the main install to notice the patch had been clobbered there.
+    check("gone from main is caught even though the headless has it", by["Beta Patch"].status, "missing-on-main");
+    check("and points at the main instance", /MAIN instance/.test(by["Beta Patch"].detail), true);
+    check("and warns that syncing would spread the gap", /copy the gap/.test(by["Beta Patch"].detail), true);
+
+    // Main is reported FIRST when both are gone: syncing cannot fix it, so telling someone to
+    // sync would send them to the wrong machine.
+    check("gone from both is reported against main", by["Gamma Patch"].status, "missing-on-main");
+
+    // And the original direction still works, unchanged.
+    check("present on main but not the headless still reports the headless", by["Delta Patch"].status, "missing-on-headless");
+  }
+
+  console.log("\na patch the MAIN install has a different build of");
+  {
+    const mainMods = [mod("Epsilon")];
+    const headlessMods = [mod("Epsilon")];
+    placeMain("Epsilon", ["Epsilon.dll", "compat/p.dll"]); // written as 1 byte by the harness
+    place("Epsilon", ["Epsilon.dll", "compat/p.dll"]);
+
+    // Recorded as a much larger file, so what is on main now is a DIFFERENT build — exactly what
+    // a parent reinstall leaves behind: the path still there, the patch inside it gone.
+    const parity = buildAddonParity(
+      [
+        {
+          name: "Eps Patch",
+          parentName: "Epsilon",
+          parentType: "client",
+          mergedIntoParent: true,
+          parentFiles: ["compat/p.dll"],
+          parentFileMarks: [{ path: "compat/p.dll", bytes: 4096, mtime: 1 }]
+        }
+      ],
+      mainMods,
+      headlessMods,
+      dirFor(headlessMods),
+      mainDirFor(mainMods)
+    );
+    check("a replaced file on main is caught", parity[0].status, "missing-on-main");
+    check("and is described as replaced", /replaced by a different build/.test(parity[0].detail), true);
   }
 
   console.log("\na patch the headless client has a DIFFERENT build of");
@@ -261,6 +368,7 @@ try {
   }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(mainRoot, { recursive: true, force: true });
 }
 
 console.log(failures === 0 ? "\nAll headless addon checks passed." : `\n${failures} check(s) FAILED.`);

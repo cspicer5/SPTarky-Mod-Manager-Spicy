@@ -132,6 +132,46 @@ const other = scanMods(INSTALL, INSTALL).find((m) => m.id === "SomeClientMod");
 check("falls back to what it declared at install", other?.version, "1.2.3");
 check("origin recorded as declared-at-install", other?.versionOrigin, "declared-at-install");
 
+console.log("\na 4.x mod that ALSO ships a vestigial package.json");
+{
+  /*
+   * FWKnightMaskFix, from the real install. Its folder holds a 4.x DLL AND a leftover 3.x-style
+   * package.json, and package.json used to be read first — so the mod came back with the
+   * package's name and version and NO GUID, while the DLL beside it declared
+   * com.umbigopreto.facetheknightmaskfix, "Face the Knight - Mask Fix", 2.0.0.
+   *
+   * Two quiet consequences. The declared version was wrong. And with no guid there was nothing
+   * to match a server's declared ModGuid against, so one mod produced TWO rows in the server
+   * comparison — "Not on server" on one side and "Missing here" with an Install button on the
+   * other, both at the same version.
+   */
+  const modDir = path.join(INSTALL, "user", "mods", "BothSources");
+  fs.mkdirSync(modDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(modDir, "package.json"),
+    JSON.stringify({ name: "BothSources", version: "1.0.0", author: "Packager" })
+  );
+  // A real 4.x assembly is what makes this meaningful, so the DLL is taken from the install
+  // rather than faked: a stub would prove only that the branch order changed.
+  const realDll = "D:/SPT/SPT/user/mods/FWKnightMaskFix/FWKnightMaskFix.dll";
+  if (fs.existsSync(realDll)) {
+    fs.copyFileSync(realDll, path.join(modDir, "BothSources.dll"));
+    const found = scanMods(INSTALL, INSTALL).find((m) => m.id === "BothSources");
+    check("the DLL's guid wins over a package.json that has none", found?.guid, "com.umbigopreto.facetheknightmaskfix");
+    check("and the DLL's version wins over the package's", found?.version, "2.0.0");
+  } else {
+    console.log("  SKIP  no reference DLL on this machine to read");
+  }
+
+  // The other direction must still hold: a genuine 3.x mod has no DLL, so package.json is all
+  // there is and must still be read.
+  const legacy = path.join(INSTALL, "user", "mods", "LegacyOnly");
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.writeFileSync(path.join(legacy, "package.json"), JSON.stringify({ name: "LegacyOnly", version: "3.2.1", author: "Old" }));
+  const old = scanMods(INSTALL, INSTALL).find((m) => m.id === "LegacyOnly");
+  check("a mod with only a package.json still reads from it", old?.version, "3.2.1");
+}
+
 console.log("\na merged addon lands inside its parent, and the parent must survive it");
 {
   // An addon that merges leaves its files INSIDE the parent's folder, changing the parent's

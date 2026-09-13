@@ -946,7 +946,12 @@ function ParityGutter({ parity }: { parity: ParityReport | null }) {
                         ? "sync parent"
                         : a.status === "missing-on-headless"
                           ? "missing"
-                          : "check"}
+                          : /* Deliberately NOT "missing": syncing is what fixes a headless gap,
+                               and syncing cannot fix this one — the patch is absent from the
+                               main install too, so a sync would only copy the gap across. */
+                            a.status === "missing-on-main"
+                            ? "not on main"
+                            : "check"}
                 </span>
                 <span className="hl-addon-detail">{a.detail}</span>
               </li>
@@ -1113,8 +1118,17 @@ export default function InstancesView({
   const addonsToSync = (parity?.addons ?? []).filter(
     (a) => a.status === "missing-on-headless" || a.status === "needs-attention"
   ).length;
+  /*
+   * Counted in the headline, deliberately NOT in addonsToSync.
+   *
+   * A patch missing from the MAIN install is genuinely out of step, so hiding it from the total
+   * would be wrong. But syncing is the one action that cannot fix it — a sync copies main to the
+   * headless, so it would spread the gap rather than close it. Attaching this to the sync button
+   * would point the user at the move that makes things worse.
+   */
+  const addonsBrokenOnMain = (parity?.addons ?? []).filter((a) => a.status === "missing-on-main").length;
   const outOfStep =
-    (parity?.counts.missingOnHeadless ?? 0) + (parity?.counts.versionDrift ?? 0) + addonsToSync;
+    (parity?.counts.missingOnHeadless ?? 0) + (parity?.counts.versionDrift ?? 0) + addonsToSync + addonsBrokenOnMain;
 
   /*
    * The shared row model, built ONCE here and handed to both panes.

@@ -394,7 +394,8 @@ ipcMain.handle("get-headless-view", () => {
         })),
         mainMods,
         headlessMods,
-        headlessParentDir(headlessPath, headlessMods)
+        headlessParentDir(headlessPath, headlessMods),
+        mainClientParentDir(roots.clientRoot, mainMods)
       )
     : [];
 
@@ -1307,6 +1308,24 @@ function finishAddonInstall(
  * plugins/ would report every patch inside it as missing. Server parents return undefined by
  * design: a headless client never loads user/mods, so there is nothing there to look in.
  */
+/**
+ * Where a parent's folder lives ON THE MAIN INSTALL.
+ *
+ * Mirrors headlessParentDir, and for the same reason: a parent that is disabled lives in
+ * plugins.disabled/, and looking for its files in plugins/ would report every patch inside it as
+ * missing — a false alarm on a folder the user deliberately parked. Server parents return
+ * undefined because addon parity settles those before it ever needs a folder.
+ */
+function mainClientParentDir(clientRoot: string, mainMods: ModInfo[]) {
+  return (name: string, type: ModType): string | undefined => {
+    if (type === "server") return undefined;
+    const parent = mainMods.find((m) => m.id.toLowerCase() === name.toLowerCase() && m.type === type);
+    if (!parent) return undefined;
+    const dir = parent.enabled ? CLIENT_PLUGINS_DIR : CLIENT_PLUGINS_DISABLED_DIR;
+    return path.join(clientRoot, ...dir, parent.id);
+  };
+}
+
 function headlessParentDir(headlessRoot: string, headlessMods: ModInfo[]) {
   return (name: string, type: ModType): string | undefined => {
     if (type === "server") return undefined;
@@ -2115,7 +2134,8 @@ ipcMain.handle("sync-all-to-headless", (_event) => {
     })),
     mainMods,
     headlessMods,
-    headlessParentDir(headlessPath, headlessMods)
+    headlessParentDir(headlessPath, headlessMods),
+    mainClientParentDir(sptPath, mainMods)
   );
   const ledgerByName = new Map(ledger.map((r) => [r.name, r]));
 

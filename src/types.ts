@@ -405,6 +405,8 @@ export interface AddonParityRow {
     | "needs-attention"
     /** Parent is on the headless client; this patch's files are not inside it. */
     | "missing-on-headless"
+    /** Not intact on the MAIN install either — checked on disk, not taken from the ledger. */
+    | "missing-on-main"
     /** Has its own folder, and that folder is on the headless client. */
     | "present-on-headless";
   /** True when a healthy verdict was checked on disk; false when it was only inferred. */

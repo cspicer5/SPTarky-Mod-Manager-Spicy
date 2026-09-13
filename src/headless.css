@@ -916,3 +916,11 @@
   color: var(--text-faint);
   line-height: 1.4;
 }
+
+/* A patch that is not intact on the MAIN install either.
+   Coloured apart from missing-on-headless on purpose: that one is fixed by syncing, and this one
+   is not — syncing would copy the gap across. The remedy is to reinstall the addon here first. */
+.hl-addon-missing-on-main .hl-addon-status {
+  color: var(--warn, #e0a03a);
+  font-weight: 600;
+}
