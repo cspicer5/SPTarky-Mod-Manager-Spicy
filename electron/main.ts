@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, Menu, session } from "electron";
 import path from "path";
 import fs from "fs";
 import os from "os";
@@ -58,6 +58,7 @@ import {
   normaliseRegistryApiBase,
   setRegistryApiBase
 } from "./registry";
+import { refererForUrl } from "./imageHosts";
 import {
   resolveHeadlessInstance,
   describeHeadlessRejection,
@@ -248,6 +249,20 @@ function headlessOverrides(): Record<string, HeadlessClass> {
   return (store.get("headlessOverrides") ?? {}) as Record<string, HeadlessClass>;
 }
 
+/**
+ * Attaches the Referer that hotlink-protected catalogue image hosts require.
+ *
+ * Without it every mod-browser thumbnail is refused with `403 Nope` — see imageHosts.ts for
+ * the measured rule and why the failure looked partial rather than total.
+ */
+function applyImageHostReferers(): void {
+  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const referer = refererForUrl(details.url);
+    if (!referer) return callback({ requestHeaders: details.requestHeaders });
+    callback({ requestHeaders: { ...details.requestHeaders, Referer: referer } });
+  });
+}
+
 let mainWindow: BrowserWindow | null = null;
 
 function createWindow() {
@@ -270,6 +285,8 @@ function createWindow() {
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
+  // Before the first window, so the browser's very first thumbnail request already carries it.
+  applyImageHostReferers();
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -107,6 +107,55 @@ function ToastStack({ toasts }: { toasts: Toast[] }) {
   );
 }
 
+/**
+ * A mod's thumbnail, or something deliberate when there isn't one.
+ *
+ * Roughly 7% of catalogue entries (22 of 300 measured) ship no thumbnail at all, and a bare
+ * gradient box for those reads as a failed image rather than as "this mod has no icon". The
+ * mod's initials say it is empty on purpose.
+ *
+ * The failure state is React state rather than a DOM mutation. It used to set
+ * `style.display = "none"` on the <img> inside onError and strip a class off its sibling —
+ * properties React neither owns nor resets, so when the list re-rendered and React reused the
+ * element, a single transient failure left that card blank for the rest of the session. Keying
+ * the state on src also means a genuine retry (a new URL) starts clean.
+ */
+function ModThumb({ src, name }: { src?: string; name: string }) {
+  const [failed, setFailed] = useState(false);
+  // Reset when the card is reused for a different image, which React does freely.
+  const [lastSrc, setLastSrc] = useState(src);
+  if (lastSrc !== src) {
+    setLastSrc(src);
+    setFailed(false);
+  }
+
+  if (!src || failed) {
+    const initials = name
+      .replace(/[^\p{L}\p{N} ]/gu, " ")
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase() ?? "")
+      .join("");
+    return (
+      <div className="forge-mod-thumb forge-mod-thumb-placeholder" aria-hidden="true">
+        <span>{initials || "?"}</span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt=""
+      className="forge-mod-thumb"
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 export default function App() {
   // English-only fork: no picker, nothing to persist. Kept as a named constant rather
   // than inlined so every translate()/t()/tMsg() call site stays untouched.
@@ -3478,20 +3527,7 @@ export default function App() {
                 const state = browseInstallState(installedByCatalogueId.get(mod.id), selectedVersion);
                 return (
                   <div key={mod.id} className="forge-mod-card">
-                    {mod.thumbnail ? (
-                      <img
-                        src={mod.thumbnail}
-                        alt=""
-                        className="forge-mod-thumb"
-                        loading="lazy"
-                        decoding="async"
-                        onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).style.display = "none";
-                          e.currentTarget.nextElementSibling?.classList.remove("forge-mod-thumb-hidden");
-                        }}
-                      />
-                    ) : null}
-                    <div className={`forge-mod-thumb forge-mod-thumb-placeholder ${mod.thumbnail ? "forge-mod-thumb-hidden" : ""}`} />
+                    <ModThumb src={mod.thumbnail} name={mod.name} />
                     <div className="forge-mod-info">
                       <div className="forge-mod-title-row">
                         {/* Opens THIS mod's page. It used to call openModHub(), which sent

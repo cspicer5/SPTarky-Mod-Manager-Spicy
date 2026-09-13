@@ -847,12 +847,18 @@ h2 {
   background: var(--bg);
 }
 
+/* Shown for the ~7% of catalogue entries that ship no thumbnail. The initials are what make
+   it read as "this mod has no icon" rather than as an image that failed to load. */
 .forge-mod-thumb-placeholder {
   background: linear-gradient(135deg, var(--bg-panel), var(--border-soft));
-}
-
-.forge-mod-thumb-hidden {
-  display: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-weight: 600;
+  font-size: 20px;
+  letter-spacing: 0.5px;
+  user-select: none;
 }
 
 .forge-mod-info {
