@@ -230,6 +230,76 @@ function unwrap(payload: any): any {
   return payload && typeof payload === "object" && "Response" in payload ? payload.Response : payload;
 }
 
+/**
+ * The server's SPT version, and with it the answer to "is anything there at all".
+ *
+ * Two routes, because SPT 4.1 REMOVED the one this used to rely on. `/launcher/server/version`
+ * answers a bare "4.0.13" on 4.0 and **404** on 4.1.5 — and since any non-200 throws, a
+ * perfectly healthy 4.1 server was reported as unreachable, with "Is the server running?"
+ * against a server that was running, answering, and had the companion loaded. Measured against
+ * a live 4.1.5 host at 192.168.1.66.
+ *
+ * `/singleplayer/settings/version` exists on both lines and is the fallback. It answers
+ * `{"Version":"SPT 4.1.5 - 7d7add"}` — the build hash is dropped here so callers keep getting a
+ * plain semver, which is what every comparison downstream expects.
+ *
+ * Ordered cheapest-first: 4.0 servers still answer on the first request, and only a 4.1 server
+ * pays for the second. Throwing only when BOTH fail is what keeps "unreachable" meaning
+ * unreachable.
+ */
+/**
+ * The mods a server has loaded, from whichever route its SPT line still serves.
+ *
+ * 4.1 removed `/launcher/server/loadedServerMods` along with the version route — same 404, same
+ * silence. This one degraded quietly rather than visibly: the server read as reachable and
+ * simply had no mods, so a 4.1 server WITHOUT the companion showed an empty list instead of an
+ * error. The `/launcher/v2` family survives and carries the identical payload, wrapped as
+ * {"Response": …}, which `unwrap` already handles.
+ *
+ * Verified on the live 4.1.5 host: the old route 404s, `/launcher/v2/mods` returns all 52.
+ */
+async function probeLoadedServerMods(origin: string, timeoutMs: number): Promise<any> {
+  try {
+    const loaded = unwrap(await getJson(origin, "/launcher/server/loadedServerMods", timeoutMs));
+    if (loaded && typeof loaded === "object") return loaded;
+  } catch {
+    /* 4.1 removed it — fall through */
+  }
+  return unwrap(await getJson(origin, "/launcher/v2/mods", timeoutMs));
+}
+
+async function probeSptVersion(origin: string, timeoutMs: number): Promise<string | undefined> {
+  try {
+    const v = unwrap(await getJson(origin, "/launcher/server/version", timeoutMs));
+    if (typeof v === "string" && v.trim()) return v.trim();
+  } catch {
+    /* 4.1 removed it — fall through to the route that both lines have */
+  }
+
+  const raw = unwrap(await getJson(origin, "/singleplayer/settings/version", timeoutMs));
+  return parseSptVersionText(typeof raw === "string" ? raw : raw?.Version);
+}
+
+/**
+ * The plain semver inside whatever the version route answers.
+ *
+ * `/singleplayer/settings/version` returns `"SPT 4.1.5 - 7d7add"` — a label, not a version. The
+ * build hash is dropped because every comparison downstream (instance matching, mod constraint
+ * checks) expects a bare number, and handing them the label makes a 4.1.5 server look like it
+ * is running something no constraint can match.
+ *
+ * Anything unrecognised comes back as its trimmed self rather than undefined: a version we
+ * cannot parse is still better evidence than no version, and "unknown" is already a state the
+ * callers handle.
+ */
+export function parseSptVersionText(text: unknown): string | undefined {
+  if (typeof text !== "string") return undefined;
+  const matched = /(\d+\.\d+\.\d+(?:\.\d+)?)/.exec(text)?.[1];
+  if (matched) return matched;
+  const trimmed = text.trim();
+  return trimmed || undefined;
+}
+
 function toServerMod(displayName: string, raw: any): SptServerMod {
   return {
     modGuid: typeof raw?.ModGuid === "string" ? raw.ModGuid : undefined,
@@ -264,10 +334,10 @@ export async function fetchServerSnapshot(input: string, timeoutMs = 8000, token
 
   let sptVersion: string | undefined;
   try {
-    sptVersion = unwrap(await getJson(origin, "/launcher/server/version", timeoutMs));
+    sptVersion = await probeSptVersion(origin, timeoutMs);
   } catch (err: any) {
-    // The version endpoint is the reachability probe: it is tiny and present on every SPT
-    // server. If it fails, nothing else is worth attempting.
+    // The version endpoint is the reachability probe. If BOTH forms of it fail, nothing else
+    // is worth attempting.
     const hint =
       /ECONNREFUSED|timed out|ECONNRESET|EHOSTUNREACH/i.test(err?.message ?? "")
         ? `Could not reach ${origin}. Is the server running? (SPT 4.x uses HTTPS on 6969.)`
@@ -277,7 +347,7 @@ export async function fetchServerSnapshot(input: string, timeoutMs = 8000, token
 
   let mods: SptServerMod[] = [];
   try {
-    const loaded = unwrap(await getJson(origin, "/launcher/server/loadedServerMods", timeoutMs));
+    const loaded = await probeLoadedServerMods(origin, timeoutMs);
     if (loaded && typeof loaded === "object") {
       mods = Object.entries(loaded).map(([displayName, raw]) => toServerMod(displayName, raw));
     }

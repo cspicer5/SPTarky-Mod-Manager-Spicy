@@ -17,7 +17,7 @@
  * may produce "the server does not have this".
  */
 const path = require("path");
-const { buildServerSyncReport } = require(path.join(__dirname, "..", "dist-electron", "sptServer.js"));
+const { buildServerSyncReport, parseSptVersionText } = require(path.join(__dirname, "..", "dist-electron", "sptServer.js"));
 
 let failures = 0;
 const check = (label, actual, expected) => {
@@ -515,6 +515,32 @@ console.log("\nreadiness");
   // it would mean rolling your own install backwards.
   check("being newer than the server does not", ahead.readyToPlay, true);
   check("though it is still reported", ahead.counts.newerLocally, 1);
+}
+
+console.log("\nreading the version a server reports");
+{
+  /*
+   * SPT 4.1 REMOVED /launcher/server/version and /launcher/server/loadedServerMods. Both now
+   * 404, and since any non-200 throws, a healthy 4.1.5 server was reported unreachable with
+   * "Is the server running?" — against a server that was running, answering, and had the
+   * companion loaded. Measured on a live 4.1.5 host.
+   *
+   * The fallback is /singleplayer/settings/version, which exists on both lines but answers a
+   * LABEL rather than a version. Everything downstream compares bare numbers, so the label has
+   * to be reduced to one or a 4.1.5 server matches no constraint at all.
+   */
+  check("the 4.1 label yields a bare semver", parseSptVersionText("SPT 4.1.5 - 7d7add"), "4.1.5");
+  check("as does the 4.0 one", parseSptVersionText("SPT 4.0.13 - 2891fd"), "4.0.13");
+  // What /launcher/server/version answers on 4.0, passed through untouched.
+  check("a bare version survives", parseSptVersionText("4.0.13"), "4.0.13");
+  check("and a four-part one is not truncated", parseSptVersionText("SPT 4.1.5.2 - abc"), "4.1.5.2");
+
+  // Unparseable is not the same as absent: a version we cannot read is still better evidence
+  // than none, and "unknown" is a state the callers already handle.
+  check("something unrecognised comes back as itself", parseSptVersionText("  custom build  "), "custom build");
+  check("a missing value is undefined", parseSptVersionText(undefined), undefined);
+  check("so is a non-string", parseSptVersionText({ Version: "4.1.5" }), undefined);
+  check("and so is an empty string", parseSptVersionText("   "), undefined);
 }
 
 console.log(`
