@@ -129,6 +129,9 @@ const en: Dict = {
   "conflicts.note": "File-level check — it flags overlap, it doesn't guarantee an actual incompatibility.",
 
   "forge.checkTitle": "Update check",
+  "forge.addonUpdatesTitle": "Addon updates ({count})",
+  "forge.addonBlockedTitle": "Addon updates waiting on their parent ({count})",
+  "forge.addonOf": "addon of {parent}",
   "forge.updatesAvailable": "Updates available:",
   "forge.updateNow": "Update",
   "forge.updating": "Updating...",

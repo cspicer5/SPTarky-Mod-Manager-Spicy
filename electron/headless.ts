@@ -27,6 +27,9 @@ import fs from "fs";
 import path from "path";
 import { ModInfo, ModType } from "./types";
 import { compareVersions } from "./modManager";
+// Imported rather than reimplemented: telling "present" from "replaced" is the same question the
+// main install asks, and two copies of that comparison would drift.
+import { checkAddonFiles, type InstalledAddonRecord } from "./addons";
 
 /* --------------------------------------------------------------------------
  * Detection
@@ -494,6 +497,8 @@ export function buildAddonParity(
     mergedIntoParent: boolean;
     /** The files this addon put in its parent's folder, recorded at install time. */
     parentFiles?: string[];
+    /** The same files with the size each had when it landed, so a REPLACED one can be told apart. */
+    parentFileMarks?: { path: string; bytes?: number; mtime?: number }[];
     /** The folders it produced of its own, when it did not merge. Empty for merged addons. */
     folders?: { id: string; type: ModType }[];
   }[],
@@ -593,15 +598,34 @@ export function buildAddonParity(
      * headless one that did.
      */
     const dir = headlessParentDir?.(a.parentName, a.parentType);
-    if (dir && a.parentFiles?.length) {
-      const missing = a.parentFiles.filter((rel) => !fs.existsSync(path.join(dir, ...rel.split("/"))));
-      if (missing.length) {
+    if (dir && (a.parentFileMarks?.length || a.parentFiles?.length)) {
+      /*
+       * mtime is IGNORED here, and that is not laziness. The headless client is populated by
+       * copying files across, which stamps every one with a fresh mtime — comparing them would
+       * report every synced file as replaced, a false alarm on all of them at once. Size still
+       * tells one build of a file from another, which is the actual question.
+       */
+      const states = checkAddonFiles(dir, a as InstalledAddonRecord, { ignoreMtime: true });
+      const missing = states.filter((s) => s.state === "missing");
+      const replaced = states.filter((s) => s.state === "replaced");
+      if (missing.length || replaced.length) {
+        /*
+         * Two different things with the same remedy, said apart anyway. Missing means the patch
+         * never arrived; replaced means it arrived and the parent has since been synced from a
+         * copy that never had it — the headless is running a DIFFERENT build of that file while
+         * looking perfectly healthy. Reporting the second as "missing" would be a lie about a
+         * file that is sitting right there.
+         */
+        const parts = [
+          missing.length ? `${missing.length} of ${states.length} missing` : null,
+          replaced.length ? `${replaced.length} replaced by a different build` : null
+        ].filter(Boolean);
         return {
           ...a,
           needsHeadless: true,
           parentOnHeadless,
           status: "missing-on-headless" as const,
-          detail: `"${a.parentName}" is on the headless client but this patch's files are not in it (${missing.length} of ${a.parentFiles.length} missing). Sync "${a.parentName}" again to put it back.`
+          detail: `"${a.parentName}" is on the headless client but this patch is not intact in it (${parts.join(", ")}). Sync "${a.parentName}" again to put it back.`
         };
       }
       return {

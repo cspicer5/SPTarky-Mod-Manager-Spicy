@@ -375,7 +375,8 @@ export interface InstalledAddonRecord {
   /** Range of parent versions this build declares it fits, e.g. "~2.7.0". */
   parentConstraint?: string;
   installedAt: string;
-  source: "forge" | "github" | "file";
+  /** "server" = copied byte-for-byte from another machine, the best-evidenced of the four. */
+  source: "forge" | "github" | "file" | "server";
   /** Folders that appeared. Empty when the addon merged into its parent. */
   folders: { id: string; type: ModType }[];
   /** True when nothing new appeared, so the addon lives inside its parent's folders. */
@@ -514,7 +515,19 @@ export function missingAddonFiles(parentDir: string, record: InstalledAddonRecor
  * Falls back to presence-only for records written before marks existed, and says so by returning
  * no "replaced" verdicts rather than by guessing at them.
  */
-export function checkAddonFiles(parentDir: string, record: InstalledAddonRecord): { path: string; state: AddonFileState }[] {
+export function checkAddonFiles(
+  parentDir: string,
+  record: InstalledAddonRecord,
+  /**
+   * `ignoreMtime` for a COPY of the install rather than the install itself.
+   *
+   * The headless client is populated by copying files across, which stamps every one of them
+   * with a fresh mtime by definition. Comparing mtimes there would report every synced file as
+   * replaced — a false alarm on literally all of them. Size still distinguishes one build of a
+   * file from another, which is the question being asked.
+   */
+  options: { ignoreMtime?: boolean } = {}
+): { path: string; state: AddonFileState }[] {
   const marks: AddonFileMark[] =
     record.parentFileMarks?.length
       ? record.parentFileMarks
@@ -531,7 +544,7 @@ export function checkAddonFiles(parentDir: string, record: InstalledAddonRecord)
     // No signature to compare against: an older record can only be checked for presence, and
     // claiming more than that would be inventing evidence.
     if (mark.bytes === undefined || mark.mtime === undefined) return { path: mark.path, state: "present" as const };
-    const same = st.size === mark.bytes && st.mtimeMs === mark.mtime;
+    const same = st.size === mark.bytes && (options.ignoreMtime || st.mtimeMs === mark.mtime);
     return { path: mark.path, state: same ? ("present" as const) : ("replaced" as const) };
   });
 }

@@ -1428,12 +1428,33 @@ export default function App() {
     }
 
     if (row.side === "addon") {
-      if (row.forgeAddonId === undefined) {
-        if (!options.quiet) pushToast(`"${row.name}" did not come from the catalogue, so it cannot be fetched.`, false);
-        return false;
-      }
       setInstallingFromServer(row.key);
       try {
+        /*
+         * The SERVER first, exactly as a mod row does it. Those are the bytes that machine
+         * actually runs — no catalogue lookup chose them — and it is the ONLY route for a patch
+         * that was never published on the catalogue, which most compatibility patches are not.
+         */
+        const pulled = await window.modManagerAPI.installAddonFromServer({
+          name: row.serverName ?? row.name,
+          parentName: row.parentName ?? ""
+        });
+        if (pulled.success) {
+          if (!options.quiet) pushToast(tMsg(pulled.message), true);
+          return true;
+        }
+        if (row.forgeAddonId === undefined) {
+          // Nothing to fall back TO, so the server's own reason is the answer. It names the thing
+          // to fix rather than restating that this failed.
+          if (!options.quiet) pushToast(tMsg(pulled.message), false);
+          return false;
+        }
+        /*
+         * Announced, never silent. Falling back means the files came from somewhere OTHER than
+         * the machine being matched, and a quiet change of provenance is precisely what nobody
+         * should have to discover later from the version ledger.
+         */
+        pushToast(`${tMsg(pulled.message)} Falling back to the catalogue for "${row.name}".`, false);
         const result = await window.modManagerAPI.installForgeAddon(`server-addon-${row.forgeAddonId}`, row.forgeAddonId);
         if (!options.quiet || !result.success) pushToast(tMsg(result.message), result.success);
         return result.success;
@@ -2059,6 +2080,9 @@ export default function App() {
       return;
     }
     setForgeResult(response.result);
+    // Refreshed as part of the SAME sweep, so the addon rows below are answering about the
+    // install as it is now rather than as it was when the panel was last opened.
+    await refreshAddonSuggestions();
     // A fresh check supersedes anything settled against the previous one.
     setUpdatedMods(new Map());
 
@@ -2315,6 +2339,18 @@ export default function App() {
 
   /** Updates still outstanding: has a download link, and not already done this session. */
   const pendingUpdates = (forgeResult?.updates ?? []).filter((u) => u.downloadLink && !updatedMods.has(u.name));
+
+  /*
+   * The addon half of the same sweep.
+   *
+   * "update" is the ONLY actionable status — a newer build that fits the parent you actually
+   * have. "needs-parent-update" is named but never offered: pressing a button there would
+   * install an addon built for a mod version that is not installed. The remaining statuses
+   * (no-build-for-parent, delisted, detached) are not updates at all and belong in the Addons
+   * panel, which explains them properly.
+   */
+  const addonUpdatesActionable = addonUpdates.filter((u) => u.status === "update" && u.availableVersion);
+  const addonUpdatesBlocked = addonUpdates.filter((u) => u.status === "needs-parent-update");
 
   /**
    * Updates everything outstanding, one at a time.
@@ -3140,10 +3176,50 @@ export default function App() {
                   ))}
                 </>
               )}
+              {/* Addons, in the SAME sweep. They are checked separately because the question is
+                  different — an addon is judged against its PARENT's version, not against SPT —
+                  but "what do I need to update?" is one question to the person asking it, and
+                  having half the answer behind another panel is how the addon half got ignored. */}
+              {addonUpdatesActionable.length > 0 && (
+                <>
+                  <p><strong>{t("forge.addonUpdatesTitle", { count: addonUpdatesActionable.length })}</strong></p>
+                  {addonUpdatesActionable.map((u) => (
+                    <div key={`addonup-${u.forgeAddonId ?? u.name}`} className="forge-row">
+                      <span>
+                        {u.name} <span className="mod-addon-of">{t("forge.addonOf", { parent: u.parentName })}</span>{" "}
+                        {u.installedVersion ?? "?"} → {u.availableVersion}
+                      </span>
+                      <button
+                        className="primary"
+                        disabled={addonBusy || typeof u.forgeAddonId !== "number"}
+                        onClick={() => handleInstallForgeAddon(u.forgeAddonId!)}
+                      >
+                        {t("forge.updateNow")}
+                      </button>
+                    </div>
+                  ))}
+                </>
+              )}
+              {/* Named, never offered. A newer build exists but wants a PARENT you do not have,
+                  and a button here would install something built for a mod version that is not
+                  there — the same mistake as installing an update that cannot load. */}
+              {addonUpdatesBlocked.length > 0 && (
+                <>
+                  <p><strong>{t("forge.addonBlockedTitle", { count: addonUpdatesBlocked.length })}</strong></p>
+                  {addonUpdatesBlocked.map((u) => (
+                    <p key={`addonblocked-${u.forgeAddonId ?? u.name}`}>
+                      {u.name}: {u.blockedVersion ?? "a newer build"} needs {u.parentName}{" "}
+                      {u.requiresParent ?? "a newer version"}; you have {u.parentVersion ?? "?"}.
+                    </p>
+                  ))}
+                </>
+              )}
               {forgeResult.updates.length === 0 &&
                 forgeResult.blocked.length === 0 &&
                 forgeResult.incompatible.length === 0 &&
-                forgeResult.infoOnly.length === 0 && (
+                forgeResult.infoOnly.length === 0 &&
+                addonUpdatesActionable.length === 0 &&
+                addonUpdatesBlocked.length === 0 && (
                 <p>{t("forge.allUpToDateDetailed")}</p>
               )}
               {(forgeResult.skippedByBudget?.length ?? 0) > 0 && (

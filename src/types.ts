@@ -506,7 +506,8 @@ export interface PresetAddon {
   parentName: string;
   parentType: ModType;
   parentConstraint?: string;
-  source: "forge" | "github" | "file";
+  /** "server" = copied byte-for-byte from another machine, the best-evidenced of the four. */
+  source: "forge" | "github" | "file" | "server";
   mergedIntoParent: boolean;
   folders?: { id: string; type: ModType }[];
 }
@@ -629,7 +630,8 @@ export interface InstalledAddonRecord {
   parentType: ModType;
   parentConstraint?: string;
   installedAt: string;
-  source: "forge" | "github" | "file";
+  /** "server" = copied byte-for-byte from another machine, the best-evidenced of the four. */
+  source: "forge" | "github" | "file" | "server";
   folders: { id: string; type: ModType }[];
   /** True when it has no folder of its own, so it cannot be uninstalled separately. */
   mergedIntoParent: boolean;
@@ -948,6 +950,15 @@ export interface ModManagerAPI {
   onAddonReinstallProgress: (
     callback: (p: { jobId: string; name: string; done: number; total: number }) => void
   ) => () => void;
+  /**
+   * Copies an addon from the configured server. For a MERGED addon this fetches the individual
+   * files that machine recorded as the addon's, from inside its parent's folder — which is only
+   * possible because the ledger records them. Needs no catalogue entry.
+   */
+  installAddonFromServer: (args: {
+    name: string;
+    parentName: string;
+  }) => Promise<{ success: boolean; message: string; files?: number; bytes?: number }>;
   installAddonFromFile: (
     parentName: string,
     filePath?: string

@@ -85,7 +85,8 @@ export interface PresetAddon {
   parentType: ModType;
   /** Range of PARENT versions this build declares it fits, e.g. "~2.7.0". */
   parentConstraint?: string;
-  source: "forge" | "github" | "file";
+  /** "server" = copied byte-for-byte from another machine, the best-evidenced of the four. */
+  source: "forge" | "github" | "file" | "server";
   /** True when its files live inside the parent's folder rather than its own. */
   mergedIntoParent: boolean;
   folders?: { id: string; type: ModType }[];

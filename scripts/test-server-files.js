@@ -13,7 +13,7 @@ const http = require("http");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { listServerModFiles, installModFromServer } = require(path.join(__dirname, "..", "dist-electron", "serverFiles.js"));
+const { listServerModFiles, installModFromServer, installAddonFromServer } = require(path.join(__dirname, "..", "dist-electron", "serverFiles.js"));
 
 let failures = 0;
 const check = (label, actual, expected) => {
@@ -145,6 +145,76 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "sptarky-pull-"));
     check("that is reported as-is", result.success, false);
     check("in the server's own words", result.message, "No such mod on this server.");
     state.listError = null;
+  }
+
+  console.log("\npulling an ADDON that merged into its parent");
+  {
+    // The half that could not exist until addons recorded their files. A merged addon has no
+    // folder, so "fetch the addon" means fetching the individual files inside its PARENT that
+    // the serving machine recorded as its.
+    const parentDir = path.join(tmp, "BepInEx", "plugins", "TheParent");
+    fs.mkdirSync(path.join(parentDir, "Assets"), { recursive: true });
+    fs.writeFileSync(path.join(parentDir, "parent.dll"), "the parent's own file");
+    fs.writeFileSync(path.join(parentDir, "Assets", "shipped.bundle"), "parent content");
+
+    state.files = {
+      "parent.dll": Buffer.from("the parent's own file"),
+      "Assets/shipped.bundle": Buffer.from("PATCHED by the addon"),
+      "Assets/patch.dll": Buffer.from("new from the addon")
+    };
+
+    const addon = {
+      name: "The Patch",
+      parentName: "TheParent",
+      parentHalf: "client",
+      mergedIntoParent: true,
+      parentFiles: ["Assets/shipped.bundle", "Assets/patch.dll"],
+      folders: []
+    };
+    const targetRootFor = (half) =>
+      half === "server" ? path.join(tmp, "user", "mods") : path.join(tmp, "BepInEx", "plugins");
+
+    const r = await installAddonFromServer(origin, addon, parentDir, targetRootFor);
+    check("the pull succeeds", r.success, true);
+    check("the added file landed", fs.existsSync(path.join(parentDir, "Assets", "patch.dll")), true);
+    // The case that makes this worth having: a patch that OVERWRITES what the parent ships.
+    check("the overwritten file was replaced", fs.readFileSync(path.join(parentDir, "Assets", "shipped.bundle"), "utf-8"), "PATCHED by the addon");
+    // Only the addon's files. The parent must survive having a patch applied to it.
+    check("a parent file the addon does not own is untouched", fs.readFileSync(path.join(parentDir, "parent.dll"), "utf-8"), "the parent's own file");
+    check("no staging folder left behind", fs.existsSync(path.join(parentDir, ".sptarky-addon-pull")), false);
+  }
+
+  console.log("\nan addon pull refuses rather than half-applying");
+  {
+    const parentDir = path.join(tmp, "BepInEx", "plugins", "TheParent");
+    const targetRootFor = () => path.join(tmp, "BepInEx", "plugins");
+    const base = { name: "The Patch", parentName: "TheParent", parentHalf: "client", mergedIntoParent: true, folders: [] };
+
+    // These paths are chosen by ANOTHER machine, so they are input rather than data.
+    const escape = await installAddonFromServer(origin, { ...base, parentFiles: ["../../../evil.txt"] }, parentDir, targetRootFor);
+    check("a traversing path is refused", escape.success, false);
+    check("and nothing was written outside the parent", fs.existsSync(path.join(tmp, "evil.txt")), false);
+
+    // Empty is not "it touched nothing" — it is "that machine cannot say", and the fix is there.
+    const empty = await installAddonFromServer(origin, { ...base, parentFiles: [] }, parentDir, targetRootFor);
+    check("an empty file list is refused", empty.success, false);
+    check("and says the record is the problem", /no record of which files/.test(empty.message), true);
+
+    // A recorded file the server no longer has means its copy is not the one its ledger
+    // describes. Applying the rest would produce a patch that exists on neither machine.
+    state.files = { "Assets/patch.dll": Buffer.from("new from the addon") };
+    const partial = await installAddonFromServer(
+      origin,
+      { ...base, parentFiles: ["Assets/patch.dll", "Assets/vanished.dll"] },
+      parentDir,
+      targetRootFor
+    );
+    check("a file the server has lost refuses the whole pull", partial.success, false);
+    check("and nothing was applied", fs.existsSync(path.join(parentDir, "Assets", "vanished.dll")), false);
+
+    const noParent = await installAddonFromServer(origin, { ...base, parentFiles: ["a.dll"] }, path.join(tmp, "NotInstalled"), targetRootFor);
+    check("a parent that is not installed here is refused", noParent.success, false);
+    check("and says to install it first", /Install it first/.test(noParent.message), true);
   }
 
   server.close();

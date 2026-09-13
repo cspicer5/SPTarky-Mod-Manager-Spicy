@@ -71,7 +71,7 @@ import {
   HeadlessClass
 } from "./headless";
 import { fetchServerSnapshot, buildServerSyncReport, normaliseServerUrl } from "./sptServer";
-import { installModFromServer } from "./serverFiles";
+import { installModFromServer, installAddonFromServer } from "./serverFiles";
 import {
   readInstallState,
   installCompanion,
@@ -389,6 +389,7 @@ ipcMain.handle("get-headless-view", () => {
           // Carried through so a merged addon can be CHECKED on the headless side rather than
           // assumed present because its parent is. Same file list the main install already uses.
           parentFiles: r.parentFiles,
+          parentFileMarks: r.parentFileMarks,
           folders: r.folders
         })),
         mainMods,
@@ -1234,7 +1235,7 @@ function finishAddonInstall(
   parent: ModInfo,
   roots: { clientRoot: string; serverRoot: string },
   ctx: AddonInstallContext,
-  record: { name: string; version?: string; source: "forge" | "github" | "file"; forgeAddonId?: number; parentConstraint?: string }
+  record: { name: string; version?: string; source: "forge" | "github" | "file" | "server"; forgeAddonId?: number; parentConstraint?: string }
 ): { added: { id: string; type: ModType }[]; mergedIntoParent: boolean; messageSuffix: string } {
   const restored = restoreClobberedVersions(ctx.registryPath, ctx.versionsBefore);
 
@@ -1646,6 +1647,98 @@ async function reinstallLedgerAddon(
   return installCataloguedAddon(jobId, record.forgeAddonId, record.version);
 }
 
+
+/**
+ * Copies an addon from the server into this install.
+ *
+ * The half of addon support that could not exist until addons recorded their files. A merged
+ * addon has no folder of its own, so "fetch the addon" has no meaning on its own — the only way
+ * to ask for one is to know which of its parent's files belong to it, and that list is precisely
+ * what the ledger on the serving machine holds.
+ *
+ * Goes through beginAddonInstall/finishAddonInstall like every other install path, so it records
+ * its own file marks, re-fingerprints the parent and protects the parent's version for free
+ * rather than reimplementing three things that have each been got wrong once already.
+ */
+ipcMain.handle(
+  "install-addon-from-server",
+  async (_event, args: { name: string; parentName: string }) => {
+    const serverUrl = store.get("serverUrl");
+    if (!serverUrl) return { success: false, message: "No SPT server is configured." };
+    const roots = rootsFor("main");
+    if (!roots) return { success: false, message: "No SPT instance configured." };
+
+    const snapshot = await fetchServerSnapshot(serverUrl);
+    if (!snapshot.reachable) return { success: false, message: snapshot.error ?? "The server could not be reached." };
+
+    // Undefined means the server was never ASKED — no companion, or one too old to answer — and
+    // that is not the same as "it has no addons". Saying so is the difference between a fixable
+    // problem and an apparently empty list.
+    if (!snapshot.addons) {
+      return {
+        success: false,
+        message: "That server cannot report its addons. It needs the SPTarky companion installed to answer for them."
+      };
+    }
+
+    const addon = snapshot.addons.find(
+      (a) => a.name.toLowerCase() === args.name.toLowerCase() && a.parentName.toLowerCase() === args.parentName.toLowerCase()
+    );
+    if (!addon) return { success: false, message: `The server no longer reports "${args.name}".` };
+
+    const parentType: ModType = addon.parentType ?? "client";
+    const parent = scanInstance("main").find(
+      (m) => m.id.toLowerCase() === addon.parentName.toLowerCase() && m.type === parentType
+    );
+    if (!parent) {
+      return { success: false, message: `"${addon.parentName}" is not installed here, so there is nowhere to put "${addon.name}". Install it first.` };
+    }
+
+    // Absent and empty are told apart on purpose. Absent is a ledger too old to have recorded
+    // file lists; empty is a record that looked and found none. Only the first is worth telling
+    // someone they can fix by reinstalling the addon over there.
+    if (addon.mergedIntoParent !== false && addon.parentFiles === undefined) {
+      return {
+        success: false,
+        message: `The server's record of "${addon.name}" predates file tracking, so it cannot say which files are its. Reinstalling that addon on the server would record them.`
+      };
+    }
+
+    const ctx = beginAddonInstall(parent, roots);
+    const result = await installAddonFromServer(
+      serverUrl,
+      {
+        name: addon.name,
+        parentName: addon.parentName,
+        parentHalf: parentType === "server" ? "server" : "client",
+        mergedIntoParent: addon.mergedIntoParent !== false,
+        parentFiles: addon.parentFiles ?? [],
+        folders: (addon.folders ?? []).map((f) => ({ id: f.id, half: f.type === "server" ? ("server" as const) : ("client" as const) }))
+      },
+      parentFolderPath(parent, roots),
+      (half) => (half === "server" ? path.join(roots.serverRoot, "user", "mods") : path.join(roots.clientRoot, "BepInEx", "plugins")),
+      {
+        onProgress: (done, total, bytes) => {
+          mainWindow?.webContents.send("server-pull-progress", { modId: addon.name, done, total, bytes });
+        }
+      }
+    );
+    if (!result.success) return result;
+
+    const done = finishAddonInstall(parent, roots, ctx, {
+      name: addon.name,
+      // The version the SERVER recorded, not one inferred from the files. No lookup chose this
+      // build, so there is nothing for a lookup to have got wrong.
+      version: addon.version,
+      source: "server",
+      forgeAddonId: addon.forgeAddonId,
+      parentConstraint: addon.parentConstraint
+    });
+
+    return { ...result, message: `${result.message}${done.messageSuffix}` };
+  }
+);
+
 ipcMain.handle(
   "reinstall-addon",
   async (_event, jobId: string, match: { forgeAddonId?: number; name?: string; parentName?: string }) => {
@@ -2017,6 +2110,7 @@ ipcMain.handle("sync-all-to-headless", (_event) => {
       parentType: r.parentType,
       mergedIntoParent: r.mergedIntoParent,
       parentFiles: r.parentFiles,
+      parentFileMarks: r.parentFileMarks,
       folders: r.folders
     })),
     mainMods,

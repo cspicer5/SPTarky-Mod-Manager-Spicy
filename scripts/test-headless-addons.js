@@ -98,6 +98,47 @@ try {
     check("and is still needed there", by["Solo Fika Patch"].needsHeadless, true);
   }
 
+  console.log("\na patch the headless client has a DIFFERENT build of");
+  {
+    /*
+     * Presence alone cannot see this one. Sync the parent from a copy that never had the patch
+     * and the patched file is OVERWRITTEN rather than deleted — it is still sitting there, so
+     * every existence check calls the addon healthy while the headless runs unpatched content.
+     *
+     * mtime is deliberately not compared: syncing copies files and stamps them fresh, so it
+     * would report every synced file as replaced. Size is what distinguishes the builds.
+     */
+    const mainMods = [mod("BigBrain"), mod("SAIN")];
+    const headlessMods = [mod("BigBrain"), mod("SAIN")];
+    place("BigBrain", ["BigBrain.dll", "compat/patch.dll"]);
+    place("SAIN", ["SAIN.dll", "compat/patch.dll"]);
+
+    const headlessDirs = dirFor(headlessMods);
+    // BigBrain's copy is the addon's build; SAIN's is a different size, as a reinstall would leave it.
+    fs.writeFileSync(path.join(headlessDirs("BigBrain", "client"), "compat", "patch.dll"), "the addon build");
+    fs.writeFileSync(path.join(headlessDirs("SAIN", "client"), "compat", "patch.dll"), "a completely different build, longer");
+
+    const marks = [{ path: "compat/patch.dll", bytes: "the addon build".length, mtime: 1 }];
+    const parity = buildAddonParity(
+      [
+        { name: "BB Patch", parentName: "BigBrain", parentType: "client", mergedIntoParent: true, parentFiles: ["compat/patch.dll"], parentFileMarks: marks },
+        { name: "SAIN Patch", parentName: "SAIN", parentType: "client", mergedIntoParent: true, parentFiles: ["compat/patch.dll"], parentFileMarks: marks }
+      ],
+      mainMods,
+      headlessMods,
+      headlessDirs
+    );
+    const by = Object.fromEntries(parity.map((p) => [p.name, p]));
+
+    // Same size as recorded, different mtime because it was copied: still healthy.
+    check("a matching build is confirmed present", by["BB Patch"].status, "carried-with-parent");
+    check("despite the copy having a fresh mtime", by["BB Patch"].verified, true);
+
+    check("a different build is caught", by["SAIN Patch"].status, "missing-on-headless");
+    // Called what it is. Reporting this as "missing" would be a lie about a file sitting there.
+    check("and is described as replaced, not missing", /replaced by a different build/.test(by["SAIN Patch"].detail), true);
+  }
+
   console.log("\na parent disabled on the headless side");
   {
     // Disabled means plugins.disabled/, not gone. Looking in plugins/ would report every patch

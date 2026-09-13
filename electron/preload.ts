@@ -96,6 +96,8 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
     ipcRenderer.on("addon-reinstall-progress", handler);
     return () => ipcRenderer.removeListener("addon-reinstall-progress", handler);
   },
+  installAddonFromServer: (args: { name: string; parentName: string }) =>
+    ipcRenderer.invoke("install-addon-from-server", args),
   installAddonFromFile: (parentName: string, filePath?: string) =>
     ipcRenderer.invoke("install-addon-from-file", parentName, filePath),
   installAddonFromGithub: (args: {

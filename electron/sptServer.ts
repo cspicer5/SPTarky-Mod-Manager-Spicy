@@ -27,7 +27,7 @@
 import https from "https";
 import http from "http";
 import zlib from "zlib";
-import { ModInfo } from "./types";
+import { ModInfo, ModType } from "./types";
 import { compareVersions } from "./modManager";
 import {
   readCapabilities,
@@ -101,15 +101,32 @@ export interface SptServerSnapshot {
 /**
  * An addon as the remote machine's ledger recorded it.
  *
- * Deliberately a narrow read of `InstalledAddonRecord` rather than the whole type: only these
- * four fields are compared, and accepting the rest would tie this to a ledger shape that belongs
- * to the other machine's version of the app.
+ * Still a narrow read of `InstalledAddonRecord` rather than the whole type — accepting the rest
+ * would tie this to a ledger shape belonging to the other machine's version of the app. It is
+ * wider than it was because COPYING an addon needs more than comparing one does: a merged addon
+ * has no folder, so the only way to fetch it is to know which of its parent's files are its.
+ * Every field below is either compared or needed to pull the thing.
  */
 export interface RemoteAddon {
   forgeAddonId?: number;
   name: string;
   version?: string;
   parentName: string;
+  /** Which half the parent is, so the file routes can be addressed. Defaults to client. */
+  parentType?: ModType;
+  parentConstraint?: string;
+  /** True when it unpacked into its parent rather than producing folders of its own. */
+  mergedIntoParent?: boolean;
+  /**
+   * The files it put inside its parent's folder, relative to that folder.
+   *
+   * An EMPTY array and an absent one mean different things and are kept apart: absent is a ledger
+   * too old to have recorded them, empty is a record that tried and found none. Both leave a
+   * merged addon uncopyable, but only one of them is worth telling someone to fix.
+   */
+  parentFiles?: string[];
+  /** Folders of its own, for an addon that did not merge. */
+  folders?: { id: string; type: ModType }[];
 }
 
 /** Normalises whatever the user typed into a base URL. Defaults to HTTPS — see above. */
@@ -413,7 +430,19 @@ function readRemoteAddons(entries: unknown[]): RemoteAddon[] {
       forgeAddonId: typeof e.forgeAddonId === "number" ? e.forgeAddonId : undefined,
       name: e.name,
       version: typeof e.version === "string" ? e.version : undefined,
-      parentName: e.parentName
+      parentName: e.parentName,
+      parentType: e.parentType === "server" ? "server" : "client",
+      parentConstraint: typeof e.parentConstraint === "string" ? e.parentConstraint : undefined,
+      mergedIntoParent: typeof e.mergedIntoParent === "boolean" ? e.mergedIntoParent : undefined,
+      // Left UNDEFINED when absent rather than defaulted to []: an old ledger that never recorded
+      // file lists must not be reported as an addon that touched nothing.
+      parentFiles: Array.isArray(e.parentFiles) ? e.parentFiles.filter((x): x is string => typeof x === "string") : undefined,
+      folders: Array.isArray(e.folders)
+        ? e.folders
+            .filter((f): f is Record<string, unknown> => !!f && typeof f === "object")
+            .filter((f) => typeof f.id === "string")
+            .map((f) => ({ id: f.id as string, type: f.type === "server" ? ("server" as const) : ("client" as const) }))
+        : undefined
     });
   }
   return out;
@@ -1199,11 +1228,26 @@ export function buildServerSyncReport(
         row.issue = "missing-locally";
         row.detail = `The server has this patch for ${remote.parentName} and you do not.`;
         counts.needInstalling++;
-        // An addon is fetched by its catalogue id, never by name: it is not a mod in its own
-        // right, and a name search would land on the parent or on nothing.
-        row.installable = remote.forgeAddonId !== undefined;
+        /*
+         * Two routes, and the server is the better one.
+         *
+         * By catalogue id an addon is fetched as itself — never by name, since it is not a mod in
+         * its own right and a name search would land on the parent or on nothing. But the SERVER
+         * can hand over the exact bytes it runs, and that works for a patch which was never on
+         * the catalogue at all, which is most of the interesting ones.
+         *
+         * A merged addon can only be served if that machine recorded WHICH of its parent's files
+         * are the addon's. An empty or absent list is not "it touched nothing" — it is "that
+         * machine cannot say", and the fix lives over there.
+         */
+        const serverCanServe =
+          remote.mergedIntoParent === false ? (remote.folders?.length ?? 0) > 0 : (remote.parentFiles?.length ?? 0) > 0;
+        row.installable = serverCanServe || remote.forgeAddonId !== undefined;
         if (!row.installable) {
-          row.notInstallableReason = `This addon was not installed from the catalogue on the server, so there is nothing to fetch. Get it from ${remote.parentName}'s page and install it as an addon.`;
+          row.notInstallableReason =
+            remote.forgeAddonId === undefined && remote.parentFiles === undefined
+              ? `The server's record of this addon predates file tracking, so it cannot say which of ${remote.parentName}'s files are its, and it did not come from the catalogue either. Reinstalling it on the server would record them.`
+              : `This addon was not installed from the catalogue on the server, so there is nothing to fetch. Get it from ${remote.parentName}'s page and install it as an addon.`;
         }
       } else if (!local.version || !remote.version) {
         row.issue = "unknown-local-version";
