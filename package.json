@@ -1,6 +1,6 @@
 {
   "name": "sptarky-mod-manager-spicy",
-  "version": "1.5.0-dev.2",
+  "version": "1.5.0-dev.3",
   "description": "A Mod Manager for Single Player Tarkov (SPT). Fork of SPT Mod Manager by Matheus Guida (TioEmir).",
   "license": "MIT",
   "author": "cspicer5",
@@ -89,7 +89,8 @@
       "data/headless-rules.json",
       "data/forge-directory.json",
       "data/forge-addons.json",
-      "companion/dist/SptarkyCompanion.dll"
+      "companion/dist/spt4.0/SptarkyCompanion.dll",
+      "companion/dist/spt4.1/SptarkyCompanion.dll"
     ],
     "asarUnpack": [
       "node_modules/7zip-bin/**/*"
