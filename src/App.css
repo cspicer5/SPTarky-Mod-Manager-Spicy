@@ -1721,3 +1721,17 @@ header {
 .companion-row {
   align-items: flex-start;
 }
+
+/* An addon that installed its own folder. Without this it reads as an ordinary mod in the list,
+   which is exactly how ORBIT's Fika addon (Orbit.Fika) came to be treated as one — including by
+   the update check, which can only answer for mods. Faint on purpose: it is context for the row,
+   not a status. */
+.mod-addon-of {
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+}

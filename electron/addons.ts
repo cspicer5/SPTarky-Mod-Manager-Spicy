@@ -248,6 +248,35 @@ export function pickAddonVersionForParent(
   return silent ? { version: silent, fit: "unconstrained" } : undefined;
 }
 
+/**
+ * Which build to install when a SPECIFIC one is wanted — a reinstall, not a fresh install.
+ *
+ * Separate from pickAddonVersionForParent because they want opposite things, and conflating them
+ * is a mistake this codebase has now made twice: preset sync installed the newest build instead
+ * of the one the preset recorded, and "Match server" fetched the newest instead of the server's,
+ * both because no target version ever reached the resolver. A reinstall that silently upgrades
+ * you is the same bug a third time.
+ *
+ * `restored` says which happened, so the caller can tell the user it could not put back the exact
+ * build rather than quietly handing them a different one.
+ */
+export function pickAddonVersionToRestore(
+  addon: ForgeAddon,
+  parentVersion: string | undefined,
+  wantVersion: string | undefined
+): { version: AddonVersion; fit: "declared" | "unconstrained"; restored: boolean } | undefined {
+  if (wantVersion) {
+    // Compared NUMERICALLY. "1.0" and "1.0.0" are one build written two ways, and a string
+    // compare here would decline to restore the very version it was handed.
+    const exact = addon.versions.find((v) => v.link && v.version && compareVersions(v.version, wantVersion) === 0);
+    if (exact) return { version: exact, fit: "declared", restored: true };
+  }
+  // The recorded build is gone from the catalogue, or none was named. Fall back to what fits the
+  // parent — but say so, because it is not what was asked for.
+  const fitting = pickAddonVersionForParent(addon, parentVersion);
+  return fitting ? { ...fitting, restored: false } : undefined;
+}
+
 /** Constraints that say "any version", which is the same as saying nothing. */
 function declaresNoParentVersion(constraint: string | undefined): boolean {
   const trimmed = constraint?.trim().toLowerCase() ?? "";
@@ -364,6 +393,31 @@ export interface InstalledAddonRecord {
    * Absent on records written before this existed, which fall back to the old rule.
    */
   parentFiles?: string[];
+
+  /**
+   * The same contribution, but recorded as ADDED-OR-CHANGED files carrying the size and mtime
+   * each had when the addon wrote it.
+   *
+   * Two things `parentFiles` cannot do, both of which bit on the reference server:
+   *
+   * 1. It only ever listed files that were NEW, so an addon that overwrites something its parent
+   *    already ships recorded nothing at all. Seven of eight addons there had an empty list, and
+   *    the file check every one of them was supposed to get never ran.
+   * 2. Presence alone cannot see a patch being taken back. An overwritten file exists before and
+   *    after, so once the parent is reinstalled over the top the path is still there and the
+   *    addon reads as healthy while its changes are gone.
+   *
+   * Absent on older records, which fall back to presence-only rather than inventing a signature.
+   */
+  parentFileMarks?: AddonFileMark[];
+}
+
+/** One file an addon put into its parent's folder, and what it looked like when it landed. */
+export interface AddonFileMark {
+  path: string;
+  /** Absent on a record migrated from `parentFiles`, where only presence can be checked. */
+  bytes?: number;
+  mtime?: number;
 }
 
 /**
@@ -392,6 +446,52 @@ export function listFilesRelative(root: string): string[] {
 }
 
 /**
+ * Every file under a folder with the stat signature it had at that moment.
+ *
+ * Stat-only, for the same reason <see cref="ModFingerprint"/> is: the largest parents here ship
+ * multi-gigabyte Unity bundles, and hashing them on every addon install would make installing
+ * one unusable. Size plus mtime catches a file being rewritten, which is the case that matters.
+ */
+export function snapshotFolderFiles(root: string): Map<string, { bytes: number; mtime: number }> {
+  const out = new Map<string, { bytes: number; mtime: number }>();
+  for (const rel of listFilesRelative(root)) {
+    try {
+      const st = fs.statSync(path.join(root, ...rel.split("/")));
+      out.set(rel, { bytes: st.size, mtime: st.mtimeMs });
+    } catch {
+      /* vanished between listing and stat — treated as not present */
+    }
+  }
+  return out;
+}
+
+/**
+ * What an addon contributed to its parent's folder, by comparing before with after.
+ *
+ * ADDED OR CHANGED, not merely added, and that distinction is the whole point. The original
+ * version recorded only files that were NEW, which works for an addon that drops extra content
+ * and records NOTHING for one that overwrites what the parent already shipped. Most real patches
+ * are the second kind: on the reference server 7 of 8 addons had an empty list — "Quick-Sell",
+ * the two Borkel NVG supports, the Fika syncs — so the file check they exist for never ran for
+ * any of them, and every one silently fell back to the inference it was meant to replace.
+ */
+export function diffAddonContribution(
+  before: Map<string, { bytes: number; mtime: number }>,
+  after: Map<string, { bytes: number; mtime: number }>
+): AddonFileMark[] {
+  const marks: AddonFileMark[] = [];
+  for (const [rel, now] of after) {
+    const was = before.get(rel);
+    if (was && was.bytes === now.bytes && was.mtime === now.mtime) continue;
+    marks.push({ path: rel, bytes: now.bytes, mtime: now.mtime });
+  }
+  return marks.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** What one of an addon's files looks like now, against what it looked like when it landed. */
+export type AddonFileState = "present" | "missing" | "replaced";
+
+/**
  * Which of an addon's recorded files are no longer on disk.
  *
  * The factual replacement for the timestamp guess. An addon is gone when its files are gone —
@@ -400,6 +500,40 @@ export function listFilesRelative(root: string): string[] {
 export function missingAddonFiles(parentDir: string, record: InstalledAddonRecord): string[] {
   if (!record.parentFiles?.length) return [];
   return record.parentFiles.filter((rel) => !fs.existsSync(path.join(parentDir, ...rel.split("/"))));
+}
+
+/**
+ * The stronger check: present, gone, or there but no longer the addon's copy.
+ *
+ * Presence alone cannot answer the case this exists for. An addon that OVERWRITES a file its
+ * parent already shipped leaves that path existing both before and after — so when the parent is
+ * later reinstalled over the top, the file is still there and a presence check calls the addon
+ * healthy while the patch is gone. Comparing the stat signature recorded at install time is what
+ * separates "your patch is in place" from "the parent took it back".
+ *
+ * Falls back to presence-only for records written before marks existed, and says so by returning
+ * no "replaced" verdicts rather than by guessing at them.
+ */
+export function checkAddonFiles(parentDir: string, record: InstalledAddonRecord): { path: string; state: AddonFileState }[] {
+  const marks: AddonFileMark[] =
+    record.parentFileMarks?.length
+      ? record.parentFileMarks
+      : (record.parentFiles ?? []).map((p) => ({ path: p }));
+
+  return marks.map((mark) => {
+    const full = path.join(parentDir, ...mark.path.split("/"));
+    let st: fs.Stats;
+    try {
+      st = fs.statSync(full);
+    } catch {
+      return { path: mark.path, state: "missing" as const };
+    }
+    // No signature to compare against: an older record can only be checked for presence, and
+    // claiming more than that would be inventing evidence.
+    if (mark.bytes === undefined || mark.mtime === undefined) return { path: mark.path, state: "present" as const };
+    const same = st.size === mark.bytes && st.mtimeMs === mark.mtime;
+    return { path: mark.path, state: same ? ("present" as const) : ("replaced" as const) };
+  });
 }
 
 const addonLedgerPath = (clientRoot: string) => path.join(clientRoot, ".spt-mod-manager-addons.json");

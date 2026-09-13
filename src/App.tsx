@@ -958,6 +958,14 @@ export default function App() {
   const [addonUpdates, setAddonUpdates] = useState<AddonUpdateRow[]>([]);
   const [addonsScanned, setAddonsScanned] = useState(false);
   const [addonBusy, setAddonBusy] = useState(false);
+  /* Reinstalling every addon runs them one at a time — several share a parent, and two at once
+     would each claim the other's files — so it is slow enough to need saying what it is on. */
+  const [addonReinstallProgress, setAddonReinstallProgress] = useState<{ name: string; done: number; total: number } | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = window.modManagerAPI.onAddonReinstallProgress(setAddonReinstallProgress);
+    return unsubscribe;
+  }, []);
 
   const refreshAddonSuggestions = useCallback(async () => {
     const result = await window.modManagerAPI.getAddonSuggestions();
@@ -1022,6 +1030,49 @@ export default function App() {
       }
     } finally {
       setAddonBusy(false);
+    }
+  }
+
+  /**
+   * Reinstalls one addon at the version its ledger record names.
+   *
+   * Separate from handleInstallForgeAddon even though both end at the catalogue, because they
+   * want different builds: install takes the newest that fits the parent, reinstall restores
+   * exactly what is recorded. Sharing one handler is how "reinstall" quietly becomes "update".
+   */
+  async function handleReinstallAddon(record: InstalledAddonRecord) {
+    setAddonBusy(true);
+    try {
+      const result = await window.modManagerAPI.reinstallAddon(`addon-reinstall-${record.forgeAddonId ?? record.name}`, {
+        forgeAddonId: record.forgeAddonId,
+        name: record.name,
+        parentName: record.parentName
+      });
+      pushToast(tMsg(result.message), result.success);
+      if (result.success) {
+        await refreshMods();
+        await refreshAddonSuggestions();
+      }
+    } finally {
+      setAddonBusy(false);
+    }
+  }
+
+  async function handleReinstallAllAddons() {
+    setAddonBusy(true);
+    setAddonReinstallProgress(null);
+    try {
+      const result = await window.modManagerAPI.reinstallAllAddons("addon-reinstall-all");
+      pushToast(tMsg(result.message), result.success);
+      // Named, not just counted. A skip and a failure have different fixes, and burying either
+      // in a total is how someone concludes everything worked.
+      for (const s of result.skipped ?? []) pushToast(s.reason, false);
+      for (const fa of result.failed ?? []) pushToast(`${fa.name}: ${fa.reason}`, false);
+      await refreshMods();
+      await refreshAddonSuggestions();
+    } finally {
+      setAddonBusy(false);
+      setAddonReinstallProgress(null);
     }
   }
 
@@ -1983,7 +2034,12 @@ export default function App() {
     }
     setCheckingForgeUpdates(true);
     setForgeError(null);
-    const payload = mods.map((m) => ({
+    // Addons are deliberately NOT asked about here. An addon is judged against its PARENT's
+    // version, not the SPT version, and it lives in the addon catalogue rather than the mod one —
+    // so looking one up as a mod either finds nothing or, worse, matches something else with a
+    // similar name. ORBIT's Fika addon installs its own folder (Orbit.Fika), which made it
+    // indistinguishable from a mod here. Addon updates come from checkAddonUpdates instead.
+    const payload = mods.filter((m) => !m.addonOf).map((m) => ({
       name: m.name,
       originalName: m.originalName,
       version: m.version,
@@ -2034,7 +2090,8 @@ export default function App() {
     const newMods = updatedMods.filter((m) => !previousKeys.has(selectionKey(m)));
     if (newMods.length === 0) return;
 
-    const payload = newMods.map((m) => ({
+    // Same exclusion as above: an addon is not a mod the catalogue can answer about.
+    const payload = newMods.filter((m) => !m.addonOf).map((m) => ({
       name: m.name,
       originalName: m.originalName,
       version: m.version,
@@ -3185,6 +3242,9 @@ export default function App() {
               updates={addonUpdates}
               onForgetAddon={handleForgetAddon}
               onInstallForgeAddon={handleInstallForgeAddon}
+              onReinstallAddon={handleReinstallAddon}
+              onReinstallAll={handleReinstallAllAddons}
+              reinstallProgress={addonReinstallProgress}
               onInstallFromFile={handleInstallAddonFromFile}
               onDetectLinks={handleDetectAddonLinks}
               onSetParent={handleSetAddonParent}
@@ -3912,6 +3972,16 @@ function ModList({
               )}
               <div className="mod-meta">
                 <span className={`type-badge type-${mod.type}`}>{mod.type}</span>
+                {/* An addon that installed its own folder is otherwise indistinguishable from a
+                    mod in this list, and that is how ORBIT's Fika addon came to be treated as
+                    one. What it attaches to travels with it. It is also left out of the mod
+                    update check on purpose: an addon is judged against its PARENT's version,
+                    not against SPT, so the mod catalogue has no answer for it. */}
+                {mod.addonOf && (
+                  <span className="mod-addon-of" title={`An addon of ${mod.addonOf}. Its updates are checked against that parent, in the Addons panel.`}>
+                    addon of {mod.addonOf}
+                  </span>
+                )}
                 <span className={`status-chip ${mod.enabled ? "status-chip-on" : "status-chip-off"}`}>
                   {mod.enabled ? t("modlist.statusActive") : t("modlist.statusDisabled")}
                 </span>

@@ -88,6 +88,14 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   // No version argument: which build fits is a function of the PARENT's installed version,
   // and only the main process knows that.
   installForgeAddon: (jobId: string, addonId: number) => ipcRenderer.invoke("install-forge-addon", jobId, addonId),
+  reinstallAddon: (jobId: string, match: { forgeAddonId?: number; name?: string; parentName?: string }) =>
+    ipcRenderer.invoke("reinstall-addon", jobId, match),
+  reinstallAllAddons: (jobId: string) => ipcRenderer.invoke("reinstall-all-addons", jobId),
+  onAddonReinstallProgress: (callback: (p: unknown) => void) => {
+    const handler = (_e: unknown, p: unknown) => callback(p);
+    ipcRenderer.on("addon-reinstall-progress", handler);
+    return () => ipcRenderer.removeListener("addon-reinstall-progress", handler);
+  },
   installAddonFromFile: (parentName: string, filePath?: string) =>
     ipcRenderer.invoke("install-addon-from-file", parentName, filePath),
   installAddonFromGithub: (args: {

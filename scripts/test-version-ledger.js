@@ -13,7 +13,8 @@ const path = require("path");
 const AdmZip = require(path.join(__dirname, "..", "node_modules", "adm-zip"));
 
 const dist = path.join(__dirname, "..", "dist-electron");
-const { installModFromArchive, scanMods } = require(path.join(dist, "modManager.js"));
+const { installModFromArchive, scanMods, refreshFingerprint } = require(path.join(dist, "modManager.js"));
+const { listFilesRelative, missingAddonFiles } = require(path.join(dist, "addons.js"));
 
 let failures = 0;
 const check = (label, actual, expected) => {
@@ -130,6 +131,54 @@ const other = scanMods(INSTALL, INSTALL).find((m) => m.id === "SomeClientMod");
 // rather than being re-read for ever.
 check("falls back to what it declared at install", other?.version, "1.2.3");
 check("origin recorded as declared-at-install", other?.versionOrigin, "declared-at-install");
+
+console.log("\na merged addon lands inside its parent, and the parent must survive it");
+{
+  // An addon that merges leaves its files INSIDE the parent's folder, changing the parent's
+  // stat fingerprint — so the ledger decides its record no longer describes what is on disk and
+  // downgrades a perfectly good version to `stale-record`. Measured on the reference install:
+  // installing four addons left ManimalIcebreaker and SAIN stale, both at the right version.
+  //
+  // The re-fingerprint that fixes it ran in the CATALOGUE install path only. Installing an addon
+  // from a local archive or a GitHub release skipped it, so the mod being patched quietly
+  // stopped being trusted through two of the three doors. All three now share one helper, and
+  // this pins what that helper has to achieve.
+  const zip = new AdmZip();
+  zip.addFile("user/mods/AddonParent/package.json", Buffer.from(JSON.stringify({ name: "AddonParent", version: "0.9.0" })));
+  zip.addFile("user/mods/AddonParent/mod.js", Buffer.from("//"));
+  const parentArchive = path.join(root, "AddonParent-2.1.1.zip");
+  zip.writeZip(parentArchive);
+  await installModFromArchive(INSTALL, INSTALL, parentArchive);
+
+  const parentDir = path.join(INSTALL, "user", "mods", "AddonParent");
+  const findParent = () => scanMods(INSTALL, INSTALL).find((m) => m.id === "AddonParent");
+  check("parent installed and trusted", findParent()?.versionSource, "recorded");
+  check("at the version the archive named", findParent()?.version, "2.1.1");
+
+  const filesBefore = listFilesRelative(parentDir);
+  fs.writeFileSync(path.join(parentDir, "AddonPatch.dll"), "the addon's contribution");
+
+  check("the parent goes stale the moment the addon lands", findParent()?.versionSource, "stale-record");
+  check("and falls back to what it declares", findParent()?.version, "0.9.0");
+
+  check("re-fingerprinting reports success", refreshFingerprint(INSTALL, "AddonParent", "server", parentDir), true);
+  check("the parent is trusted again", findParent()?.versionSource, "recorded");
+  // ONLY the fingerprint was refreshed. The parent did not change version, so everything the
+  // ledger knew about it is still true and has to survive.
+  check("keeping the version it actually had", findParent()?.version, "2.1.1");
+  check("and its origin", findParent()?.versionOrigin, "archive-name");
+
+  // What the addon contributed is knowable by DIFFERENCE — which is what turns "is that addon
+  // still there?" into a matter of looking, instead of reasoning about install timestamps.
+  const contributed = listFilesRelative(parentDir).filter((f) => !filesBefore.includes(f));
+  check("the addon's file is identified by difference", contributed.join(","), "AddonPatch.dll");
+  check("and is seen as present", missingAddonFiles(parentDir, { parentFiles: contributed }).length, 0);
+
+  // The case the file list exists for: the parent gets reinstalled over the top and silently
+  // takes the patch with it. Looking finds that; a timestamp cannot.
+  fs.rmSync(path.join(parentDir, "AddonPatch.dll"));
+  check("once clobbered, it is reported missing", missingAddonFiles(parentDir, { parentFiles: contributed }).join(","), "AddonPatch.dll");
+}
 
 fs.rmSync(root, { recursive: true, force: true });
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

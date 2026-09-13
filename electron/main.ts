@@ -31,6 +31,7 @@ import {
   clearManualForgeMatch,
   resolveModRef,
   refreshFingerprint,
+  compareVersions,
   SERVER_MODS_DIR,
   CLIENT_PLUGINS_DIR,
   CLIENT_PLUGINS_DISABLED_DIR,
@@ -75,6 +76,7 @@ import {
   readInstallState,
   installCompanion,
   removeCompanion,
+  companionLineFor,
   COMPANION_DLL,
   BUNDLED_COMPANION_VERSION
 } from "./companionInstall";
@@ -135,11 +137,15 @@ import {
   isAddonCatalogueLive,
   suggestAddons,
   pickAddonVersionForParent,
+  pickAddonVersionToRestore,
   detectAddonLinks,
   findKnownIntegrations,
   markInstalledAsAddon,
+  snapshotFolderFiles,
+  diffAddonContribution,
   clearAddonMark,
   loadAddonLedger,
+  type InstalledAddonRecord,
   recordAddonInstall,
   forgetAddon,
   snapshotVersions,
@@ -1188,6 +1194,110 @@ function parentFolderPath(parent: { id: string; type: ModType }, roots: { client
 }
 
 /**
+ * What an addon install has to capture BEFORE it runs, and the bookkeeping it owes afterwards.
+ *
+ * In one place because there are THREE install paths — catalogue, local archive, GitHub release
+ * — and they carried three copies of this sequence. The copies drifted exactly where you would
+ * expect: `parentFiles` reached all three, but the parent re-fingerprint reached only the
+ * catalogue one. So installing an addon from a file or from GitHub left the mod it patched
+ * reading `stale-record` and falling back to whatever that mod declares about itself — the guess
+ * the ledger exists to replace, arriving through the two doors nobody checked.
+ *
+ * A fourth path is a matter of time. It gets this for free.
+ */
+interface AddonInstallContext {
+  registryPath: string;
+  parentDir: string;
+  before: Set<string>;
+  versionsBefore: ReturnType<typeof snapshotVersions>;
+  /** Path -> stat signature, so the diff can see files CHANGED as well as files added. */
+  parentFilesBefore: Map<string, { bytes: number; mtime: number }>;
+}
+
+function beginAddonInstall(parent: ModInfo, roots: { clientRoot: string; serverRoot: string }): AddonInstallContext {
+  const registryPath = path.join(roots.clientRoot, ".spt-mod-manager-registry.json");
+  // The parent's folder as it stands NOW. Diffed after the install to learn exactly which files
+  // this addon contributed, so whether it is still installed later is a matter of looking.
+  const parentDir = parentFolderPath(parent, roots);
+  return {
+    registryPath,
+    parentDir,
+    before: new Set(scanInstance("main").map((m) => `${m.type}:${m.id}`)),
+    // Taken so the addon cannot relabel the mod it patches. Installing the CAG BRNVG patch
+    // (v1.0.0) into Borkel's RNVG rewrote that mod's recorded version from 2.1.1 to 1.0.0.
+    versionsBefore: snapshotVersions(registryPath),
+    parentFilesBefore: snapshotFolderFiles(parentDir)
+  };
+}
+
+function finishAddonInstall(
+  parent: ModInfo,
+  roots: { clientRoot: string; serverRoot: string },
+  ctx: AddonInstallContext,
+  record: { name: string; version?: string; source: "forge" | "github" | "file"; forgeAddonId?: number; parentConstraint?: string }
+): { added: { id: string; type: ModType }[]; mergedIntoParent: boolean; messageSuffix: string } {
+  const restored = restoreClobberedVersions(ctx.registryPath, ctx.versionsBefore);
+
+  const added = scanInstance("main")
+    .filter((m) => !ctx.before.has(`${m.type}:${m.id}`))
+    .map((m) => ({ id: m.id, type: m.type }));
+  const mergedIntoParent = added.length === 0;
+  const contribution = diffAddonContribution(ctx.parentFilesBefore, snapshotFolderFiles(ctx.parentDir));
+
+  // Marks whatever the archive produced — an addon can drop a server part and a client part
+  // exactly like a mod. Frequently it produces nothing new at all, which is why the ledger
+  // record below is the one that actually matters.
+  markInstalledAsAddon(ctx.registryPath, added, {
+    parentName: parent.id,
+    parentType: parent.type,
+    forgeAddonId: record.forgeAddonId,
+    parentConstraint: record.parentConstraint
+  });
+
+  recordAddonInstall(roots.clientRoot, {
+    forgeAddonId: record.forgeAddonId,
+    name: record.name,
+    version: record.version,
+    parentName: parent.id,
+    parentType: parent.type,
+    parentConstraint: record.parentConstraint,
+    installedAt: new Date().toISOString(),
+    source: record.source,
+    folders: added,
+    mergedIntoParent,
+    // Exactly what this addon contributed to its parent's folder, by difference — files ADDED
+    // or CHANGED, so a patch that overwrites what the parent already ships is recorded too.
+    // `parentFiles` stays as the plain path list every existing reader expects; the marks carry
+    // the signatures that let a later check tell "still yours" from "the parent took it back".
+    parentFiles: contribution.map((m) => m.path),
+    parentFileMarks: contribution
+  });
+
+  /*
+   * A merged addon adds files to the PARENT's folder, which changes the parent's stat
+   * fingerprint — so without this the ledger decides its record no longer describes what is on
+   * disk and downgrades a perfectly good version to `stale-record`. Measured: installing four
+   * addons on the reference install left ManimalIcebreaker and SAIN stale, both at the right
+   * version.
+   *
+   * Only the fingerprint is refreshed. The parent did not change version, so its recorded
+   * version, origin and evidence are all still true and are kept.
+   */
+  if (mergedIntoParent) refreshFingerprint(roots.clientRoot, parent.id, parent.type, ctx.parentDir);
+
+  return {
+    added,
+    mergedIntoParent,
+    messageSuffix:
+      ` Recorded as an addon of "${parent.id}".` +
+      // Said out loud: an addon with no folder of its own cannot be uninstalled separately, and
+      // finding that out later would be worse than being told now.
+      (mergedIntoParent ? ` It installed into ${parent.id}'s own folder rather than its own.` : "") +
+      (restored.length ? ` Kept ${restored.join(", ")} at its own version.` : "")
+  };
+}
+
+/**
  * Where a merged addon's parent folder sits ON THE HEADLESS CLIENT, or undefined if it is not
  * there at all.
  *
@@ -1432,7 +1542,16 @@ ipcMain.handle("set-addon-parent", (_event, id: string, type: ModType, parentNam
  */
 async function installCataloguedAddon(
   jobId: string,
-  addonId: number
+  addonId: number,
+  /**
+   * The build to restore, when this is a REINSTALL rather than a first install.
+   *
+   * Spelled out rather than left to the picker's default because the opposite mistake has
+   * shipped here twice: preset sync and "Match server" both fetched the newest build that fitted,
+   * because no target version ever reached the resolver. A reinstall that silently upgrades you
+   * is the same bug wearing a third hat.
+   */
+  wantVersion?: string
 ): Promise<{ success: boolean; message: string; installedAs?: string[]; mergedIntoParent?: boolean }> {
   const roots = rootsFor("main");
   if (!roots) return { success: false, message: "No SPT instance configured." };
@@ -1452,7 +1571,7 @@ async function installCataloguedAddon(
     return { success: false, message: `"${addon.name}" attaches to a mod you don't have installed.` };
   }
 
-  const picked = pickAddonVersionForParent(addon, parent.version);
+  const picked = pickAddonVersionToRestore(addon, parent.version, wantVersion);
   if (!picked?.version.link) {
     return {
       success: false,
@@ -1462,15 +1581,7 @@ async function installCataloguedAddon(
     };
   }
 
-  const registryPath = path.join(roots.clientRoot, ".spt-mod-manager-registry.json");
-  const before = new Set(scanInstance("main").map((m) => `${m.type}:${m.id}`));
-  // Taken so the addon cannot relabel the mod it patches. Installing the CAG BRNVG patch
-  // (v1.0.0) into Borkel's RNVG rewrote that mod's recorded version from 2.1.1 to 1.0.0.
-  const versionsBefore = snapshotVersions(registryPath);
-  // The parent's folder as it stands NOW. Diffed after the install to learn exactly which files
-  // this addon contributed, so whether it is still installed later is a matter of looking.
-  const parentDir = parentFolderPath(parent, roots);
-  const parentFilesBefore = new Set(listFilesRelative(parentDir));
+  const ctx = beginAddonInstall(parent, roots);
 
   const result = await installForgeModVersion(
     roots.clientRoot,
@@ -1482,70 +1593,128 @@ async function installCataloguedAddon(
   );
   if (!result.success) return result;
 
-  const restored = restoreClobberedVersions(registryPath, versionsBefore);
-
-  const added = scanInstance("main")
-    .filter((m) => !before.has(`${m.type}:${m.id}`))
-    .map((m) => ({ id: m.id, type: m.type }));
-
-  // Marks whatever the archive produced — an addon can drop a server and a client part
-  // exactly like a mod. Frequently it produces nothing new at all, which is why the ledger
-  // below is the record that actually matters.
-  markInstalledAsAddon(registryPath, added, {
-    parentName: parent.id,
-    parentType: parent.type,
+  const done = finishAddonInstall(parent, roots, ctx, {
+    name: addon.name,
+    version: picked.version.version,
+    source: "forge",
     forgeAddonId: addon.id,
     parentConstraint: picked.version.modConstraint
   });
 
-  recordAddonInstall(roots.clientRoot, {
-    forgeAddonId: addon.id,
-    name: addon.name,
-    version: picked.version.version,
-    parentName: parent.id,
-    parentType: parent.type,
-    parentConstraint: picked.version.modConstraint,
-    installedAt: new Date().toISOString(),
-    source: "forge",
-    folders: added,
-    mergedIntoParent: added.length === 0,
-    parentFiles: listFilesRelative(parentDir).filter((f) => !parentFilesBefore.has(f))
-  });
-
-  /*
-   * A merged addon adds files to the PARENT's folder, which changes the parent's stat
-   * fingerprint — so without this the ledger decides its record no longer describes what is
-   * on disk and downgrades a perfectly good version to `stale-record`. Measured: installing
-   * four addons on the reference install left ManimalIcebreaker and SAIN stale, both at the
-   * right version.
-   *
-   * Only the fingerprint is refreshed. The parent did not change version, so its recorded
-   * version, origin and evidence are all still true and are kept.
-   */
-  if (added.length === 0) {
-    const parentRoot = parent.type === "server" ? roots.serverRoot : roots.clientRoot;
-    const parentDir = parent.type === "server"
-      ? path.join(parentRoot, ...SERVER_MODS_DIR, parent.id)
-      : path.join(parentRoot, ...CLIENT_PLUGINS_DIR, parent.id);
-    refreshFingerprint(roots.clientRoot, parent.id, parent.type, parentDir);
-  }
-
   return {
     ...result,
     message:
-      `${result.message} Recorded as an addon of "${parent.id}".` +
-      // Said out loud: an addon with no folder of its own cannot be uninstalled separately,
-      // and finding that out later would be worse than being told now.
-      (added.length === 0 ? ` It installed into ${parent.id}'s own folder rather than its own.` : "") +
-      (restored.length ? ` Kept ${restored.join(", ")} at its own version.` : ""),
-    installedAs: added.map((a) => a.id),
-    mergedIntoParent: added.length === 0
+      `${result.message}${done.messageSuffix}` +
+      // Said plainly rather than left to be discovered. Asking for a build that the catalogue no
+      // longer carries and receiving a different one without being told is how someone ends up
+      // debugging a version they did not choose.
+      (wantVersion && !picked.restored
+        ? ` NOTE: v${wantVersion} is no longer in the catalogue, so v${picked.version.version} was installed instead.`
+        : ""),
+    installedAs: done.added.map((a) => a.id),
+    mergedIntoParent: done.mergedIntoParent
   };
 }
 
 ipcMain.handle("install-forge-addon", (_event, jobId: string, addonId: number) =>
   installCataloguedAddon(jobId, addonId)
 );
+
+/**
+ * Reinstalls an addon already in the ledger, restoring the build that ledger records.
+ *
+ * The point is not repair. Addons are small, and reinstalling is how a record written before
+ * file marks existed ACQUIRES them: the install path diffs the parent's folder before and after,
+ * so running it again is what turns "no idea what this patch touched" into a checkable list.
+ * Nothing else can back-fill that — no record of those files exists anywhere, on this machine or
+ * any other, so the only way to learn them is to lay the files down again and watch.
+ */
+async function reinstallLedgerAddon(
+  jobId: string,
+  record: InstalledAddonRecord
+): Promise<{ success: boolean; message: string; installedAs?: string[]; mergedIntoParent?: boolean }> {
+  if (record.forgeAddonId === undefined) {
+    return {
+      success: false,
+      // Named rather than counted. This addon can still be repaired, just not from here, and
+      // saying which door to use is the actionable half.
+      message: `"${record.name}" came from ${
+        record.source === "github" ? "a GitHub release" : "a local file"
+      }, so there is no catalogue entry to reinstall it from. Install it again from the same place and its files will be recorded.`
+    };
+  }
+  return installCataloguedAddon(jobId, record.forgeAddonId, record.version);
+}
+
+ipcMain.handle(
+  "reinstall-addon",
+  async (_event, jobId: string, match: { forgeAddonId?: number; name?: string; parentName?: string }) => {
+    const roots = rootsFor("main");
+    if (!roots) return { success: false, message: "No SPT instance configured." };
+    // Same identity rule the ledger itself uses: the Forge id when there is one, name plus
+    // parent otherwise. Two addons can share a name across different parents.
+    const record = loadAddonLedger(roots.clientRoot).find((r) =>
+      match.forgeAddonId !== undefined
+        ? r.forgeAddonId === match.forgeAddonId
+        : r.name.toLowerCase() === (match.name ?? "").toLowerCase() &&
+          r.parentName.toLowerCase() === (match.parentName ?? "").toLowerCase()
+    );
+    if (!record) return { success: false, message: "That addon is not in this install's ledger." };
+    return reinstallLedgerAddon(jobId, record);
+  }
+);
+
+/**
+ * Reinstalls every catalogued addon in the ledger.
+ *
+ * SEQUENTIAL on purpose. Each install works out what it contributed by diffing its parent's
+ * folder before and after, so two running at once against the same parent — and several here
+ * share one — would each claim the other's files.
+ */
+ipcMain.handle("reinstall-all-addons", async (_event, jobId: string) => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured." };
+
+  const ledger = loadAddonLedger(roots.clientRoot);
+  if (ledger.length === 0) {
+    return { success: true, message: "There are no addons to reinstall.", reinstalled: 0, skipped: [], failed: [] };
+  }
+
+  const reinstalled: string[] = [];
+  const skipped: { name: string; reason: string }[] = [];
+  const failed: { name: string; reason: string }[] = [];
+
+  for (const record of ledger) {
+    mainWindow?.webContents.send("addon-reinstall-progress", {
+      jobId,
+      name: record.name,
+      done: reinstalled.length + skipped.length + failed.length,
+      total: ledger.length
+    });
+    const r = await reinstallLedgerAddon(jobId, record);
+    if (r.success) reinstalled.push(record.name);
+    else if (record.forgeAddonId === undefined) skipped.push({ name: record.name, reason: r.message });
+    else failed.push({ name: record.name, reason: r.message });
+  }
+
+  /*
+   * Skipped and failed are counted apart because they mean opposite things. A skip is a record
+   * this path structurally cannot serve — it was never in the catalogue — and no amount of
+   * retrying changes that. A failure is one it tried and could not, which is worth another go.
+   * Rolled together, whichever number is smaller disappears behind the larger.
+   */
+  return {
+    success: failed.length === 0,
+    message:
+      `Reinstalled ${reinstalled.length} of ${ledger.length} addon(s)` +
+      (skipped.length ? `, skipped ${skipped.length} that did not come from the catalogue` : "") +
+      (failed.length ? `, ${failed.length} failed` : "") +
+      ".",
+    reinstalled: reinstalled.length,
+    skipped,
+    failed
+  };
+});
 
 /**
  * Installs an addon from a local archive and attaches it to a parent.
@@ -1571,40 +1740,21 @@ ipcMain.handle("install-addon-from-file", async (_event, parentName: string, fil
     archive = chosen.filePaths[0];
   }
 
-  const registryPath = path.join(roots.clientRoot, ".spt-mod-manager-registry.json");
-  const before = new Set(scanInstance("main").map((m) => `${m.type}:${m.id}`));
-  const versionsBefore = snapshotVersions(registryPath);
-  const parentDir = parentFolderPath(parent, roots);
-  const parentFilesBefore = new Set(listFilesRelative(parentDir));
+  const ctx = beginAddonInstall(parent, roots);
 
   const result = await installModFromArchive(roots.clientRoot, roots.serverRoot, archive);
   if (!result.success) return result;
 
-  const restored = restoreClobberedVersions(registryPath, versionsBefore);
-  const added = scanInstance("main")
-    .filter((m) => !before.has(`${m.type}:${m.id}`))
-    .map((m) => ({ id: m.id, type: m.type }));
-  markInstalledAsAddon(registryPath, added, { parentName: parent.id, parentType: parent.type });
-
-  recordAddonInstall(roots.clientRoot, {
+  const done = finishAddonInstall(parent, roots, ctx, {
     name: path.basename(archive).replace(/\.(zip|7z|rar)$/i, ""),
-    parentName: parent.id,
-    parentType: parent.type,
-    installedAt: new Date().toISOString(),
-    source: "file",
-    folders: added,
-    mergedIntoParent: added.length === 0,
-    parentFiles: listFilesRelative(parentDir).filter((f) => !parentFilesBefore.has(f))
+    source: "file"
   });
 
   return {
     ...result,
-    message:
-      `${result.message} Recorded as an addon of "${parent.id}".` +
-      (added.length === 0 ? ` It installed into ${parent.id}'s own folder rather than its own.` : "") +
-      (restored.length ? ` Kept ${restored.join(", ")} at its own version.` : ""),
-    installedAs: added.map((a) => a.id),
-    mergedIntoParent: added.length === 0
+    message: `${result.message}${done.messageSuffix}`,
+    installedAs: done.added.map((a) => a.id),
+    mergedIntoParent: done.mergedIntoParent
   };
 });
 
@@ -1625,11 +1775,7 @@ ipcMain.handle(
     const parent = scanInstance("main").find((m) => m.id.toLowerCase() === args.parentName?.toLowerCase());
     if (!parent) return { success: false, message: `"${args.parentName}" is not installed.` };
 
-    const registryPath = path.join(roots.clientRoot, ".spt-mod-manager-registry.json");
-    const before = new Set(scanInstance("main").map((m) => `${m.type}:${m.id}`));
-    const versionsBefore = snapshotVersions(registryPath);
-    const parentDir = parentFolderPath(parent, roots);
-    const parentFilesBefore = new Set(listFilesRelative(parentDir));
+    const ctx = beginAddonInstall(parent, roots);
 
     const result = await installForgeModVersion(
       roots.clientRoot,
@@ -1642,32 +1788,17 @@ ipcMain.handle(
     );
     if (!result.success) return result;
 
-    const restored = restoreClobberedVersions(registryPath, versionsBefore);
-    const added = scanInstance("main")
-      .filter((m) => !before.has(`${m.type}:${m.id}`))
-      .map((m) => ({ id: m.id, type: m.type }));
-    markInstalledAsAddon(registryPath, added, { parentName: parent.id, parentType: parent.type });
-
-    recordAddonInstall(roots.clientRoot, {
+    const done = finishAddonInstall(parent, roots, ctx, {
       name: args.repo.split("/")[1] ?? args.assetName,
       version: args.version,
-      parentName: parent.id,
-      parentType: parent.type,
-      installedAt: new Date().toISOString(),
-      source: "github",
-      folders: added,
-      mergedIntoParent: added.length === 0,
-      parentFiles: listFilesRelative(parentDir).filter((f) => !parentFilesBefore.has(f))
+      source: "github"
     });
 
     return {
       ...result,
-      message:
-        `${result.message} Recorded as an addon of "${parent.id}".` +
-        (added.length === 0 ? ` It installed into ${parent.id}'s own folder rather than its own.` : "") +
-        (restored.length ? ` Kept ${restored.join(", ")} at its own version.` : ""),
-      installedAs: added.map((a) => a.id),
-      mergedIntoParent: added.length === 0
+      message: `${result.message}${done.messageSuffix}`,
+      installedAs: done.added.map((a) => a.id),
+      mergedIntoParent: done.mergedIntoParent
     };
   }
 );
@@ -2588,11 +2719,17 @@ ipcMain.handle("import-mod-list", async () => {
  * with the file inside app.asar, and packaged with it unpacked beside the executable are all
  * real, and guessing one breaks the other two.
  */
-function bundledCompanionDll(): string {
+function bundledCompanionDll(sptVersion: string | undefined): string | undefined {
+  // WHICH build comes first, because there are now two: SPT 4.1 moved the server to .NET 10 and
+  // a 4.0 server cannot load that assembly. No line, no path — see companionLineFor for why a
+  // guess is worse than a refusal here.
+  const line = companionLineFor(sptVersion);
+  if (!line) return undefined;
+
   const candidates = [
-    path.join(app.getAppPath(), "companion", "dist", COMPANION_DLL),
-    path.join(process.resourcesPath ?? "", "companion", "dist", COMPANION_DLL),
-    path.join(__dirname, "..", "companion", "dist", COMPANION_DLL)
+    path.join(app.getAppPath(), "companion", "dist", line, COMPANION_DLL),
+    path.join(process.resourcesPath ?? "", "companion", "dist", line, COMPANION_DLL),
+    path.join(__dirname, "..", "companion", "dist", line, COMPANION_DLL)
   ];
   return candidates.find((p) => fs.existsSync(p)) ?? candidates[0];
 }
@@ -2600,14 +2737,14 @@ function bundledCompanionDll(): string {
 ipcMain.handle("get-companion-install-state", () => {
   const roots = rootsFor("main");
   return {
-    ...readInstallState(roots?.serverRoot, bundledCompanionDll()),
+    ...readInstallState(roots?.serverRoot, bundledCompanionDll(localSptVersion())),
     bundledVersion: BUNDLED_COMPANION_VERSION
   };
 });
 
 ipcMain.handle("install-companion", () => {
   const roots = rootsFor("main");
-  return installCompanion(roots?.serverRoot, bundledCompanionDll());
+  return installCompanion(roots?.serverRoot, bundledCompanionDll(localSptVersion()));
 });
 
 ipcMain.handle("remove-companion", () => {

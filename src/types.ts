@@ -19,7 +19,8 @@ export interface ModInfo {
    * several authors never update theirs (Fika's server mod declares 2.0.9 whatever you have).
    */
   versionSource?: "recorded" | "sibling" | "assembly" | "stale-record";
-  versionOrigin?: "forge" | "github" | "archive-name" | "declared-at-install";
+  /** Kept in step with electron/types.ts VersionOrigin — it had drifted three values behind. */
+  versionOrigin?: "forge" | "github" | "archive-name" | "declared-at-install" | "preset" | "server" | "headless-sync";
   versionEvidence?: string;
   /** Present only when the recorded and declared versions disagree. */
   declaredVersion?: string;
@@ -31,6 +32,17 @@ export interface ModInfo {
   sptCompatibility?: "compatible" | "incompatible" | "unknown"; // declared constraint vs. this instance's version
   packageId?: string; // parts installed from the same archive share this id
   packageInferred?: boolean; // joined its package by name similarity, not by an install record
+  /**
+   * Set when this row is an ADDON of another mod rather than a mod in its own right.
+   *
+   * Only ever set for an addon that installed its own folder — a merged one has no row here at
+   * all, because its files live inside its parent. Carried into the renderer because without it
+   * an own-folder addon is indistinguishable from a mod: ORBIT's Fika addon lands as
+   * "Orbit.Fika" and read as an ordinary mod, including being looked up as one by the update
+   * check, which cannot answer for it.
+   */
+  addonOf?: string;
+  addonOfType?: ModType;
   packageSiblings?: { id: string; type: ModType }[]; // the other parts, when the package is inferred
   guid?: string; // GUID declared by the mod (SPT 4.0) — exact match against Forge
   /**
@@ -911,6 +923,31 @@ export interface ModManagerAPI {
     jobId: string,
     addonId: number
   ) => Promise<{ success: boolean; message: string; installedAs?: string[] }>;
+  /**
+   * Reinstalls an addon already in the ledger, restoring the build it RECORDS rather than the
+   * newest that fits — the opposite mistake has shipped twice here.
+   *
+   * Also how a record written before file marks existed acquires them: the install diffs the
+   * parent's folder before and after, so laying the files down again is the only way to learn
+   * what a patch actually touches. Nothing else knows.
+   */
+  reinstallAddon: (
+    jobId: string,
+    match: { forgeAddonId?: number; name?: string; parentName?: string }
+  ) => Promise<{ success: boolean; message: string; installedAs?: string[]; mergedIntoParent?: boolean }>;
+  reinstallAllAddons: (
+    jobId: string
+  ) => Promise<{
+    success: boolean;
+    message: string;
+    reinstalled?: number;
+    /** Records the catalogue structurally cannot serve — counted apart from ones that were tried. */
+    skipped?: { name: string; reason: string }[];
+    failed?: { name: string; reason: string }[];
+  }>;
+  onAddonReinstallProgress: (
+    callback: (p: { jobId: string; name: string; done: number; total: number }) => void
+  ) => () => void;
   installAddonFromFile: (
     parentName: string,
     filePath?: string

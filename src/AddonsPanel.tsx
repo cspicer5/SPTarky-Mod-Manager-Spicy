@@ -119,6 +119,9 @@ export default function AddonsPanel({
   updates,
   onForgetAddon,
   onInstallForgeAddon,
+  onReinstallAddon,
+  onReinstallAll,
+  reinstallProgress,
   onInstallFromFile,
   onDetectLinks,
   onSetParent,
@@ -138,6 +141,11 @@ export default function AddonsPanel({
   updates: AddonUpdateRow[];
   onForgetAddon: (forgeAddonId?: number, name?: string) => void;
   onInstallForgeAddon: (addonId: number) => void;
+  /** Restores the build this record names — NOT the newest that fits. */
+  onReinstallAddon: (record: InstalledAddonRecord) => void;
+  onReinstallAll: () => void;
+  /** Set while a bulk reinstall is running; null otherwise. */
+  reinstallProgress?: { name: string; done: number; total: number } | null;
   onInstallFromFile: (parentName: string) => void;
   onDetectLinks: () => void;
   onSetParent: (id: string, type: ModType, parent: string | null) => void;
@@ -269,7 +277,21 @@ export default function AddonsPanel({
               folder of their own — the scan below cannot see those at all, since there is
               nothing separate to look at. */}
           <div className="addon-section">
-            <strong>Addons installed through the manager</strong>
+            <div className="addon-section-head">
+              <strong>Addons installed through the manager</strong>
+              {/* Worth doing even when nothing is broken. An addon recorded before the app
+                  tracked files has no list of what it touched, and no such list exists anywhere
+                  else — reinstalling is the only way to learn it, and addons are small. */}
+              {ledger.length > 0 && (
+                <button
+                  disabled={busy}
+                  onClick={onReinstallAll}
+                  title="Reinstalls every addon that came from the catalogue, each at the version recorded here. Records which files each one touches, so the app can check later whether they are still in place."
+                >
+                  {reinstallProgress ? `Reinstalling ${reinstallProgress.done + 1}/${reinstallProgress.total}…` : "Reinstall all"}
+                </button>
+              )}
+            </div>
             {ledger.length === 0 ? (
               <p className="empty-list">None yet.</p>
             ) : (
@@ -324,8 +346,23 @@ export default function AddonsPanel({
                       <span>{r.installedAt.slice(0, 10)}</span>
                     </div>
                     <div className="addon-row-actions">
-                      {r.needsReinstall && typeof r.forgeAddonId === "number" && (
-                        <button className="primary" disabled={busy} onClick={() => onInstallForgeAddon(r.forgeAddonId!)}>
+                      {/* Offered always, not only when the files are gone. Repair is one reason
+                          to press it; the other is that a record written before file tracking
+                          has no idea what this patch touched, and reinstalling is what teaches
+                          it. Restores the version RECORDED here rather than the newest that
+                          fits — updating is the separate button below, and conflating the two
+                          would silently move someone off the build they chose. */}
+                      {typeof r.forgeAddonId === "number" && (
+                        <button
+                          className={r.needsReinstall ? "primary" : ""}
+                          disabled={busy}
+                          onClick={() => onReinstallAddon(r)}
+                          title={
+                            r.needsReinstall
+                              ? `Its files are no longer inside "${r.parentName}" — this puts them back.`
+                              : `Reinstalls v${r.version ?? "?"}, the build recorded here, and records which files it touches.`
+                          }
+                        >
                           Reinstall
                         </button>
                       )}

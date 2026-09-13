@@ -313,3 +313,12 @@
 .addon-update-unknown {
   color: var(--text-faint);
 }
+
+/* The installed-addons heading, with its bulk action on the right. */
+.addon-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
