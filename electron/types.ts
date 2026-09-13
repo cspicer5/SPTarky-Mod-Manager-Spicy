@@ -151,7 +151,15 @@ export interface InstanceConfig {
  * matched, and the version recorded is the one that machine reported for them. There is no
  * catalogue lookup in between to pick a different build.
  */
-export type VersionOrigin = "forge" | "github" | "archive-name" | "declared-at-install" | "preset" | "server";
+export type VersionOrigin =
+  | "forge"
+  | "github"
+  | "archive-name"
+  | "declared-at-install"
+  | "preset"
+  | "server"
+  /** Copied from this user's own main install by the headless sync, carrying main's resolved version. */
+  | "headless-sync";
 
 /**
  * A cheap signature of a mod's files on disk, taken at install time.

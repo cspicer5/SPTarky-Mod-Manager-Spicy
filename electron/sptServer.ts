@@ -624,10 +624,33 @@ export function buildServerSyncReport(
   // genuinely known and is compared below.
   const localServer = localMods.filter((m) => m.type === "server" && !isCompanionMod(m.id, m.guid));
 
-  const byGuid = new Map<string, ModInfo>();
+  /*
+   * TWO guid indexes, kept apart, because the two sides do not hold the same kind of identity.
+   *
+   * A server reports each mod's OWN declared ModGuid — the string in its C# metadata. Locally,
+   * `mod.guid` is catalogue-FIRST (`forgeGuid`, the Forge package id). For most mods those are
+   * the same string, which is why matching on it worked at all and why 70 rows lined up.
+   *
+   * They are not always the same, and ECOTI is the case that proves it: its server half declares
+   * `com.lennoxp90.coti.server` while the catalogue package is `com.lennoxp90.coti`. Matched on
+   * the catalogue id the two sides never met, so ONE mod produced TWO rows — "Not on server" on
+   * the left and "Missing here" with an Install button on the right, both reading 2.0.2. Offering
+   * to install something the user already has is the worst shape this can fail in.
+   *
+   * So the DECLARED guid is tried first, like-for-like against what the server declares, and the
+   * catalogue one second as corroboration. This is the rule the client-plugin matcher already
+   * follows, now applied to the THIRD namespace — see [[two-guid-namespaces]]: catalogue package,
+   * [BepInPlugin] assembly, and a server mod's ModGuid are three different strings for one mod.
+   */
+  const byDeclaredGuid = new Map<string, ModInfo>();
+  const byCatalogueGuid = new Map<string, ModInfo>();
   const byName = new Map<string, ModInfo>();
   for (const mod of localServer) {
-    if (mod.guid) byGuid.set(norm(mod.guid), mod);
+    if (mod.assemblyGuid) byDeclaredGuid.set(norm(mod.assemblyGuid), mod);
+    // `guid` is catalogue-first but falls back to the declared one, so it still covers a mod with
+    // no registry entry. Kept in the weaker index rather than mixed into the first.
+    if (mod.guid) byCatalogueGuid.set(norm(mod.guid), mod);
+    if (mod.catalogueGuid) byCatalogueGuid.set(norm(mod.catalogueGuid), mod);
     byName.set(norm(mod.originalName), mod);
     byName.set(norm(mod.name), mod);
   }
@@ -648,9 +671,10 @@ export function buildServerSyncReport(
 
   for (const mod of snapshot.mods) {
     if (isCompanionMod(mod.name, mod.modGuid)) continue;
-    const viaGuid = mod.modGuid ? byGuid.get(norm(mod.modGuid)) : undefined;
-    const local = viaGuid ?? byName.get(norm(mod.name));
-    const matchedBy = viaGuid ? "guid" : local ? "name" : undefined;
+    const viaDeclared = mod.modGuid ? byDeclaredGuid.get(norm(mod.modGuid)) : undefined;
+    const viaCatalogue = !viaDeclared && mod.modGuid ? byCatalogueGuid.get(norm(mod.modGuid)) : undefined;
+    const local = viaDeclared ?? viaCatalogue ?? byName.get(norm(mod.name));
+    const matchedBy = viaDeclared ? "guid" : viaCatalogue ? "package" : local ? "name" : undefined;
     if (local) claimed.add(claimKey(local));
 
     const row: ServerSyncRow = {

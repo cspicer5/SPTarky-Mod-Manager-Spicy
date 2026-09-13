@@ -977,6 +977,46 @@ export function recordServerPullInstall(
   } as RegistryEntry);
 }
 
+/**
+ * Records a plugin copied from the main install into the HEADLESS client's own ledger.
+ *
+ * Until this existed the sync wrote files and recorded nothing, so the headless ledger either
+ * had no entry or had one whose fingerprint no longer matched. Either way the next headless scan
+ * fell through to what the plugin DECLARES about itself — the guess the ledger exists to replace.
+ *
+ * Both reported symptoms were this one gap:
+ *   * WTT-ArmoryClient synced at 3.0.0 read back as 2.0.5, because 2.0.5 is what its
+ *     [BepInPlugin] still says and the author never bumped it.
+ *   * BorkelRNVG lost the "+spt4.0" half of "3.0.3+spt4.0" — that suffix is the CATALOGUE's
+ *     version string and only ever existed in the ledger; the DLL declares a plain 3.0.2.
+ * So it was never a problem with parsing text in a version. It was the record going missing,
+ * and the declared value that replaced it happening to look like a truncation.
+ *
+ * The version recorded is the one the MAIN install resolved. That is the point of the sync: the
+ * headless is a copy of main, so main's evidence is the headless's evidence.
+ */
+export function recordHeadlessSyncInstall(
+  headlessRoot: string,
+  entry: { id: string; type: ModType; installedPath: string; version?: string }
+): void {
+  const existing = loadRegistry(headlessRoot).find((e) => e.id === entry.id && e.type === entry.type);
+  addToRegistry(headlessRoot, {
+    ...(existing ?? { id: entry.id, type: entry.type, installedAt: new Date().toISOString() }),
+    id: entry.id,
+    type: entry.type,
+    installedAt: new Date().toISOString(),
+    // CLEARED rather than carried when main has no version to give. The files underneath any
+    // previous value have just been replaced, so it no longer describes what is on disk — and
+    // keeping it while re-fingerprinting below would promote a stale version to a trusted one.
+    // That is worse than the gap it papers over, because nothing downstream would mark it.
+    installedVersion: entry.version,
+    versionOrigin: entry.version ? "headless-sync" : undefined,
+    versionEvidence: entry.version ? `Synced from the main install, which had ${entry.version}` : undefined,
+    // Re-fingerprinted against what was just written, or the very next scan calls it stale.
+    fingerprint: fingerprintPath(entry.installedPath)
+  } as RegistryEntry);
+}
+
 export interface SupersededMod {
   /** The GUID both copies declare — the evidence that they are one mod. */
   guid: string;
@@ -2448,7 +2488,7 @@ export interface HeadlessSyncResult {
 export function copyClientModToHeadless(
   mainClientRoot: string,
   headlessRoot: string,
-  mod: Pick<ModInfo, "id" | "type" | "enabled" | "guid" | "name">
+  mod: Pick<ModInfo, "id" | "type" | "enabled" | "guid" | "name" | "version">
 ): HeadlessSyncResult {
   // Structural refusal, not a preference. A headless client loads BepInEx/ and nothing else,
   // so a server mod copied there would sit in a folder that is never read — the appearance
@@ -2542,6 +2582,15 @@ export function copyClientModToHeadless(
   } catch (err: any) {
     return { success: false, message: `Couldn't copy "${mod.name}": ${err?.message ?? err}` };
   }
+
+  // Recorded AFTER the copy succeeded and before the message is built, so a failure above
+  // returns early and never leaves the ledger claiming an install that did not happen.
+  recordHeadlessSyncInstall(headlessRoot, {
+    id: mod.id,
+    type: mod.type,
+    installedPath: path.join(targetDir, mod.id),
+    version: mod.version
+  });
 
   const extras = [
     result.copiedCompanion ? "data folder" : null,

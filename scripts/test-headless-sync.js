@@ -89,6 +89,40 @@ check("refuses to copy SPT's own core", r.success, false);
 r = copyClientModToHeadless(MAIN, HEADLESS, mod("NotInstalled", "client", true));
 check("missing source reported, not thrown", r.success, false);
 
+console.log("\nthe ledger the sync writes");
+{
+  // The sync used to write files and record NOTHING, so the headless scan fell through to what
+  // the plugin declares about itself. Both reported symptoms were that one gap:
+  //   * WTT-ArmoryClient synced at 3.0.0 read back as 2.0.5 — the version its [BepInPlugin]
+  //     still claims, because the author never bumped it.
+  //   * BorkelRNVG lost the "+spt4.0" half of "3.0.3+spt4.0". That suffix is the CATALOGUE's
+  //     version string and lives only in the ledger; the DLL declares a plain 3.0.2. Nothing
+  //     was mis-parsing text in a version — the record was simply gone.
+  write(path.join(MAIN, "BepInEx", "plugins", "VersionedMod", "VersionedMod.dll"), "binary");
+
+  const ledger = () => {
+    const f = path.join(HEADLESS, ".spt-mod-manager-registry.json");
+    return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf-8")) : [];
+  };
+  const entryFor = (id) => ledger().find((e) => e.id === id && e.type === "client");
+
+  r = copyClientModToHeadless(MAIN, HEADLESS, { ...mod("VersionedMod", "client", true), version: "3.0.0" });
+  check("copied", r.success, true);
+  check("the version main resolved is recorded", entryFor("VersionedMod")?.installedVersion, "3.0.0");
+  check("attributed to the sync", entryFor("VersionedMod")?.versionOrigin, "headless-sync");
+  check("fingerprinted, so the next scan trusts it", !!entryFor("VersionedMod")?.fingerprint, true);
+
+  r = copyClientModToHeadless(MAIN, HEADLESS, { ...mod("VersionedMod", "client", true), version: "3.0.3+spt4.0" });
+  check("a build suffix survives the sync intact", entryFor("VersionedMod")?.installedVersion, "3.0.3+spt4.0");
+
+  // The subtle one. No version to carry means the old value must GO: the files beneath it have
+  // just been replaced, so it no longer describes what is there, and re-fingerprinting it would
+  // promote a stale version to a trusted one — worse than the gap, because nothing marks it.
+  r = copyClientModToHeadless(MAIN, HEADLESS, mod("VersionedMod", "client", true));
+  check("an unknown version clears the old one", entryFor("VersionedMod")?.installedVersion, undefined);
+  check("and clears its origin with it", entryFor("VersionedMod")?.versionOrigin, undefined);
+}
+
 console.log("\nremoval affects the headless side only");
 r = removeModFromHeadless(HEADLESS, mod("FolderMod", "client", true));
 check("removed from headless", exists("BepInEx", "plugins", "FolderMod"), false);

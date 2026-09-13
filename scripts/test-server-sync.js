@@ -70,6 +70,49 @@ console.log("without a companion, only server mods are compared");
   check("addons were not compared either", report.addonsCompared, false);
 }
 
+console.log("\na server mod whose declared guid is not its catalogue id");
+{
+  // ECOTI, found on the real 192.168.1.66. Its server half declares `com.lennoxp90.coti.server`
+  // while the Forge package is `com.lennoxp90.coti`. Matched on the catalogue id the two sides
+  // never met, so ONE mod produced TWO rows: "Not on server" on the left, and "Missing here"
+  // with an Install button on the right — both reading 2.0.2. Offering to install something the
+  // user already has is the worst shape this can fail in.
+  const report = buildServerSyncReport(
+    snapshot({ mods: [{ name: "ECOTI", modGuid: "com.lennoxp90.coti.server", version: "2.0.2" }] }),
+    [
+      localMod({
+        id: "LennoxP90-COTI",
+        type: "server",
+        guid: "com.lennoxp90.coti", // catalogue-first, exactly as the scan builds it
+        catalogueGuid: "com.lennoxp90.coti",
+        assemblyGuid: "com.lennoxp90.coti.server", // what the DLL actually declares
+        version: "2.0.2"
+      })
+    ]
+  );
+  check("one row, not two", report.rows.length, 1);
+  check("matched on the declared guid", rowFor(report, "com.lennoxp90.coti.server")?.matchedBy, "guid");
+  check("reads as in sync", report.counts.inSync, 1);
+  check("nothing is offered for install", report.counts.needInstalling, 0);
+  // The label the user recognises is the folder they installed, with the server's own name kept
+  // beside it rather than thrown away — "ECOTI" is still what that machine calls it.
+  check("labelled with the local folder name", rowFor(report, "com.lennoxp90.coti.server")?.name, "LennoxP90-COTI");
+  check("the declared name is kept alongside", rowFor(report, "com.lennoxp90.coti.server")?.serverName, "ECOTI");
+}
+
+console.log("\nthe catalogue id still matches when it is all there is");
+{
+  // A mod whose DLL could not be read has no declared guid to compare, so the catalogue id is
+  // the only identity either side holds. It still pairs — and says so honestly as a weaker
+  // match, rather than claiming a guid match it did not make.
+  const report = buildServerSyncReport(
+    snapshot({ mods: [{ name: "WTT - Clothing and Gear", modGuid: "com.wtt.cag", version: "1.0.0" }] }),
+    [localMod({ id: "WTT-CAG", type: "server", guid: "com.wtt.cag", catalogueGuid: "com.wtt.cag", version: "1.0.0" })]
+  );
+  check("still pairs", report.counts.inSync, 1);
+  check("and is marked as the weaker match", rowFor(report, "com.wtt.cag")?.matchedBy, "package");
+}
+
 console.log("\nclient plugins, once a companion can report them");
 {
   const report = buildServerSyncReport(
