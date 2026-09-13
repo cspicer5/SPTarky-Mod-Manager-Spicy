@@ -44,7 +44,7 @@ public partial record SptarkyCompanionMetadata
     /// version. The two are released separately and a server is rarely updated in lockstep
     /// with the clients that talk to it.
     /// </summary>
-    private static SemVersion DeclaredVersion => new(1, 0, 0);
+    private static SemVersion DeclaredVersion => new(1, 2, 0);
 
     /// <summary>
     /// Everything this mod touches — the mod folders, the ledger files, the bundle cache —

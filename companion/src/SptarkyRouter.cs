@@ -38,7 +38,7 @@ public class SptarkyRouter : StaticRouter
     /// </summary>
     private const int Protocol = 1;
 
-    private const string CompanionVersion = "1.1.0";
+    private const string CompanionVersion = "1.2.0";
 
     /// <summary>
     /// What this build can do, asked about BY NAME. The manager checks for a capability rather

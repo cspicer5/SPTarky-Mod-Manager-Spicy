@@ -46,7 +46,7 @@ export function companionLineFor(sptVersion: string | undefined): CompanionLine 
 }
 
 /** Kept in step with the DLL that ships beside it, and shown so a stale copy is visible. */
-export const BUNDLED_COMPANION_VERSION = "1.0.0";
+export const BUNDLED_COMPANION_VERSION = "1.2.0";
 
 export interface CompanionInstallState {
   /** False when there is no server half to install into — a client-only folder, say. */

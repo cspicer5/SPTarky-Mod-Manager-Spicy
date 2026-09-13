@@ -123,6 +123,38 @@ console.log("\nremoval is scoped, not a recursive delete");
   check("nor is removing with no instance", C.removeCompanion(undefined).ok, false);
 }
 
+console.log("\nthe companion's three version strings agree");
+{
+  /*
+   * There are THREE, in two languages, and they HAD drifted:
+   *
+   *   ModMetadata.cs      1.0.0  - what SPT prints in its own log when the mod loads
+   *   SptarkyRouter.cs    1.1.0  - what /sptarky/version answers a manager that asks
+   *   companionInstall.ts 1.0.0  - what the app shows beside the Install button
+   *
+   * So the manager told you it ships 1.0.0 while the companion already installed reported
+   * 1.1.0 — the app claiming to be older than the thing it installed. Every one of them is
+   * shown to a person, and none of them can share a constant across C# and TypeScript.
+   *
+   * Pinned here instead. This is a source-text check on purpose: the failure is three editors
+   * disagreeing, which no amount of runtime behaviour can reveal.
+   */
+  const read = (p) => fs.readFileSync(path.join(__dirname, "..", p), "utf-8");
+  const meta = /DeclaredVersion => new\((\d+), (\d+), (\d+)\)/.exec(read("companion/src/ModMetadata.cs"));
+  const router = /CompanionVersion = "([^"]+)"/.exec(read("companion/src/SptarkyRouter.cs"));
+  const bundled = /BUNDLED_COMPANION_VERSION = "([^"]+)"/.exec(read("electron/companionInstall.ts"));
+
+  check("the mod metadata names a version", !!meta, true);
+  check("the router names one", !!router, true);
+  check("the manager names one", !!bundled, true);
+
+  const metaVersion = meta ? `${meta[1]}.${meta[2]}.${meta[3]}` : "?";
+  check("what SPT logs matches what the route reports", metaVersion, router ? router[1] : "?");
+  check("and matches what the manager says it ships", metaVersion, bundled ? bundled[1] : "?");
+  // The COMPILED constant too, so a stale dist-electron cannot pass this by accident.
+  check("and matches the built constant the app actually uses", C.BUNDLED_COMPANION_VERSION, metaVersion);
+}
+
 fs.rmSync(root, { recursive: true, force: true });
 
 console.log(`\n${failures === 0 ? "all checks passed" : `${failures} check(s) failed`}`);
