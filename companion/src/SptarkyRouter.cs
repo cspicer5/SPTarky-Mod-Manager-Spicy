@@ -3,7 +3,13 @@ using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
 using SPTarkov.Server.Core.Utils;
 using SPTarkov.Server.Core.Models.Spt.Mod;
+#if NET10_0_OR_GREATER
+// 4.1 moved ISptLogger out of Server.Core into SPTarkov.Common. Nothing about the type changed,
+// only where it lives, so this is a using and not a shim.
+using SPTarkov.Common.Models.Logging;
+#else
 using SPTarkov.Server.Core.Models.Utils;
+#endif
 
 namespace SptarkyCompanion;
 
@@ -58,30 +64,27 @@ public class SptarkyRouter : StaticRouter
         : base(
             jsonUtil,
             [
-                new RouteAction(
+                Routes.Get(
                     "/sptarky/version",
-                    // Signature fixed by SPT: (url, IRequestData info, MongoId sessionId, string? output).
-                    // This route takes no input at all, hence the discards.
-                    //
                     // NoBody serializes the object plainly. The alternative, GetBody, wraps it as
                     // {err, errmsg, data} — the shape the game client expects. Plain is the right
                     // choice here because SPT answers an UNKNOWN route with HTTP 200 and a body of
                     // {"err":404,...}. Keeping `err` out of a real response means the manager can
                     // tell "no companion installed" from "companion answered" by shape alone.
-                    (_, _, _, _) => new ValueTask<object>(httpResponseUtil.NoBody(new VersionResponse
+                    _ => httpResponseUtil.NoBody(new VersionResponse
                     {
                         Version = CompanionVersion,
                         Protocol = Protocol,
                         Capabilities = Capabilities
-                    }))),
+                    })),
 
-                new RouteAction(
+                Routes.Get(
                     "/sptarky/manifest",
                     // Read fresh on every request rather than cached at startup: mods are
                     // installed and removed while the server is up, and a manifest that answered
                     // from a snapshot taken at boot would quietly disagree with the disk.
-                    (_, _, _, _) => new ValueTask<object>(httpResponseUtil.NoBody(
-                        ManifestBuilder.Build(InstallLayout.Detect(), loadedMods, Protocol, CompanionVersion))))
+                    _ => httpResponseUtil.NoBody(
+                        ManifestBuilder.Build(InstallLayout.Detect(), loadedMods, Protocol, CompanionVersion)))
             ])
     {
         // Said out loud at startup, so "is the companion actually running?" is answered by

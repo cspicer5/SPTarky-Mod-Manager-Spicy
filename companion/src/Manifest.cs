@@ -182,7 +182,13 @@ public static class ManifestBuilder
                 Author = mod.ModMetadata?.Author,
                 DeclaredVersion = mod.ModMetadata?.Version?.ToString(),
                 Url = mod.ModMetadata?.Url,
+#if NET10_0_OR_GREATER
+                // 4.1 stopped declaring this. Reported as absent rather than guessed at — the
+                // manager already treats a missing flag as unknown, which is exactly the truth.
+                IsBundleMod = null,
+#else
                 IsBundleMod = mod.ModMetadata?.IsBundleMod,
+#endif
                 Loaded = true,
                 Enabled = true
             });

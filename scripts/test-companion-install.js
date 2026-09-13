@@ -16,7 +16,9 @@ const os = require("os");
 const path = require("path");
 const C = require(path.join(__dirname, "..", "dist-electron", "companionInstall.js"));
 
-const dll = path.join(__dirname, "..", "companion", "dist", "SptarkyCompanion.dll");
+// Either build serves for the install mechanics below — what is copied is bytes. Which build an
+// instance NEEDS is a separate decision, tested on its own further down.
+const dll = path.join(__dirname, "..", "companion", "dist", "spt4.0", "SptarkyCompanion.dll");
 
 let failures = 0;
 const check = (label, actual, expected) => {
@@ -33,7 +35,36 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "sptarky-inst-"));
 const target = path.join(root, "user", "mods", "SptarkyCompanion", "SptarkyCompanion.dll");
 const cfg = path.join(root, "user", "mods", "SptarkyCompanion", "config.json");
 
-console.log("instances that cannot take it");
+console.log("which build an SPT version needs");
+{
+  // The pairing that matters: 4.1 moved the server to .NET 10, so these are not interchangeable.
+  check("4.0.13 takes the 4.0 build", C.companionLineFor("4.0.13"), "spt4.0");
+  check("4.1.5 takes the 4.1 build", C.companionLineFor("4.1.5"), "spt4.1");
+  check("4.1.0 is already the new line", C.companionLineFor("4.1.0"), "spt4.1");
+
+  // SPT reports 4.0.13-RELEASE+2891fd4.… in some places. The suffix must not defeat the match.
+  check("a RELEASE suffix still resolves", C.companionLineFor("4.0.13-RELEASE+2891fd4.20260302"), "spt4.0");
+  check("surrounding space is tolerated", C.companionLineFor(" 4.1.5 "), "spt4.1");
+
+  // An assumption, stated: a minor we have never seen gets the newest build there is.
+  check("a future 4.x gets the newest build", C.companionLineFor("4.2.0"), "spt4.1");
+
+  // Refusals. Each of these would otherwise put an unloadable DLL into user/mods, and that
+  // failure is invisible from the manager — the file is there and nothing ever answers.
+  check("3.x has no .NET server mods at all", C.companionLineFor("3.9.8"), undefined);
+  check("an unknown version refuses", C.companionLineFor(undefined), undefined);
+  check("so does an empty string", C.companionLineFor(""), undefined);
+  check("so does something that is not a version", C.companionLineFor("latest"), undefined);
+}
+
+console.log("\nan instance whose version could not be worked out");
+{
+  check("cannot be installed into", C.readInstallState(root, undefined).canInstall, false);
+  check("and is told it is a version problem", /SPT version/.test(C.readInstallState(root, undefined).reason), true);
+  check("installing refuses too", C.installCompanion(root, undefined).ok, false);
+}
+
+console.log("\ninstances that cannot take it");
 {
   check("a client-only folder refuses", C.readInstallState(root, dll).canInstall, false);
   check("and says why", /not a server install/.test(C.readInstallState(root, dll).reason), true);

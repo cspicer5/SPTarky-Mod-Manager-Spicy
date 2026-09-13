@@ -1,7 +1,13 @@
 using Microsoft.AspNetCore.Http;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.Models.Common;
+#if NET10_0_OR_GREATER
+// 4.1 moved ISptLogger out of Server.Core into SPTarkov.Common. Nothing about the type changed,
+// only where it lives, so this is a using and not a shim.
+using SPTarkov.Common.Models.Logging;
+#else
 using SPTarkov.Server.Core.Models.Utils;
+#endif
 using SPTarkov.Server.Core.Servers.Http;
 
 namespace SptarkyCompanion;
@@ -34,9 +40,24 @@ namespace SptarkyCompanion;
 // with it and loses on discovery order, because SPT's assembly is scanned before any mod's.
 // That was measured, not assumed: with a plain attribute the token was required, the gate was
 // constructed, and unauthenticated requests still returned 200.
-// The injection type is passed only because the constructor is positional and typePriority is
-// the third parameter; Scoped is already the default.
-[Injectable(InjectionType.Scoped, null, int.MinValue)]
+// Two separate traps live in this one line, and the second one stops the server dead.
+//
+// typePriority is passed BY NAME because its position moved: 4.0 declared
+// (InjectionType, Type typeOverride, int typePriority) and 4.1 removed typeOverride, so the third
+// slot became the second. Positionally this would either not compile or, worse, bind int.MinValue
+// to the wrong parameter.
+//
+// The injection type is now passed NOT AT ALL, and that is deliberate. 4.1 inserted
+// HostedService at 0 in the InjectionType enum, shifting Singleton/Transient/Scoped up by one —
+// so the NAMES are stable and compile against both, while the VALUES are not. SptHttpListener is
+// declared 2 in both versions, which reads as Scoped in 4.0 and Transient in 4.1. Naming
+// InjectionType.Scoped therefore tracked SPT on 4.0 and diverged from it on 4.1, and 4.1 also
+// turned on DI scope validation: a Scoped IHttpListener consumed by the singleton HttpServer
+// fails validation and the server REFUSES TO START. Not a warning, not a broken route — no
+// server at all, for everyone who installed this.
+// The attribute's own default is 2 in both versions, which is exactly what SptHttpListener uses
+// in each. Omitting it is how this stays correct through a shift like that one.
+[Injectable(typePriority: int.MinValue)]
 public class SptarkyAuthGate : IHttpListener
 {
     private readonly CompanionConfig _config;
@@ -63,7 +84,22 @@ public class SptarkyAuthGate : IHttpListener
         }
     }
 
-    public bool CanHandle(MongoId sessionId, HttpContext context)
+    // 4.1 changed both halves of this interface: CanHandle lost its sessionId, and Handle became
+    // HandleAsync with a CancellationToken. Neither the decision nor the refusal changed, so they
+    // stay in one place below and only the entry points differ. Getting this wrong is quiet — a
+    // listener that does not match the interface is simply never consulted, and every request
+    // sails past with 200.
+#if NET10_0_OR_GREATER
+    public bool CanHandle(HttpContext context) => ShouldRefuse(context);
+
+    public Task HandleAsync(MongoId sessionId, HttpContext context, CancellationToken cancellationToken) => Refuse(context);
+#else
+    public bool CanHandle(MongoId sessionId, HttpContext context) => ShouldRefuse(context);
+
+    public Task Handle(MongoId sessionId, HttpContext context) => Refuse(context);
+#endif
+
+    private bool ShouldRefuse(HttpContext context)
     {
         if (!IsCompanionRequest(context)) return false;
         if (!_config.RequireToken) return false;
@@ -74,7 +110,7 @@ public class SptarkyAuthGate : IHttpListener
         return !HasValidToken(context);
     }
 
-    public Task Handle(MongoId sessionId, HttpContext context)
+    private static Task Refuse(HttpContext context)
     {
         // 401 rather than 404, so the manager can tell "needs a token I do not have" from
         // "no companion installed here". They have completely different fixes, and readCapabilities

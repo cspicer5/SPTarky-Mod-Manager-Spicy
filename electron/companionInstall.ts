@@ -19,6 +19,32 @@ import path from "path";
 export const COMPANION_FOLDER = "SptarkyCompanion";
 export const COMPANION_DLL = "SptarkyCompanion.dll";
 
+/** The SPT line a companion build is for, and the folder it ships in. */
+export type CompanionLine = "spt4.0" | "spt4.1";
+
+/**
+ * Which companion build an SPT version needs.
+ *
+ * SPT 4.1 moved the server to .NET 10. A net10 assembly cannot be loaded by a net9 runtime and
+ * the 4.1 mod API is not the 4.0 one, so the two builds are not interchangeable in either
+ * direction — this is the one decision that keeps them apart.
+ *
+ * Returns undefined rather than a default when the version is unknown or is not 4.x. Guessing
+ * would put a DLL the server cannot load into user/mods, and THAT failure is silent from here:
+ * the file is present, the install reports success, and the companion simply never answers.
+ *
+ * A minor above 1 gets the newest build there is. That is an assumption about a version that
+ * does not exist yet, and it is the only defensible one — but it is why this returns a line
+ * rather than pretending to know a runtime.
+ */
+export function companionLineFor(sptVersion: string | undefined): CompanionLine | undefined {
+  if (!sptVersion) return undefined;
+  const parsed = /^(\d+)\.(\d+)/.exec(sptVersion.trim());
+  if (!parsed) return undefined;
+  if (Number(parsed[1]) !== 4) return undefined;
+  return Number(parsed[2]) >= 1 ? "spt4.1" : "spt4.0";
+}
+
 /** Kept in step with the DLL that ships beside it, and shown so a stale copy is visible. */
 export const BUNDLED_COMPANION_VERSION = "1.0.0";
 
@@ -42,7 +68,16 @@ export interface CompanionInstallState {
  * carries a version internally but reading it needs PE metadata parsing, and a wrong version
  * shown confidently is worse than an honest "this is not the build I ship".
  */
-export function readInstallState(serverRoot: string | undefined, bundledDll: string): CompanionInstallState {
+export function readInstallState(serverRoot: string | undefined, bundledDll: string | undefined): CompanionInstallState {
+  // Undefined means the caller could not work out which build this instance needs — see
+  // companionLineFor. Said as a version problem, because that is what the user has to fix.
+  if (!bundledDll) {
+    return {
+      canInstall: false,
+      installed: false,
+      reason: "The SPT version of this instance could not be determined, so the manager cannot tell which companion build it needs. Set the version manually and try again."
+    };
+  }
   if (!serverRoot) {
     return { canInstall: false, installed: false, reason: "No SPT instance is selected." };
   }
@@ -92,12 +127,12 @@ export interface CompanionInstallResult {
  * the UI. Nothing else in the folder is touched, so a config.json the owner has edited, token
  * and all, survives.
  */
-export function installCompanion(serverRoot: string | undefined, bundledDll: string): CompanionInstallResult {
+export function installCompanion(serverRoot: string | undefined, bundledDll: string | undefined): CompanionInstallResult {
   const state = readInstallState(serverRoot, bundledDll);
   if (!state.canInstall || !state.targetDir) {
     return { ok: false, message: state.reason ?? "This instance cannot take the companion." };
   }
-  if (!fs.existsSync(bundledDll)) {
+  if (!bundledDll || !fs.existsSync(bundledDll)) {
     return { ok: false, message: "The companion is missing from this build of the manager." };
   }
 

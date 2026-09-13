@@ -1,7 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <!-- TWO frameworks because SPT changed runtime under us: 4.0.x servers run on .NET 9 and
+         4.1.x on .NET 10, and a net10 assembly will NOT load into a net9 process. One DLL cannot
+         serve both, so the build produces one per line and the installer picks by the SPT version
+         it detected. See dist/ below for which is which. -->
+    <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- On, because nullability is load-bearing here: a server box legitimately has no client
          half, so ClientRoot being null is a real state the code must keep handling rather than
@@ -15,12 +19,26 @@
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
-  <!-- Referenced straight out of an SPT install rather than a NuGet feed: SPT does not
-       publish these, and the version that matters is the one the server actually runs.
-       SptDir is overridable so this can build against 4.1.x without editing the project. -->
+  <!-- Referenced straight out of an SPT install rather than a NuGet feed: SPT does not publish
+       these, and the version that matters is the one the target server actually runs.
+
+       Each line has its OWN overridable property rather than one shared SptDir, because the two
+       builds must reference different installs — passing a single path would silently compile the
+       4.1 build against 4.0's assemblies and produce a DLL that loads and then fails on the first
+       call into a changed signature. -->
   <PropertyGroup>
-    <SptDir Condition="'$(SptDir)' == ''">D:\SPT\SPT</SptDir>
+    <SptDir40 Condition="'$(SptDir40)' == ''">D:\SPT\SPT</SptDir40>
+    <SptDir41 Condition="'$(SptDir41)' == ''">D:\SPT41\SPT_Runtime</SptDir41>
+    <SptDir Condition="'$(TargetFramework)' == 'net9.0'">$(SptDir40)</SptDir>
+    <SptDir Condition="'$(TargetFramework)' == 'net10.0'">$(SptDir41)</SptDir>
   </PropertyGroup>
+
+  <!-- Fail here, with the path in the message, rather than 200 lines into a reference-resolution
+       cascade that never names the missing install. -->
+  <Target Name="CheckSptDir" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(SptDir)\SPTarkov.Server.Core.dll')"
+           Text="No SPT install at '$(SptDir)' (no SPTarkov.Server.Core.dll). Building $(TargetFramework) needs one; override with -p:SptDir40=... or -p:SptDir41=..." />
+  </Target>
 
   <ItemGroup>
     <Reference Include="SPTarkov.Server.Core">

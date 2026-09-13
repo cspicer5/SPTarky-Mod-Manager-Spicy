@@ -36,20 +36,20 @@ public class SptarkyFileRouter : DynamicRouter
         : base(
             jsonUtil,
             [
-                new RouteAction(ListRoute, (url, _, _, _) => new ValueTask<object>(httpResponseUtil.NoBody(ListFiles(url)))),
+                Routes.Get(ListRoute, url => httpResponseUtil.NoBody(ListFiles(url))),
 
                 // Binary cannot travel the normal path: a route action's result is cast with
                 // `as string`, so anything that is not a string becomes null. SPT's own answer to
                 // this is a sentinel — the action returns a marker and an ISerializer recognises
                 // it and writes the response itself. That is exactly how bundles are served.
-                new RouteAction(DataRoute, (url, _, _, _) =>
+                Routes.Get(DataRoute, url =>
                 {
                     // Resolved HERE as well as in the serializer so a bad path fails as honest
                     // JSON rather than as a sentinel that the serializer then silently drops.
                     string? resolved = FilePaths.Resolve(InstallLayout.Detect(), url, DataRoute);
-                    return new ValueTask<object>(resolved != null && File.Exists(resolved)
+                    return resolved != null && File.Exists(resolved)
                         ? FileSentinel
-                        : httpResponseUtil.NoBody(new FileListing { Error = "No such file." }));
+                        : httpResponseUtil.NoBody(new FileListing { Error = "No such file." });
                 })
             ])
     {
@@ -103,7 +103,18 @@ public class SptarkyFileSerializer : ISerializer
 
     public bool CanHandle(string route) => route == SptarkyFileRouter.FileSentinel;
 
-    public async Task Serialize(MongoId sessionID, HttpRequest req, HttpResponse resp, object? body)
+    // 4.1 renamed this to SerializeAsync and threaded a CancellationToken through it. Only the
+    // entry point differs; the work below is shared, so a change to how a file is served cannot
+    // land on one SPT line and not the other.
+#if NET10_0_OR_GREATER
+    public Task SerializeAsync(MongoId sessionID, HttpRequest req, HttpResponse resp, object? body, CancellationToken cancellationToken)
+        => WriteFileAsync(req, resp, cancellationToken);
+#else
+    public Task Serialize(MongoId sessionID, HttpRequest req, HttpResponse resp, object? body)
+        => WriteFileAsync(req, resp, CancellationToken.None);
+#endif
+
+    private async Task WriteFileAsync(HttpRequest req, HttpResponse resp, CancellationToken cancellationToken)
     {
         string? resolved = FilePaths.Resolve(InstallLayout.Detect(), req.Path.Value ?? "", SptarkyFileRouter.DataRoute);
         if (resolved == null || !File.Exists(resolved))
@@ -111,7 +122,11 @@ public class SptarkyFileSerializer : ISerializer
             resp.StatusCode = 404;
             return;
         }
+#if NET10_0_OR_GREATER
+        await _httpFileUtil.SendFileAsync(resp, resolved, cancellationToken);
+#else
         await _httpFileUtil.SendFile(resp, resolved);
+#endif
     }
 }
 

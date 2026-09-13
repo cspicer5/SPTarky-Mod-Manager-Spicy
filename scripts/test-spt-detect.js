@@ -40,13 +40,28 @@ console.log("\n=== detecting an install's SPT version ===\n");
  * a fixture would simply keep asserting the old shape forever.
  */
 const REAL = [
-  { path: "D:\\SPT", expect: "4.0.13", label: "a 4.0 install" },
-  { path: "D:\\SPT41", expect: "4.1.2", label: "a 4.1 install (server in SPT_Runtime/)" }
+  { path: "D:\\SPT", line: "4.0", label: "a 4.0 install" },
+  { path: "D:\\SPT41", line: "4.1", label: "a 4.1 install (server in SPT_Runtime/)" }
 ];
+
+/**
+ * The LINE plus the shape, rather than an exact build.
+ *
+ * These are live installs that get updated underneath this test. Pinning "4.1.2" meant an SPT
+ * upgrade to 4.1.5 failed a check that was reporting the truth — the detection was right and the
+ * expectation was stale, which is the kind of failure that teaches people to ignore a suite.
+ *
+ * What must still hold is everything that has actually broken here before. undefined is the
+ * apphost trap (metadata read from SPT.Server.exe, which carries none) and a qualifier is the
+ * informational-version trap ("4.1.5-RELEASE+7d7add5"), which is useless for catalogue
+ * filtering. Requiring a plain three-part number on the expected line catches both.
+ */
+const plainLine = (v) =>
+  typeof v === "string" && /^\d+\.\d+\.\d+$/.test(v) ? v.split(".").slice(0, 2).join(".") : v;
 
 let checkedAny = false;
 console.log("real installs on this machine");
-for (const { path: root, expect, label } of REAL) {
+for (const { path: root, line, label } of REAL) {
   if (!fs.existsSync(root)) {
     console.log(`  SKIP  ${label} — ${root} is not on this machine`);
     continue;
@@ -54,7 +69,8 @@ for (const { path: root, expect, label } of REAL) {
   checkedAny = true;
   // From the CLIENT root, which is what the app stores and passes. 4.1 keeps the server in a
   // subfolder, so this only works if the search looks down rather than assuming a layout.
-  check(`${label}: detected from the client root`, detectSptSemver(root), expect);
+  const detected = detectSptSemver(root);
+  check(`${label}: detected from the client root (saw ${JSON.stringify(detected)})`, plainLine(detected), line);
 }
 if (!checkedAny) console.log("  (no reference installs here — the checks below still apply)");
 
