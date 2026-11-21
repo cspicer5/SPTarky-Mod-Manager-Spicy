@@ -4106,8 +4106,12 @@ export function pickForgeVersionForSpt(
    * still the best guess. Returning nothing otherwise is the honest outcome — the caller reports
    * it and leaves the installed copy alone.
    */
+  // "Declares" means a constraint the parser can READ. A wildcard (`*`) or junk reads as unknown,
+  // exactly like an empty one, so it counts as declaring nothing — otherwise a newest build
+  // marked `*` would become the bar that every fallback has to clear, itself included, and the
+  // mod would get no build at all on any SPT.
   const newestConstrained = withLink
-    .filter((v) => (v.sptConstraint ?? "").trim() !== "")
+    .filter((v) => checkSptCompatibility(v.sptConstraint, sptVersion) !== "unknown")
     .reduce<string | undefined>(
       (max, v) => (v.version && (!max || compareVersions(v.version, max) > 0) ? v.version : max),
       undefined

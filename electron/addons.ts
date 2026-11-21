@@ -827,11 +827,17 @@ export function addonOwnFolders(args: {
   priorMarks: AddonMarkSnapshot;
   priorRecord?: InstalledAddonRecord;
   forgeAddonId?: number;
+  /**
+   * Folders another machine's record says are this addon's own — the server's ledger, on a pull.
+   * Evidence of the same standing as this machine's own record: it is what the addon's install
+   * over there actually produced. It is what rescues a folder that already exists here unmarked.
+   */
+  knownFolders?: { id: string; type: ModType }[];
 }): { id: string; type: ModType }[] {
   const isParent = (f: { id: string; type: ModType }) =>
     f.type === args.parent.type && f.id.toLowerCase() === args.parent.id.toLowerCase();
   const key = (f: { id: string; type: ModType }) => `${f.type}:${f.id.toLowerCase()}`;
-  const recordedHere = new Set((args.priorRecord?.folders ?? []).map(key));
+  const recordedHere = new Set([...(args.priorRecord?.folders ?? []), ...(args.knownFolders ?? [])].map(key));
 
   const evidenced = (f: { id: string; type: ModType }) => {
     if (recordedHere.has(key(f))) return true;

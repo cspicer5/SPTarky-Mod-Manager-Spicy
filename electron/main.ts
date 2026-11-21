@@ -1284,7 +1284,15 @@ function finishAddonInstall(
   parent: ModInfo,
   roots: { clientRoot: string; serverRoot: string },
   ctx: AddonInstallContext,
-  record: { name: string; version?: string; source: "forge" | "github" | "file" | "server"; forgeAddonId?: number; parentConstraint?: string }
+  record: {
+    name: string;
+    version?: string;
+    source: "forge" | "github" | "file" | "server";
+    forgeAddonId?: number;
+    parentConstraint?: string;
+    /** Folders another machine's record says are this addon's own — see addonOwnFolders. */
+    knownFolders?: { id: string; type: ModType }[];
+  }
 ): { added: { id: string; type: ModType }[]; mergedIntoParent: boolean; messageSuffix: string } {
   const newFolders = scanInstance("main")
     .filter((m) => !ctx.before.has(`${m.type}:${m.id}`))
@@ -1304,7 +1312,8 @@ function finishAddonInstall(
       name: record.name,
       parentName: parent.id
     }),
-    forgeAddonId: record.forgeAddonId
+    forgeAddonId: record.forgeAddonId,
+    knownFolders: record.knownFolders
   });
   // The addon's own rows keep their new version: they ARE the addon, not a mod it clobbered.
   const restored = restoreClobberedVersions(
@@ -1985,6 +1994,25 @@ ipcMain.handle(
     );
     if (!result.success) return result;
 
+    /*
+     * An own-folder addon's folders are pulled as plain files, so nothing wrote a registry row for
+     * them — and an addon mark can only land on a row that exists. Without this, a pulled
+     * own-folder addon arrived unmarked and was treated as a mod. Recording them also restamps a
+     * folder that was already here, which is how the finish step sees it was rewritten.
+     */
+    if (addon.mergedIntoParent === false) {
+      for (const f of addon.folders ?? []) {
+        const base = f.type === "server" ? path.join(roots.serverRoot, "user", "mods") : path.join(roots.clientRoot, "BepInEx", "plugins");
+        recordServerPullInstall(roots.clientRoot, {
+          id: f.id,
+          type: f.type,
+          installedPath: path.join(base, f.id),
+          version: addon.version,
+          serverUrl
+        });
+      }
+    }
+
     const done = finishAddonInstall(parent, roots, ctx, {
       name: addon.name,
       // The version the SERVER recorded, not one inferred from the files. No lookup chose this
@@ -1992,7 +2020,11 @@ ipcMain.handle(
       version: addon.version,
       source: "server",
       forgeAddonId: addon.forgeAddonId,
-      parentConstraint: addon.parentConstraint
+      parentConstraint: addon.parentConstraint,
+      // The server's record naming the folders is evidence too — the strongest there is for a
+      // folder that already exists here unmarked (say, pulled as a plain mod before this build),
+      // which local evidence alone would leave looking merged into its parent.
+      knownFolders: addon.mergedIntoParent === false ? addon.folders : undefined
     });
 
     return { ...result, message: `${result.message}${done.messageSuffix}` };

@@ -65,6 +65,18 @@ const STOPPED_DECLARING = [
 ];
 check("a newer build that declares nothing is still a fallback", pickForgeVersionForSpt(STOPPED_DECLARING, "4.1.6")?.version, "3.0.0");
 check("a mod that never declares anything still gets its newest", pickForgeVersionForSpt([{ version: "1.0.0", link: "n" }], "4.1.6")?.version, "1.0.0");
+// A wildcard is as good as declaring nothing — it must not become the bar the fallback has to
+// clear. Shipped wrong in 1.5.2-dev.1: this returned nothing on every SPT version.
+const WILDCARD_NEWEST = [
+  { version: "2.0.0", link: "w-200", sptConstraint: "*" },
+  { version: "1.0.0", link: "w-100", sptConstraint: "~3.9.0" }
+];
+check("a newest build declaring * is still a fallback", pickForgeVersionForSpt(WILDCARD_NEWEST, "4.1.6")?.version, "2.0.0");
+check(
+  "an OLD build declaring * is not",
+  pickForgeVersionForSpt([{ version: "2.0.2", link: "a", sptConstraint: "4.1.5" }, { version: "1.0.0", link: "b", sptConstraint: "*" }], "4.1.6"),
+  undefined
+);
 
 console.log("\naccepting a build on an SPT the author did not declare");
 {

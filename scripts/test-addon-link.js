@@ -142,6 +142,53 @@ console.log("\nupdating an own-folder addon, through the real registry functions
   check("so it is NOT recorded as merged into its parent", own.length === 0, false);
 }
 
+/* -------------- pulling the addon from the server over an UNMARKED existing folder */
+console.log("\npulling an own-folder addon from the server over a folder already here, unmarked");
+{
+  // A client that pulled Orbit.Fika as a plain mod before this build: the folder and a row exist,
+  // with no addon mark, and this machine's ledger knows nothing. Local evidence alone would leave
+  // the addon looking merged into ORBIT — the original bug, arriving by a different door.
+  const install = path.join(root, "server-pull");
+  const folder = path.join(install, "BepInEx", "plugins", "Orbit.Fika");
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, "Orbit.Fika.dll"), "1.2.0 from the server");
+  const registryPath = path.join(install, ".spt-mod-manager-registry.json");
+  writeJson(registryPath, [
+    { id: "ORBIT", displayName: "ORBIT", type: "client", installedAt: "2026-09-07T18:00:00.000Z", source: "archive-install" },
+    { id: "Orbit.Fika", displayName: "Orbit.Fika", type: "client", installedAt: "2026-11-01T00:00:00.000Z", source: "archive-install", installedVersion: "1.2.0", versionOrigin: "server" }
+  ]);
+  const foldersBefore = new Set(["client:ORBIT", "client:Orbit.Fika"]);
+  const versionsBefore = A.snapshotVersions(registryPath);
+  const priorMarks = A.snapshotAddonMarks(registryPath);
+
+  // What install-addon-from-server now does for each pulled own folder.
+  M.recordServerPullInstall(install, { id: "Orbit.Fika", type: "client", installedPath: folder, version: "1.2.0", serverUrl: "https://server.test:6969" });
+  const rewritten = A.foldersRewrittenSince(registryPath, versionsBefore, foldersBefore);
+  check("recording the pull marks the existing folder as rewritten", json(rewritten), json([ORBIT_FIKA]));
+
+  const localOnly = A.addonOwnFolders({ parent: ORBIT, added: [], rewritten, priorMarks, forgeAddonId: 123 });
+  check("(local evidence alone would call it merged — the bug)", json(localOnly), json([]));
+  const withServer = A.addonOwnFolders({ parent: ORBIT, added: [], rewritten, priorMarks, forgeAddonId: 123, knownFolders: [ORBIT_FIKA] });
+  check("the server's record naming the folder makes it the addon's own", json(withServer), json([ORBIT_FIKA]));
+  // The server's record is evidence only for folders the pull actually wrote.
+  check(
+    "a folder the server names but the pull did not write is not claimed",
+    json(A.addonOwnFolders({ parent: ORBIT, added: [], rewritten: [], priorMarks, knownFolders: [ORBIT_FIKA] })),
+    json([])
+  );
+
+  // And a brand-new folder can only be marked once it has a row — which the pull now writes.
+  const fresh = path.join(root, "server-pull-fresh");
+  const freshFolder = path.join(fresh, "BepInEx", "plugins", "Orbit.Fika");
+  fs.mkdirSync(freshFolder, { recursive: true });
+  fs.writeFileSync(path.join(freshFolder, "Orbit.Fika.dll"), "x");
+  const freshRegistry = path.join(fresh, ".spt-mod-manager-registry.json");
+  writeJson(freshRegistry, []);
+  check("with no row, the mark lands nowhere", A.markInstalledAsAddon(freshRegistry, [ORBIT_FIKA], { parentName: "ORBIT", parentType: "client" }), 0);
+  M.recordServerPullInstall(fresh, { id: "Orbit.Fika", type: "client", installedPath: freshFolder, version: "1.2.0", serverUrl: "https://server.test:6969" });
+  check("once the pull records it, the mark lands", A.markInstalledAsAddon(freshRegistry, [ORBIT_FIKA], { parentName: "ORBIT", parentType: "client" }), 1);
+}
+
 /* ------------------------------------------------ rows rewritten by an install */
 console.log("\nwhich existing rows an install rewrote");
 {
