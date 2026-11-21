@@ -43,6 +43,7 @@ import {
   scanPatchers,
   adoptLedgerVersionIfUnchanged,
   trackFolderIfUntracked,
+  cacheCatalogueIdsByGuid,
   loadSptAcceptances,
   acceptanceApplies,
   acceptSptIncompatibility,
@@ -1527,6 +1528,19 @@ ipcMain.handle("get-addon-suggestions", async () => {
   }
   // One scan, shared by the suggestions and the update check below.
   const installedMods = scanInstance("main");
+  // Mods this install has never matched to the catalogue — pulled from a server, synced, or
+  // installed by hand — are resolved here by exact GUID, so their addons can be offered without
+  // "Check for updates" having been run first. A failure leaves the panel as it would have been.
+  try {
+    await cacheCatalogueIdsByGuid(
+      roots.clientRoot,
+      installedMods
+        .filter((m) => !m.addonOf)
+        .map((m) => ({ folderName: m.originalName || m.id, guids: [m.catalogueGuid, m.guid, m.assemblyGuid] }))
+    );
+  } catch {
+    /* offline or rate-limited: the cached matches are still used */
+  }
   const suggestions = suggestAddons(
     installedMods,
     forgeIdsByFolder(roots.clientRoot),

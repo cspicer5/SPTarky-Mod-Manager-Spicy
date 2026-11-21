@@ -3692,6 +3692,72 @@ export function undismissForgeUpdate(root: string, originalName: string): void {
   }
 }
 
+/**
+ * Folders with no catalogue id cached, resolved by EXACT GUID and nothing else.
+ *
+ * The Addons panel decides which addons to offer from the match cache alone, and only the
+ * update check, bulk reinstall and manual pins ever write it. A mod that arrived any other way
+ * — pulled from a server, synced, installed by hand — is unknown to the panel until someone
+ * runs "Check for updates". Found 2026-11-20: a friend with Show Me The Money (4.1.x), pulled
+ * from the host, was never offered Quick Sell (4.1.x), because nothing had matched the parent.
+ *
+ * GUID equality only: one batched request per 25 GUIDs, no name search and no guesswork, so it
+ * is cheap enough to run whenever the panel opens and cannot cache a wrong match. Existing
+ * entries — manual pins above all — are never touched. Returns how many folders it resolved.
+ */
+export async function cacheCatalogueIdsByGuid(
+  cacheRoot: string,
+  entries: { folderName: string; guids: (string | undefined)[] }[]
+): Promise<number> {
+  const cache = loadForgeMatchCache(cacheRoot);
+  const wanted = entries
+    .filter((e) => e.folderName && !cache[e.folderName])
+    .map((e) => ({
+      folderName: e.folderName,
+      guids: [...new Set(e.guids.filter((g): g is string => !!g && !!g.trim()).map((g) => g.trim().toLowerCase()))]
+    }))
+    .filter((e) => e.guids.length > 0);
+  if (wanted.length === 0) return 0;
+
+  const allGuids = [...new Set(wanted.flatMap((e) => e.guids))];
+  const rows = await fetchForgeByGuids(allGuids, newForgeBudget(allGuids.length));
+  const added = applyGuidMatches(cache, wanted, rows);
+  if (added > 0) saveForgeMatchCache(cacheRoot, cache);
+  return added;
+}
+
+/**
+ * The pure half of cacheCatalogueIdsByGuid: writes an entry for each folder whose GUID the
+ * catalogue publishes EXACTLY. A GUID claimed by more than one catalogue mod is ambiguous and
+ * skipped — guessing between them is what a GUID lookup exists to avoid.
+ */
+export function applyGuidMatches(
+  cache: Record<string, { modId: string; method: string; guid?: string; verifiedAt?: string }>,
+  wanted: { folderName: string; guids: string[] }[],
+  rows: any[]
+): number {
+  const idsByGuid = new Map<string, Set<string>>();
+  for (const row of rows ?? []) {
+    const guid = typeof row?.guid === "string" ? row.guid.trim().toLowerCase() : "";
+    const id = Number(row?.id);
+    if (!guid || !Number.isFinite(id) || id <= 0) continue;
+    if (!idsByGuid.has(guid)) idsByGuid.set(guid, new Set());
+    idsByGuid.get(guid)!.add(String(id));
+  }
+  let added = 0;
+  for (const e of wanted) {
+    if (cache[e.folderName]) continue;
+    for (const guid of e.guids) {
+      const ids = idsByGuid.get(guid.toLowerCase());
+      if (!ids || ids.size !== 1) continue;
+      cache[e.folderName] = { modId: [...ids][0], method: "guid", guid, verifiedAt: new Date().toISOString() };
+      added++;
+      break;
+    }
+  }
+  return added;
+}
+
 /** A link made by hand by the user — takes precedence over any automation. */
 export function setManualForgeMatch(root: string, folderName: string, modId: number | string): void {
   const cache = loadForgeMatchCache(root);

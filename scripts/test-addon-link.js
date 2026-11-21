@@ -285,6 +285,48 @@ console.log("\nremoving an own-folder addon's folder removes its record");
   check("removing an ordinary mod changes nothing", json(A.forgetRemovedAddonFolder(install, { id: "SAIN", type: "client" })), json([]));
 }
 
+console.log("\nthe Addons panel finds a parent nothing has matched yet, by exact GUID only");
+{
+  // A friend pulled Show Me The Money (4.1.x) from the host: no saved match, so Quick Sell (4.1.x)
+  // was never offered. Rows as the catalogue returns them for filter[guid].
+  const rows = [
+    { id: 3011, guid: "com.dark.spt.showmethemoney" },
+    { id: 2299, guid: "com.swiftxp.spt.showmethemoney" },
+    { id: 7001, guid: "com.example.claimed-twice" },
+    { id: 7002, guid: "com.example.claimed-twice" }
+  ];
+  const cache = { "Pinned.dll": { modId: "42", method: "manual" } };
+  const added = M.applyGuidMatches(
+    cache,
+    [
+      { folderName: "SwiftXP.ShowMeTheMoney.dll", guids: ["COM.DARK.SPT.SHOWMETHEMONEY"] },
+      { folderName: "Pinned.dll", guids: ["com.swiftxp.spt.showmethemoney"] },
+      { folderName: "Ambiguous", guids: ["com.example.claimed-twice"] },
+      { folderName: "Unknown", guids: ["com.nobody.publishes.this"] },
+      { folderName: "SecondGuidWins", guids: ["com.nobody.publishes.this", "com.swiftxp.spt.showmethemoney"] }
+    ],
+    rows
+  );
+  check("the 4.1.x Show Me The Money is matched to mod 3011, case-insensitively", cache["SwiftXP.ShowMeTheMoney.dll"] && cache["SwiftXP.ShowMeTheMoney.dll"].modId, "3011");
+  check("as a GUID match, so it is trusted and kept", cache["SwiftXP.ShowMeTheMoney.dll"] && cache["SwiftXP.ShowMeTheMoney.dll"].method, "guid");
+  check("a manual pin is never overwritten", cache["Pinned.dll"].modId, "42");
+  check("a GUID two catalogue mods claim is skipped, not guessed", cache.Ambiguous, undefined);
+  check("an unknown GUID matches nothing", cache.Unknown, undefined);
+  check("a later GUID is tried when the first misses", cache.SecondGuidWins && cache.SecondGuidWins.modId, "2299");
+  check("it reports how many it resolved", added, 2);
+
+  // And the suggestion itself: once the parent is matched, Quick Sell (4.1.x) is offered.
+  const catalogue = [
+    { id: 128, name: "Quick Sell (4.1.x)", modId: 3011, versions: [{ version: "3.0.2", link: "q", modConstraint: "3.0.2" }] },
+    { id: 1, name: "Quick-Sell", modId: 2299, versions: [{ version: "2.3.0", link: "o", modConstraint: "~2.7.0" }] }
+  ];
+  const smtm = [{ id: "SwiftXP.ShowMeTheMoney.dll", originalName: "SwiftXP.ShowMeTheMoney.dll", type: "client", version: "3.0.2" }];
+  check("with no match, nothing is offered", A.suggestAddons(smtm, {}, catalogue).length, 0);
+  const offered = A.suggestAddons(smtm, { "SwiftXP.ShowMeTheMoney.dll": "3011" }, catalogue);
+  check("with the match, Quick Sell (4.1.x) is offered", offered.map((s) => s.addon.name).join(), "Quick Sell (4.1.x)");
+  check("as a declared fit for parent 3.0.2", offered[0] && offered[0].fit, "declared");
+}
+
 /* ------------------------------------------------ rows rewritten by an install */
 console.log("\nwhich existing rows an install rewrote");
 {
