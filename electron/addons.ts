@@ -674,8 +674,25 @@ export interface VersionSnapshot {
      * reported as needing a reinstall ever since. Nothing was wiped and nothing needed doing.
      */
     installedAt?: string;
+    /**
+     * The parent's CATALOGUE IDENTITY — what the catalogue told this app the mod was when it was
+     * installed. Restored for the same reason as the version: a merged addon install rewrites the
+     * parent's row with the ADDON's catalogue details. Found on both real installs (2026-11-20):
+     * `tarkin-ladders` read "Climbable Ladders - Fika sync", APBS read its loadout preset addon,
+     * each with its catalogue GUID cleared — so the mod fell back to its DLL's GUID, a different
+     * namespace — and a fresh package id that split ManimalIcebreaker's client half from its
+     * server half.
+     */
+    forgeName?: string;
+    forgeAuthor?: string;
+    forgeVersion?: string;
+    forgeGuid?: string;
+    packageId?: string;
   };
 }
+
+/** The catalogue-identity fields an addon install must not change on a row it does not own. */
+export const PROTECTED_IDENTITY_FIELDS = ["forgeName", "forgeAuthor", "forgeVersion", "forgeGuid", "packageId"] as const;
 
 export function snapshotVersions(registryPath: string): VersionSnapshot {
   const snap: VersionSnapshot = {};
@@ -685,7 +702,12 @@ export function snapshotVersions(registryPath: string): VersionSnapshot {
         installedVersion: e.installedVersion,
         versionOrigin: e.versionOrigin,
         versionEvidence: e.versionEvidence,
-        installedAt: e.installedAt
+        installedAt: e.installedAt,
+        forgeName: e.forgeName,
+        forgeAuthor: e.forgeAuthor,
+        forgeVersion: e.forgeVersion,
+        forgeGuid: e.forgeGuid,
+        packageId: e.packageId
       };
     }
   } catch {
@@ -695,11 +717,12 @@ export function snapshotVersions(registryPath: string): VersionSnapshot {
 }
 
 /**
- * Puts back any version an addon install overwrote.
+ * Puts back any version — and catalogue identity — an addon install overwrote.
  *
  * Only touches entries that ALREADY EXISTED: a folder the addon created for itself is its
  * own, and its version is the addon's. A mod that was already installed is never the addon,
- * so any change to its recorded version during an addon install is wrong by definition.
+ * so any change to its recorded version or identity during an addon install is wrong by
+ * definition.
  */
 export function restoreClobberedVersions(
   registryPath: string,
@@ -730,11 +753,13 @@ export function restoreClobberedVersions(
     // to EQUAL its parent's slips through a version-only check while still rewriting the
     // provenance: Manimal's Icebreaker Fika Sync is 0.2.1 and so is the mod it patches, so
     // the parent kept the right version attributed to entirely the wrong thing.
+    const identityChanged = PROTECTED_IDENTITY_FIELDS.some((f) => entry[f] !== prior[f]);
     const changed =
       entry.installedVersion !== prior.installedVersion ||
       entry.versionOrigin !== prior.versionOrigin ||
       entry.versionEvidence !== prior.versionEvidence ||
-      entry.installedAt !== prior.installedAt;
+      entry.installedAt !== prior.installedAt ||
+      identityChanged;
     if (!changed) continue;
 
     entry.installedVersion = prior.installedVersion;
@@ -743,10 +768,123 @@ export function restoreClobberedVersions(
     // The parent was not reinstalled — an addon merged into its folder. Leaving the bumped
     // stamp makes every addon installed before this one look wiped, permanently.
     if (prior.installedAt) entry.installedAt = prior.installedAt;
+    // And it is still the mod it was: the addon's catalogue name, version, cleared GUID and new
+    // package id all describe the ADDON. Restored exactly, absent included.
+    for (const f of PROTECTED_IDENTITY_FIELDS) {
+      if (prior[f] === undefined) delete entry[f];
+      else entry[f] = prior[f];
+    }
     restored.push(`${entry.id} [${entry.type}]`);
   }
   if (restored.length) fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2), "utf-8");
   return restored;
+}
+
+/**
+ * Repairs parent rows whose catalogue identity a merged addon install overwrote, before
+ * `restoreClobberedVersions` protected it.
+ *
+ * Found on both real installs (2026-11-20): five rows carried their ADDON's catalogue name, an
+ * empty catalogue GUID, and a fresh package id. The version fields were already restored at the
+ * time; the identity was not.
+ *
+ * A row is touched only on this bug's exact fingerprint, read from two records the app itself
+ * wrote: its `forgeName` EQUALS the name of an addon that the addon ledger says belongs to it.
+ * Nothing is fuzzy-matched. Each field is then rebuilt from the row's own evidence:
+ *
+ *  - name: from its install evidence, "Forge: <name> <version>", when that version is the one
+ *    recorded — otherwise from the mod's other half, otherwise left absent rather than wrong
+ *  - catalogue version: the recorded version, when the catalogue supplied it
+ *  - catalogue GUID: from the match cache, which holds the catalogue id this folder resolved to
+ *  - package id: the other half's, when the same folder name exists as the other half — the
+ *    addon install split ManimalIcebreaker's client from its server that way
+ *
+ * Safe to run on every start: a repaired row no longer carries an addon's name.
+ */
+export function repairOverwrittenParentIdentity(
+  registryPath: string,
+  ledger: InstalledAddonRecord[],
+  catalogueGuidByFolder: Record<string, string | undefined>
+): string[] {
+  let registry: any[];
+  try {
+    registry = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(registry)) return [];
+
+  const addonNamesByParent = new Map<string, Set<string>>();
+  for (const r of ledger) {
+    const k = String(r.parentName ?? "").toLowerCase();
+    if (!k || !r.name) continue;
+    if (!addonNamesByParent.has(k)) addonNamesByParent.set(k, new Set());
+    addonNamesByParent.get(k)!.add(r.name);
+  }
+
+  const repaired: string[] = [];
+  for (const row of registry) {
+    if (!row || row.addonOf) continue; // an addon's own row legitimately carries the addon's name
+    const names = addonNamesByParent.get(String(row.id).toLowerCase());
+    if (!names || typeof row.forgeName !== "string" || !names.has(row.forgeName)) continue;
+
+    const sibling = registry.find(
+      (e) =>
+        e !== row &&
+        e.id === row.id &&
+        e.type !== row.type &&
+        !e.addonOf &&
+        !(typeof e.forgeName === "string" && names.has(e.forgeName))
+    );
+
+    const fromCatalogue = row.versionOrigin === "forge";
+    const m = /^Forge: (.+) (\S+)$/.exec(typeof row.versionEvidence === "string" ? row.versionEvidence : "");
+    const evidenceName = fromCatalogue && m && m[2] === row.installedVersion && !names.has(m[1]) ? m[1] : undefined;
+    const name = evidenceName ?? (typeof sibling?.forgeName === "string" ? sibling.forgeName : undefined);
+    if (name) row.forgeName = name;
+    else delete row.forgeName;
+
+    if (fromCatalogue && row.installedVersion) row.forgeVersion = row.installedVersion;
+    else delete row.forgeVersion;
+
+    if (!row.forgeGuid) {
+      const guid = catalogueGuidByFolder[row.id] ?? (typeof sibling?.forgeGuid === "string" ? sibling.forgeGuid : undefined);
+      if (guid) row.forgeGuid = guid;
+    }
+    if (typeof sibling?.packageId === "string" && sibling.packageId !== row.packageId) row.packageId = sibling.packageId;
+
+    repaired.push(`${row.id} [${row.type}]`);
+  }
+  if (repaired.length) fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2), "utf-8");
+  return repaired;
+}
+
+/**
+ * Takes a removed folder out of the addon ledger.
+ *
+ * Uninstalling deleted the folder and left the ledger untouched, so removing an own-folder addon
+ * (ORBIT's Fika addon, made obsolete by ORBIT 3.2.1) left a record that every later addon check
+ * reported as missing. A record whose LAST own folder is removed is dropped — the addon is gone.
+ * Merged addons are never touched: their files live in the parent, not in a folder of their own.
+ */
+export function forgetRemovedAddonFolder(clientRoot: string, folder: { id: string; type: ModType }): string[] {
+  const ledger = loadAddonLedger(clientRoot);
+  const same = (f: { id: string; type: ModType }) => f.type === folder.type && f.id.toLowerCase() === folder.id.toLowerCase();
+  const dropped: string[] = [];
+  let touched = false;
+  const kept: InstalledAddonRecord[] = [];
+  for (const r of ledger) {
+    if (r.mergedIntoParent || !(r.folders ?? []).some(same)) {
+      kept.push(r);
+      continue;
+    }
+    touched = true;
+    const remaining = (r.folders ?? []).filter((f) => !same(f));
+    if (remaining.length === 0) dropped.push(r.name);
+    else kept.push({ ...r, folders: remaining });
+  }
+  if (touched) fs.writeFileSync(addonLedgerPath(clientRoot), JSON.stringify(kept, null, 2), "utf-8");
+  return dropped;
 }
 
 /* --------------------------------------------------------------------------

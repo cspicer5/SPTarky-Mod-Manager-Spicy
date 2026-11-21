@@ -189,6 +189,102 @@ console.log("\npulling an own-folder addon from the server over a folder already
   check("once the pull records it, the mark lands", A.markInstalledAsAddon(freshRegistry, [ORBIT_FIKA], { parentName: "ORBIT", parentType: "client" }), 1);
 }
 
+/* -------------------- the parent's catalogue identity survives a merged addon install */
+console.log("\na merged addon install must not rename its parent in the catalogue's terms");
+{
+  const install = path.join(root, "identity");
+  fs.mkdirSync(install, { recursive: true });
+  const registryPath = path.join(install, ".spt-mod-manager-registry.json");
+  // Modelled on ManimalIcebreaker on D:\SPT: two halves, one package, one catalogue GUID.
+  const parentBefore = {
+    id: "ManimalIcebreaker", type: "client", installedAt: "2026-08-20T10:00:00.000Z", source: "archive-install",
+    installedVersion: "0.3.1", versionOrigin: "forge", versionEvidence: "Forge: ManimalIcebreaker 0.3.1",
+    forgeName: "ManimalIcebreaker", forgeVersion: "0.3.1", forgeGuid: "com.manimal.icebreaker", packageId: "pkg-halves"
+  };
+  writeJson(registryPath, [parentBefore]);
+  const versionsBefore = A.snapshotVersions(registryPath);
+  // What the merge installer writes for the parent's folder when the ADDON's archive lands in it.
+  writeJson(registryPath, [{
+    id: "ManimalIcebreaker", type: "client", installedAt: "2026-08-20T11:00:00.000Z", source: "archive-install",
+    installedVersion: "0.3.1", versionOrigin: "forge", versionEvidence: "Forge: MANIMAL'S ICEBREAKER BACKPORT FIKA SYNC 0.3.1",
+    forgeName: "MANIMAL'S ICEBREAKER BACKPORT FIKA SYNC", forgeVersion: "0.3.1", packageId: "pkg-addon-archive"
+  }]);
+  A.restoreClobberedVersions(registryPath, versionsBefore);
+  const row = readJson(registryPath)[0];
+  check("its catalogue name is put back", row.forgeName, "ManimalIcebreaker");
+  check("its catalogue GUID is put back (the install cleared it)", row.forgeGuid, "com.manimal.icebreaker");
+  check("its package id is put back, so the halves stay one package", row.packageId, "pkg-halves");
+  check("its version evidence is put back", row.versionEvidence, "Forge: ManimalIcebreaker 0.3.1");
+
+  // A field that was ABSENT before stays absent, rather than keeping the addon's value.
+  writeJson(registryPath, [{ id: "P", type: "client", installedAt: "a", installedVersion: "1.0.0" }]);
+  const v2 = A.snapshotVersions(registryPath);
+  writeJson(registryPath, [{ id: "P", type: "client", installedAt: "b", installedVersion: "1.0.0", forgeName: "Some Addon" }]);
+  A.restoreClobberedVersions(registryPath, v2);
+  check("a field the parent never had is removed again", "forgeName" in readJson(registryPath)[0], false);
+}
+
+console.log("\nrepairing rows an addon install already renamed");
+{
+  const install = path.join(root, "identity-repair");
+  fs.mkdirSync(install, { recursive: true });
+  const registryPath = path.join(install, ".spt-mod-manager-registry.json");
+  const damaged = [
+    // D:\SPT's ManimalIcebreaker: client half renamed after its addon, split into its own package.
+    { id: "ManimalIcebreaker", type: "server", installedVersion: "0.3.1", versionOrigin: "forge", versionEvidence: "Forge: ManimalIcebreaker 0.3.1", forgeName: "ManimalIcebreaker", forgeVersion: "0.3.1", forgeGuid: "com.manimal.icebreaker", packageId: "pkg-o4lk4l" },
+    { id: "ManimalIcebreaker", type: "client", installedVersion: "0.3.1", versionOrigin: "forge", versionEvidence: "Forge: ManimalIcebreaker 0.3.1", forgeName: "MANIMAL'S ICEBREAKER BACKPORT FIKA SYNC", forgeVersion: "0.3.1", packageId: "pkg-vha1zm" },
+    // tarkin-ladders: no other half; name from its own evidence, GUID from the match cache.
+    { id: "tarkin-ladders", type: "client", installedVersion: "1.0.4", versionOrigin: "forge", versionEvidence: "Forge: Climbable Ladders 1.0.4", forgeName: "Climbable Ladders - Fika sync", forgeVersion: "1.0.1", packageId: "pkg-alone" },
+    // Evidence that does not describe the recorded version, and no other half: nothing to rebuild from.
+    { id: "Lonely", type: "server", installedVersion: "2.0.0", versionOrigin: "server", versionEvidence: "Pulled from https://x", forgeName: "Lonely Patch", forgeVersion: "0.1.0", packageId: "pkg-l" },
+    // An addon's OWN row legitimately carries the addon's name — never "repaired".
+    { id: "Orbit.Fika", type: "client", installedVersion: "1.2.0", forgeName: "ORBIT - Fika Addon", addonOf: "ORBIT" },
+    // A healthy mod is left alone.
+    { id: "SAIN", type: "client", installedVersion: "4.4.0", versionOrigin: "forge", versionEvidence: "Forge: SAIN 4.4.0", forgeName: "SAIN", forgeGuid: "me.sol.sain", packageId: "pkg-sain" }
+  ];
+  writeJson(registryPath, damaged);
+  const ledger = [
+    { name: "MANIMAL'S ICEBREAKER BACKPORT FIKA SYNC", parentName: "ManimalIcebreaker", parentType: "client" },
+    { name: "Climbable Ladders - Fika sync", parentName: "tarkin-ladders", parentType: "client" },
+    { name: "Lonely Patch", parentName: "Lonely", parentType: "server" },
+    { name: "ORBIT - Fika Addon", parentName: "Orbit.Fika", parentType: "client" }
+  ];
+  const repaired = A.repairOverwrittenParentIdentity(registryPath, ledger, { "tarkin-ladders": "com.tarkin.ladders", ManimalIcebreaker: "com.manimal.icebreaker" });
+  check("exactly the three renamed parents are repaired", json(repaired.sort()), json(["Lonely [server]", "ManimalIcebreaker [client]", "tarkin-ladders [client]"]));
+  const after = readJson(registryPath);
+  const get = (id, type) => after.find((e) => e.id === id && e.type === type);
+  check("ManimalIcebreaker's name comes back from its own evidence", get("ManimalIcebreaker", "client").forgeName, "ManimalIcebreaker");
+  check("its catalogue GUID comes back from the match cache", get("ManimalIcebreaker", "client").forgeGuid, "com.manimal.icebreaker");
+  check("it rejoins its server half's package", get("ManimalIcebreaker", "client").packageId, "pkg-o4lk4l");
+  check("tarkin-ladders is Climbable Ladders again", get("tarkin-ladders", "client").forgeName, "Climbable Ladders");
+  check("with the catalogue version it was installed at", get("tarkin-ladders", "client").forgeVersion, "1.0.4");
+  check("a lone mod keeps its own package id", get("tarkin-ladders", "client").packageId, "pkg-alone");
+  check("with nothing to rebuild from, the addon's name is removed rather than kept", "forgeName" in get("Lonely", "server"), false);
+  check("an addon's own row is untouched", get("Orbit.Fika", "client").forgeName, "ORBIT - Fika Addon");
+  check("a healthy mod is untouched", json(get("SAIN", "client")), json(damaged[5]));
+  check("running it again repairs nothing", A.repairOverwrittenParentIdentity(registryPath, ledger, {}).length, 0);
+}
+
+console.log("\nremoving an own-folder addon's folder removes its record");
+{
+  const install = path.join(root, "forget");
+  fs.mkdirSync(install, { recursive: true });
+  const ledgerPath = path.join(install, ".spt-mod-manager-addons.json");
+  writeJson(ledgerPath, [
+    { forgeAddonId: 123, name: "ORBIT - Fika Addon", parentName: "ORBIT", parentType: "client", folders: [ORBIT_FIKA], mergedIntoParent: false },
+    { name: "Two Halves", parentName: "P", parentType: "client", folders: [{ id: "Half", type: "client" }, { id: "Half", type: "server" }], mergedIntoParent: false },
+    // A merged addon that happens to list the folder must never be dropped by a folder removal.
+    { name: "Merged Patch", parentName: "ORBIT", parentType: "client", folders: [ORBIT_FIKA], mergedIntoParent: true, parentFiles: ["x.dll"] }
+  ]);
+  check("removing Orbit.Fika drops the ORBIT Fika addon", json(A.forgetRemovedAddonFolder(install, ORBIT_FIKA)), json(["ORBIT - Fika Addon"]));
+  const left = readJson(ledgerPath).map((r) => r.name);
+  check("and leaves the merged addon alone", left.includes("Merged Patch"), true);
+  check("removing one half of a two-folder addon keeps the record", json(A.forgetRemovedAddonFolder(install, { id: "Half", type: "client" })), json([]));
+  check("with only the other half left", json(readJson(ledgerPath).find((r) => r.name === "Two Halves").folders), json([{ id: "Half", type: "server" }]));
+  check("removing the last half drops it", json(A.forgetRemovedAddonFolder(install, { id: "Half", type: "server" })), json(["Two Halves"]));
+  check("removing an ordinary mod changes nothing", json(A.forgetRemovedAddonFolder(install, { id: "SAIN", type: "client" })), json([]));
+}
+
 /* ------------------------------------------------ rows rewritten by an install */
 console.log("\nwhich existing rows an install rewrote");
 {

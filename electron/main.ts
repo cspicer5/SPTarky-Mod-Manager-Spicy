@@ -167,7 +167,9 @@ import {
   addonOwnFolders,
   findAddonRecord,
   addonLinkCandidates,
-  asOwnFolderRecord
+  asOwnFolderRecord,
+  repairOverwrittenParentIdentity,
+  forgetRemovedAddonFolder
 } from "./addons";
 import { InstanceConfig, InstanceId, ModInfo, ModType } from "./types";
 
@@ -239,9 +241,33 @@ function rootsFor(target: InstanceId | undefined): { clientRoot: string; serverR
   return sptPath ? { clientRoot: sptPath, serverRoot: getServerRoot()! } : null;
 }
 
+/**
+ * Install roots whose registry has had the one-time parent-identity repair this session.
+ * See repairOverwrittenParentIdentity — it only ever touches rows carrying an addon's name.
+ */
+const identityRepairedRoots = new Set<string>();
+
+function repairParentIdentityOnce(clientRoot: string): void {
+  if (identityRepairedRoots.has(clientRoot)) return;
+  identityRepairedRoots.add(clientRoot);
+  try {
+    const repaired = repairOverwrittenParentIdentity(
+      path.join(clientRoot, ".spt-mod-manager-registry.json"),
+      loadAddonLedger(clientRoot),
+      catalogueGuidsByFolder(clientRoot)
+    );
+    if (repaired.length) console.log(`[addons] restored the catalogue identity an addon install overwrote: ${repaired.join(", ")}`);
+  } catch {
+    // A repair that cannot run leaves things exactly as they were; it must never stop a scan.
+  }
+}
+
 function scanInstance(target: InstanceId): ModInfo[] {
   const roots = rootsFor(target);
   if (!roots) return [];
+  // The main install only: a headless client's rows are written by the sync, never by an addon
+  // install, so they cannot carry this damage.
+  if (target === "main") repairParentIdentityOnce(roots.clientRoot);
   const instanceVersion = store.get("sptVersionOverride") ?? detectSptSemver(roots.clientRoot);
   // Where each mod's code lives, derived from the Forge match cache plus the pre-shutdown
   // harvest. Attached here rather than stored, so it stays correct without a migration and
@@ -1420,6 +1446,20 @@ function addonCataloguePaths(): string[] {
     path.join(app.getAppPath(), "data", "forge-addons.json"),
     path.join(__dirname, "..", "data", "forge-addons.json")
   ];
+}
+
+/** The catalogue GUID each folder resolved to, from the match cache — the PACKAGE namespace. */
+function catalogueGuidsByFolder(clientRoot: string): Record<string, string | undefined> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(clientRoot, ".spt-mod-manager-forge-match.json"), "utf-8"));
+    const out: Record<string, string | undefined> = {};
+    for (const [folder, entry] of Object.entries<any>(raw?.entries ?? {})) {
+      if (typeof entry?.guid === "string" && entry.guid) out[folder] = entry.guid;
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 function forgeIdsByFolder(clientRoot: string): Record<string, string> {
@@ -3109,7 +3149,16 @@ ipcMain.handle("toggle-mod", (_event, mod: ModInfo, target: InstanceId = "main")
 ipcMain.handle("uninstall-mod", (_event, mod: ModInfo, target: InstanceId = "main") => {
   const roots = rootsFor(target);
   if (!roots) return { success: false, message: `No ${target} instance configured.` };
-  return uninstallMod(roots.clientRoot, roots.serverRoot, mod);
+  const result = uninstallMod(roots.clientRoot, roots.serverRoot, mod);
+  // An own-folder addon removed by removing its folder: its ledger record goes too, or every
+  // later addon check reports it missing. The main install only — that is where the ledger is.
+  if (result.success && target === "main" && (mod.type === "client" || mod.type === "server")) {
+    const dropped = forgetRemovedAddonFolder(roots.clientRoot, { id: mod.id, type: mod.type });
+    if (dropped.length) {
+      return { ...result, message: `${result.message} Also removed from the addon list: ${dropped.join(", ")}.` };
+    }
+  }
+  return result;
 });
 
 ipcMain.handle("rename-mod", (_event, modId: string, alias: string) => {
