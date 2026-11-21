@@ -1,5 +1,10 @@
 # SPT Forge shutdown — 2026-08-10
 
+> **Update, 2026-11-20:** since **v1.4.3** (13 August 2026) the app reads the rebuilt Forge at
+> **[sp-mod.com](https://sp-mod.com)**. The `forge-alt.katrinfoxvr.com` mirror described below was
+> kept as a backup and has since gone offline — it no longer resolves. Everything below is the
+> record as it stood in August.
+
 > ## RESOLVED in v1.3.0 — the catalogue moved, it did not die
 >
 > A successor at `forge-alt.katrinfoxvr.com` mirrors Forge's database, and the app switched
