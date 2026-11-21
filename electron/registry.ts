@@ -155,9 +155,14 @@ export function modPageUrl(ref: { detailUrl?: string | null; slug?: string | nul
 }
 
 /** An addon's page. Same rule as modPageUrl: /addon/<id> is a 404. */
-export function addonPageUrl(ref: { detailUrl?: string | null; slug?: string | null }): string | undefined {
+export function addonPageUrl(ref: { detailUrl?: string | null; id?: number | null; slug?: string | null }): string | undefined {
   if (ref.detailUrl && /^https?:\/\//i.test(ref.detailUrl)) return ref.detailUrl;
-  if (ref.slug) return `${getRegistrySiteBase()}/addons/${encodeURIComponent(ref.slug)}`;
+  // Addon pages are /addon/<id>/<slug> — SINGULAR, and addressed by id. The plural
+  // /addons/<slug> that mods' pattern suggests is a 404 (checked 2026-11-20), so without an
+  // id there is no page to build.
+  if (ref.id && ref.id > 0) {
+    return `${getRegistrySiteBase()}/addon/${ref.id}${ref.slug ? `/${encodeURIComponent(ref.slug)}` : ""}`;
+  }
   return undefined;
 }
 
@@ -197,9 +202,16 @@ export function isRegistryPageUrl(url: string): boolean {
     return false;
   }
   if (parsed.protocol !== "https:" || parsed.origin !== site.origin) return false;
-  // /mods/<slug> and /addons/<slug> are the page forms. /mod/<id> is the older Forge one,
-  // kept readable so a link made before the move still opens.
-  return /^\/(mods|addons)\/[^/]+/.test(parsed.pathname) || /^\/mod\/\d+/.test(parsed.pathname);
+  // /mods/<slug> is a mod page and /addon/<id>/<slug> an addon page — singular, which is what
+  // the catalogue's own `detail_url` gives. Only the plural was allowed here, so every "open
+  // this addon's page" link was refused and did nothing. /mod/<id> is the older Forge form,
+  // kept readable so a link made before the move still opens; /addons/ is kept for the same
+  // reason.
+  return (
+    /^\/(mods|addons)\/[^/]+/.test(parsed.pathname) ||
+    /^\/mod\/\d+/.test(parsed.pathname) ||
+    /^\/addon\/\d+/.test(parsed.pathname)
+  );
 }
 
 /**
@@ -249,5 +261,44 @@ export function parseModRef(input: string): ModRef | null {
     if (slug) return { kind: "slug", slug };
   }
 
+  return null;
+}
+
+/**
+ * What a pasted ADDON page link points at — kept apart from parseModRef on purpose.
+ *
+ * Addons and mods are numbered separately, so the same number names two unrelated things: addon
+ * 123 (ORBIT's Fika addon) is not mod 123. Reading an addon link as a mod reference would pin a
+ * folder to whatever mod happens to share the number, silently. So an addon link is recognised
+ * here and NEVER becomes a mod id; parseModRef returns null for it.
+ *
+ * URL-shaped input only. A bare number stays a mod id, as it always has been, because nothing
+ * about "123" says which catalogue it belongs to.
+ */
+export type AddonRef = { kind: "id"; id: number } | { kind: "slug"; slug: string };
+
+export function parseAddonRef(input: string): AddonRef | null {
+  const trimmed = (input || "").trim();
+  if (!trimmed || /^\d+$/.test(trimmed)) return null;
+  let pathname: string;
+  try {
+    pathname = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).pathname;
+  } catch {
+    return null;
+  }
+  // The catalogue's own form: /addon/<id>/<slug>.
+  const byId = /\/addon\/(\d+)(?:\/|$)/i.exec(pathname);
+  if (byId) {
+    const id = Number(byId[1]);
+    return id > 0 ? { kind: "id", id } : null;
+  }
+  // /addons/<slug> is not a page the site serves, but it is what someone guessing from the mod
+  // URLs would type, and it names an addon unambiguously.
+  const bySlug = /\/addons\/([^/?#]+)/i.exec(pathname);
+  if (bySlug) {
+    const slug = decodeURIComponent(bySlug[1]).trim();
+    if (/^\d+$/.test(slug)) return { kind: "id", id: Number(slug) };
+    if (slug) return { kind: "slug", slug };
+  }
   return null;
 }

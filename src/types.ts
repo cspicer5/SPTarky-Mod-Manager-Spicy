@@ -107,6 +107,15 @@ export interface ForgeUpdateItem {
   reason?: string;
 }
 
+/** An addon this install's ledger records, offered as what a mod-looking folder really is. */
+export interface AddonLinkCandidate {
+  forgeAddonId?: number;
+  name: string;
+  version?: string;
+  parentName: string;
+  parentType: ModType;
+}
+
 /** A Forge match the app arrived at by guesswork and will not act on unconfirmed. */
 export interface ForgeUnconfirmedMatch {
   name: string;
@@ -123,6 +132,8 @@ export interface ForgeUpdateCheckResult {
   blocked: ForgeUpdateItem[];
   upToDate: ForgeUpdateItem[];
   incompatible: ForgeUpdateItem[];
+  /** Called incompatible by the catalogue, but accepted by the user on this SPT. */
+  acceptedOnSpt?: ForgeUpdateItem[];
   infoOnly: ForgeUpdateItem[];
   unmatched: string[];
   skippedByBudget?: string[];
@@ -922,6 +933,17 @@ export interface ModManagerAPI {
     type: ModType,
     parentName: string | null
   ) => Promise<{ success: boolean; message: string }>;
+  /** Addons from this install's ledger that a folder could really be. */
+  listAddonLinkCandidates: (
+    folderId: string,
+    folderType?: ModType
+  ) => Promise<{ success: boolean; message?: string; candidates: AddonLinkCandidate[] }>;
+  /** Records a folder as an addon's own folder, in both the registry and the addon ledger. */
+  linkFolderToAddon: (
+    folderId: string,
+    folderType: ModType | undefined,
+    choice: { forgeAddonId?: number; name?: string; parentName?: string }
+  ) => Promise<{ success: boolean; message: string }>;
   /** No version argument: which build fits depends on the parent's installed version. */
   installForgeAddon: (
     jobId: string,
@@ -1059,7 +1081,8 @@ export interface ModManagerAPI {
   ) => Promise<{ success: boolean; result?: ForgeUpdateCheckResult; message?: string }>;
   /** Pins a mod to a Forge id by hand. Overrides automatic matching permanently. */
   setForgeMatch: (originalName: string, modId: number) => Promise<{ success: boolean; message?: string }>;
-  resolveModRef: (input: string) => Promise<{ success: boolean; modId?: number; message?: string }>;
+  /** `addonId` comes back instead of `modId` when the input was an addon page. */
+  resolveModRef: (input: string) => Promise<{ success: boolean; modId?: number; addonId?: number; message?: string }>;
   /** Folder name -> catalogue mod id, from the match cache (confirmed identities only). */
   getInstalledCatalogueIds: () => Promise<Record<string, string>>;
   checkModDependencies: (
@@ -1113,6 +1136,9 @@ export interface ModManagerAPI {
   dismissForgeUpdate: (originalName: string, version: string) => Promise<{ success: boolean; message?: string }>;
   /** Undoes a dismissal. */
   undismissForgeUpdate: (originalName: string) => Promise<{ success: boolean; message?: string }>;
+  /** Accepts a catalogue-incompatible mod on one SPT version, for one installed build. */
+  acceptSptIncompatibility: (originalName: string, version: string, spt: string) => Promise<{ success: boolean; message: string }>;
+  unacceptSptIncompatibility: (originalName: string) => Promise<{ success: boolean; message: string }>;
   searchForgeMods: (params: {
     query?: string;
     categorySlug?: string;

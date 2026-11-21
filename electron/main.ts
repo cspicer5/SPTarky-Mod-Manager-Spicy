@@ -40,7 +40,13 @@ import {
   copyClientModToHeadless,
   removeModFromHeadless,
   recordServerPullInstall,
-  scanPatchers
+  scanPatchers,
+  adoptLedgerVersionIfUnchanged,
+  trackFolderIfUntracked,
+  loadSptAcceptances,
+  acceptanceApplies,
+  acceptSptIncompatibility,
+  unacceptSptIncompatibility
 } from "./modManager";
 import {
   checkModDependencies,
@@ -56,6 +62,7 @@ import {
   getRegistrySiteBase,
   isRegistryPageUrl,
   normaliseRegistryApiBase,
+  parseAddonRef,
   setRegistryApiBase
 } from "./registry";
 import { refererForUrl } from "./imageHosts";
@@ -71,7 +78,7 @@ import {
   parityKey,
   HeadlessClass
 } from "./headless";
-import { fetchServerSnapshot, buildServerSyncReport, normaliseServerUrl } from "./sptServer";
+import { fetchServerSnapshot, buildServerSyncReport, normaliseServerUrl, remoteAddonForFolder } from "./sptServer";
 import { installModFromServer, installAddonFromServer } from "./serverFiles";
 import {
   readInstallState,
@@ -153,7 +160,14 @@ import {
   restoreClobberedVersions,
   addonsNeedingReinstall,
   listFilesRelative,
-  checkAddonUpdates
+  checkAddonUpdates,
+  snapshotAddonMarks,
+  type AddonMarkSnapshot,
+  foldersRewrittenSince,
+  addonOwnFolders,
+  findAddonRecord,
+  addonLinkCandidates,
+  asOwnFolderRecord
 } from "./addons";
 import { InstanceConfig, InstanceId, ModInfo, ModType } from "./types";
 
@@ -552,14 +566,23 @@ ipcMain.handle("run-bulk-reinstall", async (_event, opts: { sptVersion?: string;
       });
     }
   } else {
+    const targetSpt = opts?.sptVersion ?? localSptVersion();
+    // A mod the user has accepted on this SPT keeps the build that is installed. Hunting for one
+    // that "fits" is exactly wrong for it: nothing the author published declares this SPT, and
+    // the closest thing that does not say otherwise can be years old (UnityToolkit 1.1.0).
+    const accepted = loadSptAcceptances(roots.clientRoot);
     const found = await findForgeDownloadsForNames(
-      mods.map((m) => ({ name: m.originalName, guid: m.guid })),
+      mods.map((m) => ({
+        name: m.originalName,
+        guid: m.guid,
+        wantVersion: acceptanceApplies(accepted[m.originalName], m.version, targetSpt) ? m.version : undefined
+      })),
       (done, total) => report({ phase: "resolve", done, total }),
       roots.clientRoot,
       // The whole premise of the dialog is "mods for THIS SPT version". Without this the
       // resolver returned each mod's newest release regardless, which installed builds for
       // a different SPT — DynamicMaps 1.2.0 onto a 4.0.13 install.
-      opts?.sptVersion ?? localSptVersion()
+      targetSpt
     );
     for (const mod of mods) {
       const hit = found[mod.originalName];
@@ -1231,6 +1254,12 @@ interface AddonInstallContext {
   versionsBefore: ReturnType<typeof snapshotVersions>;
   /** Path -> stat signature, so the diff can see files CHANGED as well as files added. */
   parentFilesBefore: Map<string, { bytes: number; mtime: number }>;
+  /**
+   * Rows already marked as addons, and the ledger, as they were BEFORE the install rewrote them.
+   * The evidence that a folder which already existed is this addon's own — see addonOwnFolders.
+   */
+  priorMarks: AddonMarkSnapshot;
+  priorLedger: InstalledAddonRecord[];
 }
 
 function beginAddonInstall(parent: ModInfo, roots: { clientRoot: string; serverRoot: string }): AddonInstallContext {
@@ -1245,7 +1274,9 @@ function beginAddonInstall(parent: ModInfo, roots: { clientRoot: string; serverR
     // Taken so the addon cannot relabel the mod it patches. Installing the CAG BRNVG patch
     // (v1.0.0) into Borkel's RNVG rewrote that mod's recorded version from 2.1.1 to 1.0.0.
     versionsBefore: snapshotVersions(registryPath),
-    parentFilesBefore: snapshotFolderFiles(parentDir)
+    parentFilesBefore: snapshotFolderFiles(parentDir),
+    priorMarks: snapshotAddonMarks(registryPath),
+    priorLedger: loadAddonLedger(roots.clientRoot)
   };
 }
 
@@ -1255,11 +1286,32 @@ function finishAddonInstall(
   ctx: AddonInstallContext,
   record: { name: string; version?: string; source: "forge" | "github" | "file" | "server"; forgeAddonId?: number; parentConstraint?: string }
 ): { added: { id: string; type: ModType }[]; mergedIntoParent: boolean; messageSuffix: string } {
-  const restored = restoreClobberedVersions(ctx.registryPath, ctx.versionsBefore);
-
-  const added = scanInstance("main")
+  const newFolders = scanInstance("main")
     .filter((m) => !ctx.before.has(`${m.type}:${m.id}`))
     .map((m) => ({ id: m.id, type: m.type }));
+  // Read BEFORE the restore below, which puts the old `installedAt` back on rows it reverts and
+  // would erase the very stamp that shows which existing folders this install wrote.
+  const rewritten = foldersRewrittenSince(ctx.registryPath, ctx.versionsBefore, ctx.before);
+  // The addon's own folders: new ones, plus existing ones with evidence they are this addon's.
+  // Counting only new folders made every UPDATE of an own-folder addon look merged into its parent.
+  const added = addonOwnFolders({
+    parent: { id: parent.id, type: parent.type },
+    added: newFolders,
+    rewritten,
+    priorMarks: ctx.priorMarks,
+    priorRecord: findAddonRecord(ctx.priorLedger, {
+      forgeAddonId: record.forgeAddonId,
+      name: record.name,
+      parentName: parent.id
+    }),
+    forgeAddonId: record.forgeAddonId
+  });
+  // The addon's own rows keep their new version: they ARE the addon, not a mod it clobbered.
+  const restored = restoreClobberedVersions(
+    ctx.registryPath,
+    ctx.versionsBefore,
+    new Set(added.map((f) => `${f.type}:${f.id.toLowerCase()}`))
+  );
   const mergedIntoParent = added.length === 0;
   const contribution = diffAddonContribution(ctx.parentFilesBefore, snapshotFolderFiles(ctx.parentDir));
 
@@ -1562,6 +1614,178 @@ ipcMain.handle("set-addon-parent", (_event, id: string, type: ModType, parentNam
   markInstalledAsAddon(registryPath, [{ id, type }], { parentName: parent.id, parentType: parent.type });
   return { success: true, message: `"${id}" is now an addon of "${parent.id}".` };
 });
+
+/**
+ * The installed folder a renderer-supplied name refers to.
+ *
+ * The "Needs confirmation" list knows a folder only by name, and one name can be BOTH a server
+ * mod and a client plugin (several mods ship both halves under one folder name). Guessing
+ * between them would link the wrong half, so an ambiguous name is refused unless a type is given.
+ */
+function resolveInstalledFolder(
+  mods: ModInfo[],
+  folderId: string,
+  folderType?: ModType
+): { folder?: ModInfo; error?: string } {
+  const wanted = String(folderId ?? "").toLowerCase();
+  const hits = mods.filter(
+    (m) =>
+      (m.id.toLowerCase() === wanted || (m.originalName ?? "").toLowerCase() === wanted) &&
+      (!folderType || m.type === folderType)
+  );
+  if (hits.length === 0) return { error: `"${folderId}" is not installed.` };
+  if (hits.length > 1) {
+    return { error: `"${folderId}" is both a server mod and a client plugin here, so which one is the addon is unclear.` };
+  }
+  return { folder: hits[0] };
+}
+
+/** The version origin a linked row records, from where the ledger says the addon came from. */
+function originForAddonSource(source: InstalledAddonRecord["source"]): "forge" | "github" | "server" | "archive-name" {
+  return source === "file" ? "archive-name" : source;
+}
+
+/**
+ * Addons a folder could really be — offered when the folder is being treated as a mod.
+ *
+ * From this install's own ledger, not the live catalogue: the case that needs it most is an addon
+ * the catalogue has since delisted, which nothing online can identify any more.
+ */
+ipcMain.handle("list-addon-link-candidates", (_event, folderId: string, folderType?: ModType) => {
+  const roots = rootsFor("main");
+  if (!roots) return { success: false, message: "No SPT instance configured.", candidates: [] };
+  const mods = scanInstance("main");
+  const { folder, error } = resolveInstalledFolder(mods, folderId, folderType);
+  if (!folder) return { success: false, message: error, candidates: [] };
+  const isInstalled = (f: { id: string; type: ModType }) =>
+    mods.some((m) => m.type === f.type && m.id.toLowerCase() === f.id.toLowerCase());
+  const candidates = addonLinkCandidates(loadAddonLedger(roots.clientRoot), folder, isInstalled).map((r) => ({
+    forgeAddonId: r.forgeAddonId,
+    name: r.name,
+    version: r.version,
+    parentName: r.parentName,
+    parentType: r.parentType
+  }));
+  return { success: true, candidates };
+});
+
+/**
+ * Records that an installed folder IS an addon, and repairs both stores that say so.
+ *
+ * Both, because they answer different questions and the rest of the app reads both: the registry
+ * row's `addonOf` keeps the folder out of the MOD catalogue lookups, while the ledger record's
+ * `folders` / `mergedIntoParent` is what headless sync, server pulls and presets branch on. Fixing
+ * only the registry leaves the addon reading as a merged patch with nothing to check.
+ *
+ * Never writes the forge-match pin cache. That cache is the MOD namespace, and an addon id there
+ * would be read as a mod id — addon 123 is not mod 123.
+ */
+ipcMain.handle(
+  "link-folder-to-addon",
+  async (
+    _event,
+    folderId: string,
+    folderType: ModType | undefined,
+    choice: { forgeAddonId?: number; name?: string; parentName?: string }
+  ) => {
+    const roots = rootsFor("main");
+    if (!roots) return { success: false, message: "No SPT instance configured." };
+    const mods = scanInstance("main");
+    const { folder, error } = resolveInstalledFolder(mods, folderId, folderType);
+    if (!folder) return { success: false, message: error };
+
+    const ledger = loadAddonLedger(roots.clientRoot);
+    let record =
+      choice.forgeAddonId !== undefined
+        ? ledger.find((r) => r.forgeAddonId === choice.forgeAddonId)
+        : choice.name && choice.parentName
+          ? findAddonRecord(ledger, { name: choice.name, parentName: choice.parentName, forgeAddonId: undefined })
+          : undefined;
+
+    if (!record && choice.forgeAddonId !== undefined) {
+      // Not recorded here, so the catalogue has to say what it is and what it attaches to.
+      await refreshAddonCatalogue();
+      const addon = loadAddonCatalogue(addonCataloguePaths()).find((a) => a.id === choice.forgeAddonId);
+      if (!addon) {
+        return {
+          success: false,
+          message: `Addon #${choice.forgeAddonId} is not recorded on this install and the catalogue does not list it, so there is nothing to say what it attaches to.`
+        };
+      }
+      const forgeIds = forgeIdsByFolder(roots.clientRoot);
+      const catalogueParent = mods.find(
+        (m) => String(forgeIds[m.id] ?? forgeIds[m.originalName] ?? "") === String(addon.modId)
+      );
+      if (!catalogueParent) {
+        return { success: false, message: `"${addon.name}" attaches to a mod you don't have installed.` };
+      }
+      record = {
+        forgeAddonId: addon.id,
+        name: addon.name,
+        // Which build these files are is not known — nothing installed them through the app.
+        version: undefined,
+        parentName: catalogueParent.id,
+        parentType: catalogueParent.type,
+        installedAt: new Date().toISOString(),
+        source: "forge",
+        folders: [],
+        mergedIntoParent: false,
+        parentFiles: []
+      };
+    }
+    if (!record) return { success: false, message: "That addon is not recorded on this install." };
+
+    const parent = mods.find(
+      (m) => m.type === record!.parentType && m.id.toLowerCase() === record!.parentName.toLowerCase()
+    );
+    if (!parent) {
+      return { success: false, message: `"${record.parentName}" is not installed, so "${record.name}" has nothing to attach to.` };
+    }
+    if (parent.type === folder.type && parent.id.toLowerCase() === folder.id.toLowerCase()) {
+      return { success: false, message: `"${folder.id}" is the mod "${record.name}" attaches to, so it cannot be that addon.` };
+    }
+
+    const registryPath = path.join(roots.clientRoot, ".spt-mod-manager-registry.json");
+    const folderPath = parentFolderPath({ id: folder.id, type: folder.type }, roots);
+    trackFolderIfUntracked(roots.clientRoot, folder.id, folder.type, folderPath);
+    markInstalledAsAddon(registryPath, [{ id: folder.id, type: folder.type }], {
+      parentName: parent.id,
+      parentType: parent.type,
+      forgeAddonId: record.forgeAddonId,
+      parentConstraint: record.parentConstraint
+    });
+    const links = { ...(store.get("addonLinks") ?? {}) };
+    links[`${folder.type}:${folder.id.toLowerCase()}`] = parent.id;
+    store.set("addonLinks", links);
+
+    recordAddonInstall(roots.clientRoot, asOwnFolderRecord(record, { id: folder.id, type: folder.type }));
+
+    const versionAdopted = record.version
+      ? adoptLedgerVersionIfUnchanged(
+          roots.clientRoot,
+          folder.id,
+          folder.type,
+          folderPath,
+          record.version,
+          `Addon ledger: ${record.name} ${record.version}`,
+          originForAddonSource(record.source)
+        )
+      : false;
+    // A guess pinned before this link would outlive it — and keep this folder in the mod namespace.
+    clearManualForgeMatch(roots.clientRoot, folder.id);
+
+    return {
+      success: true,
+      message:
+        `"${folder.id}" is now recorded as ${record.name}, an addon of "${parent.id}".` +
+        (versionAdopted
+          ? ` Its version is ${record.version}, from the addon ledger.`
+          : record.version
+            ? ` Its files have changed since ${record.version} was installed, so no version was assumed.`
+            : "")
+    };
+  }
+);
 
 /**
  * Installs a catalogued addon from Forge, pinned to the build that fits the parent installed.
@@ -2323,16 +2547,60 @@ ipcMain.handle(
     });
 
     if (result.success) {
+      const type: ModType = args.half === "server" ? "server" : "client";
       // Recorded with the version the SERVER reported, not one inferred from the files. This is
       // the whole reason a pull beats a catalogue download: no lookup chose the build, so there
       // is nothing to be wrong about.
       recordServerPullInstall(roots.clientRoot, {
         id: args.modId,
-        type: args.half === "server" ? "server" : "client",
+        type,
         installedPath: path.join(targetRoot, args.modId),
         version: args.version,
         serverUrl
       });
+
+      /*
+       * If the server records this folder as an ADDON, it arrives here as one.
+       *
+       * Otherwise an own-folder addon pulled through its plugin row lands as a plain mod and is
+       * looked up in the mod catalogue — how ORBIT's Fika addon ended up "matched" to an
+       * unrelated mod. Re-read rather than trusted from the renderer: the server's records are
+       * the evidence, and they are only as good as that machine's own bookkeeping.
+       */
+      const snapshot = await fetchServerSnapshot(serverUrl);
+      const owner = snapshot.reachable ? remoteAddonForFolder(snapshot, { id: args.modId, type }) : undefined;
+      if (owner) {
+        const parentType: ModType = owner.parentType ?? "client";
+        const localParent = scanInstance("main").find(
+          (m) => m.type === parentType && m.id.toLowerCase() === owner.parentName.toLowerCase()
+        );
+        const parentName = localParent?.id ?? owner.parentName;
+        markInstalledAsAddon(path.join(roots.clientRoot, ".spt-mod-manager-registry.json"), [{ id: args.modId, type }], {
+          parentName,
+          parentType,
+          forgeAddonId: owner.forgeAddonId,
+          parentConstraint: owner.parentConstraint
+        });
+        recordAddonInstall(roots.clientRoot, {
+          forgeAddonId: owner.forgeAddonId,
+          name: owner.name,
+          version: owner.version ?? args.version,
+          parentName,
+          parentType,
+          parentConstraint: owner.parentConstraint,
+          installedAt: new Date().toISOString(),
+          source: "server",
+          folders: [{ id: args.modId, type }],
+          mergedIntoParent: false,
+          parentFiles: []
+        });
+        return {
+          ...result,
+          message:
+            `${result.message} Recorded as ${owner.name}, an addon of "${parentName}", as the server has it.` +
+            (localParent ? "" : ` "${parentName}" is not installed here yet — install it too.`)
+        };
+      }
     }
     return result;
   }
@@ -2538,6 +2806,21 @@ ipcMain.handle("set-forge-match", (_event, originalName: string, modId: number) 
  * failure: pinning is the one place where guessing is precisely what must not happen.
  */
 ipcMain.handle("resolve-mod-ref", async (_event, input: string) => {
+  // An addon page is answered as an ADDON, never turned into a mod id: the two are numbered
+  // separately, and reading one as the other pins a folder to an unrelated mod without a word.
+  // Pasting the addon's page here used to fail with "didn't match a mod", which was at least
+  // honest; the renderer now routes it to the addon link instead.
+  const addonRef = parseAddonRef(String(input ?? ""));
+  if (addonRef) {
+    if (addonRef.kind === "id") return { success: false, addonId: addonRef.id, message: "That is an addon page, not a mod." };
+    await refreshAddonCatalogue();
+    const hit = loadAddonCatalogue(addonCataloguePaths()).find(
+      (a) => (a.slug ?? "").toLowerCase() === addonRef.slug.toLowerCase()
+    );
+    return hit
+      ? { success: false, addonId: hit.id, message: "That is an addon page, not a mod." }
+      : { success: false, message: "That looks like an addon page, but the addon catalogue doesn't list it." };
+  }
   const modId = await resolveModRef(String(input ?? ""));
   if (!modId) return { success: false, message: "That didn't match a mod on the catalogue." };
   return { success: true, modId };
@@ -2587,6 +2870,39 @@ ipcMain.handle("undismiss-forge-update", (_event, originalName: string) => {
   } catch (err: any) {
     return { success: false, message: err?.message || "Couldn't remove that." };
   }
+});
+
+/**
+ * "It works on this SPT": the user accepts a mod the catalogue calls incompatible.
+ *
+ * Takes the SPT version the check RAN against, not whatever the selector says now, so the
+ * acceptance means exactly what the person was looking at when they made it.
+ */
+ipcMain.handle("accept-spt-incompatibility", (_event, originalName: string, version: string, spt: string) => {
+  const sptPath = store.get("sptPath");
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
+  if (!originalName || !version?.trim() || !spt?.trim()) {
+    return { success: false, message: "A mod, its installed version and the SPT version are all needed." };
+  }
+  try {
+    acceptSptIncompatibility(sptPath, originalName, version, spt);
+    return {
+      success: true,
+      message: `"${originalName}" ${version} is accepted on SPT ${spt}. It will be asked about again if either version changes.`
+    };
+  } catch (err: any) {
+    return { success: false, message: err?.message || "Couldn't save that." };
+  }
+});
+
+ipcMain.handle("unaccept-spt-incompatibility", (_event, originalName: string) => {
+  const sptPath = store.get("sptPath");
+  if (!sptPath) return { success: false, message: "No SPT instance configured." };
+  const removed = unacceptSptIncompatibility(sptPath, originalName);
+  return {
+    success: removed,
+    message: removed ? `"${originalName}" will be reported as incompatible again.` : "That was not accepted."
+  };
 });
 
 ipcMain.handle("clear-forge-match", (_event, originalName: string) => {

@@ -489,6 +489,59 @@ function applyLedgerVersions(mods: SptServerMod[], remote: RemoteMod[]): void {
  * its name plus the mod it patches — a record without both cannot be matched against anything,
  * and carrying it forward would only produce a row that can never resolve.
  */
+/**
+ * The addon a folder on the server belongs to, according to that machine's OWN records.
+ *
+ * A folder pulled from the server must arrive as what it is there. ORBIT's Fika addon has its own
+ * folder (`Orbit.Fika`), so the server lists it among its client plugins and offers it as an
+ * ordinary mod pull — which landed it here as a mod, lost its addon identity, and sent it to the
+ * MOD catalogue to be guessed at.
+ *
+ * Two sources, strongest first: the addon ledger naming this folder as an addon's own, then the
+ * folder's registry row carrying `addonOf`. Names are never evidence — if neither record says so,
+ * this returns undefined and the folder is pulled as the mod it appears to be. So the server has
+ * to have recorded it correctly; a server whose records are wrong must be repaired over there.
+ */
+export function remoteAddonForFolder(
+  snapshot: Pick<SptServerSnapshot, "addons" | "clientMods" | "remoteServerMods">,
+  folder: { id: string; type: ModType }
+): RemoteAddon | undefined {
+  const sameFolder = (f: { id: string; type: ModType }) =>
+    f.type === folder.type && f.id.toLowerCase() === folder.id.toLowerCase();
+  const asOwnFolder = (a: RemoteAddon): RemoteAddon => ({ ...a, folders: [{ id: folder.id, type: folder.type }], mergedIntoParent: false });
+
+  const byLedger = (snapshot.addons ?? []).find((a) => a.mergedIntoParent === false && (a.folders ?? []).some(sameFolder));
+  if (byLedger) return asOwnFolder(byLedger);
+
+  const rows = folder.type === "server" ? snapshot.remoteServerMods : snapshot.clientMods;
+  const row = (rows ?? []).find((m) => m.type === folder.type && m.id.toLowerCase() === folder.id.toLowerCase());
+  if (!row?.addonOf) return undefined;
+  const parentType: ModType = row.addonOfType ?? "client";
+
+  // The ledger record for it, when one can be named without guessing: by catalogue id when the
+  // row has one, otherwise only if it is the ONLY addon that machine records for that parent.
+  const ofParent = (snapshot.addons ?? []).filter(
+    (a) => a.parentName.toLowerCase() === row.addonOf!.toLowerCase() && (a.parentType ?? "client") === parentType
+  );
+  const record =
+    row.forgeAddonId !== undefined
+      ? ofParent.find((a) => a.forgeAddonId === row.forgeAddonId)
+      : ofParent.length === 1
+        ? ofParent[0]
+        : undefined;
+  if (record) return asOwnFolder(record);
+
+  return {
+    forgeAddonId: row.forgeAddonId,
+    name: row.displayName ?? row.id,
+    version: row.version,
+    parentName: row.addonOf,
+    parentType,
+    mergedIntoParent: false,
+    folders: [{ id: folder.id, type: folder.type }]
+  };
+}
+
 function readRemoteAddons(entries: unknown[]): RemoteAddon[] {
   const out: RemoteAddon[] = [];
   for (const raw of entries) {

@@ -93,7 +93,12 @@ console.log("\nbuilding a mod page URL (slug-addressed, not id-addressed)");
   // The important negative: an id CANNOT make a URL, and inventing /mod/<id> would 404.
   check("nothing to go on yields undefined", U({}), undefined);
   check("a non-http detail_url is not trusted", U({ detailUrl: "javascript:alert(1)" }), undefined);
-  check("addon pages use /addons/", R.addonPageUrl({ slug: "quick-sell" }), "https://cat.test/addons/quick-sell");
+  // This used to pin /addons/<slug>, which the site answers with a 404 (checked 2026-11-20 on
+  // sp-mod.com). Addon pages are /addon/<id>/<slug>: SINGULAR, and addressed by id.
+  check("addon pages are /addon/<id>/<slug>", R.addonPageUrl({ id: 135, slug: "live-like-orbit" }), "https://cat.test/addon/135/live-like-orbit");
+  check("an addon id alone still makes a page", R.addonPageUrl({ id: 135 }), "https://cat.test/addon/135");
+  check("an addon slug alone makes NOTHING (the plural form 404s)", R.addonPageUrl({ slug: "quick-sell" }), undefined);
+  check("an addon's own detail_url wins", R.addonPageUrl({ detailUrl: "https://cat.test/addon/9/x", id: 1 }), "https://cat.test/addon/9/x");
   R.setRegistryApiBase(null);
 }
 
@@ -118,6 +123,27 @@ console.log("\nparsing whatever the user pasted");
   check("prose is rejected", P("the sain mod"), JSON.stringify(null));
   check("empty is rejected", P(""), JSON.stringify(null));
   check("a URL with no mod path is rejected", P("https://x.test/about"), JSON.stringify(null));
+  // Addon links must NEVER become a mod reference. Addons and mods are numbered separately, so
+  // reading /addon/123 as mod 123 would pin a folder to an unrelated mod without a word.
+  check("an addon page is not a mod ref", P("https://sp-mod.com/addon/123/orbit-fika-addon"), JSON.stringify(null));
+  check("an addon page without slug is not a mod ref", P("https://sp-mod.com/addon/123"), JSON.stringify(null));
+  check("a plural addon URL is not a mod ref", P("https://sp-mod.com/addons/orbit-fika"), JSON.stringify(null));
+}
+
+/* -------------------------------------------------------- pasted addon refs */
+console.log("\nrecognising a pasted ADDON page");
+{
+  const P = (s) => JSON.stringify(R.parseAddonRef(s));
+  check("the catalogue's own detail_url form", P("https://sp-mod.com/addon/135/live-like-orbit-full-config-routes"), JSON.stringify({ kind: "id", id: 135 }));
+  check("id form without slug", P("https://sp-mod.com/addon/123"), JSON.stringify({ kind: "id", id: 123 }));
+  check("no scheme still reads", P("sp-mod.com/addon/123/x"), JSON.stringify({ kind: "id", id: 123 }));
+  check("plural guess with a slug", P("https://sp-mod.com/addons/orbit-fika"), JSON.stringify({ kind: "slug", slug: "orbit-fika" }));
+  // A bare number says nothing about which catalogue it belongs to; it stays a MOD id.
+  check("a bare number is NOT an addon ref", P("123"), JSON.stringify(null));
+  check("a mod page is not an addon ref", P("https://sp-mod.com/mods/orbit-30"), JSON.stringify(null));
+  check("an old Forge mod page is not an addon ref", P("https://forge.sp-tarkov.com/mod/2706/orbit"), JSON.stringify(null));
+  check("zero id is rejected", P("https://sp-mod.com/addon/0/x"), JSON.stringify(null));
+  check("empty is rejected", P(""), JSON.stringify(null));
 }
 
 /* ---------------------------------------------------------------- allowlist */
@@ -127,6 +153,10 @@ console.log("\nallowlisting what may be opened in a browser");
   const A = R.isRegistryPageUrl;
   check("a mod page on the configured site", A("https://cat.test/mods/sain"), true);
   check("an addon page on the configured site", A("https://cat.test/addons/quick-sell"), true);
+  // The form the catalogue actually serves and returns as detail_url. Only the plural was
+  // allowed, so every "open this addon's page" link was refused and did nothing.
+  check("the real addon page form /addon/<id>/<slug>", A("https://cat.test/addon/135/live-like-orbit"), true);
+  check("an /addon/ path without an id is not a page", A("https://cat.test/addon/"), false);
   check("an old Forge-style path on that site", A("https://cat.test/mod/791"), true);
   check("the site root is NOT a page", A("https://cat.test/"), false);
   check("an unrelated path on that site", A("https://cat.test/settings"), false);

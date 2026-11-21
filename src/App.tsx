@@ -31,7 +31,9 @@ import {
   BulkReinstallProgress,
   BulkReinstallOutcome,
   CompanionInstallState,
-  AddonUpdateRow
+  AddonUpdateRow,
+  AddonLinkCandidate,
+  ForgeUpdateItem
 } from "./types";
 import { Lang, translate, translateBackendMessage } from "./i18n";
 import { browseInstallState, compareSemver } from "./browseInstallState";
@@ -163,6 +165,10 @@ export default function App() {
   // Relink dialog state — see relinkForgeMatch for why this is not window.prompt().
   const [relinkTarget, setRelinkTarget] = useState<{ originalName: string; displayName: string } | null>(null);
   const [relinkInput, setRelinkInput] = useState("");
+  // Addons this install has recorded that the folder being relinked could really be. A folder
+  // can look exactly like a mod and be an addon: ORBIT's Fika addon has its own folder, lost its
+  // addon mark on an update, and was then guessed to be an unrelated mod.
+  const [relinkAddonCandidates, setRelinkAddonCandidates] = useState<AddonLinkCandidate[]>([]);
   function t(key: string, vars?: Record<string, string | number>): string {
     return translate(lang, key, vars);
   }
@@ -2109,7 +2115,9 @@ export default function App() {
     // so looking one up as a mod either finds nothing or, worse, matches something else with a
     // similar name. ORBIT's Fika addon installs its own folder (Orbit.Fika), which made it
     // indistinguishable from a mod here. Addon updates come from checkAddonUpdates instead.
-    const payload = mods.filter((m) => !m.addonOf).map((m) => ({
+    // The companion is left out too: it ships with this app, so the catalogue never has it, and
+    // asking only produced "Not found in the catalogue: SptarkyCompanion" on every check.
+    const payload = mods.filter((m) => !m.addonOf && !isCompanionMod(m)).map((m) => ({
       name: m.name,
       originalName: m.originalName,
       version: m.version,
@@ -2163,8 +2171,8 @@ export default function App() {
     const newMods = updatedMods.filter((m) => !previousKeys.has(selectionKey(m)));
     if (newMods.length === 0) return;
 
-    // Same exclusion as above: an addon is not a mod the catalogue can answer about.
-    const payload = newMods.filter((m) => !m.addonOf).map((m) => ({
+    // Same exclusions as above: an addon, or the companion, is not a mod the catalogue can answer about.
+    const payload = newMods.filter((m) => !m.addonOf && !isCompanionMod(m)).map((m) => ({
       name: m.name,
       originalName: m.originalName,
       version: m.version,
@@ -2307,6 +2315,66 @@ export default function App() {
   }
 
   /**
+   * "It works on this SPT." Authors pin narrowly — UnityToolkit 2.0.2 declares exactly 4.1.5 —
+   * so a mod that plainly runs, and that mods built for this SPT require, is reported as
+   * incompatible with no build to offer. Only the person running it knows better.
+   *
+   * Asked with a plain confirm rather than one click, because this silences a warning: it should
+   * be a decision, made knowing it lapses when the build or the SPT version changes.
+   */
+  async function acceptOnSpt(item: ForgeUpdateItem, spt: string) {
+    if (!item.originalName || !item.currentVersion) return;
+    const ok = window.confirm(
+      t("forge.acceptConfirm", { name: item.name, version: item.currentVersion, spt })
+    );
+    if (!ok) return;
+    const res = await window.modManagerAPI.acceptSptIncompatibility(item.originalName, item.currentVersion, spt);
+    pushToast(tMsg(res.message), res.success);
+    if (!res.success) return;
+    setForgeResult((prev) =>
+      prev
+        ? {
+            ...prev,
+            incompatible: prev.incompatible.filter((i) => i.originalName !== item.originalName),
+            acceptedOnSpt: [...(prev.acceptedOnSpt ?? []), item],
+            // A lower-numbered "current build" is no news about a build you have accepted.
+            infoOnly: prev.infoOnly.filter(
+              (i) => !(i.reason === "catalogue_version_lower" && i.name === item.name)
+            )
+          }
+        : prev
+    );
+    setForgeStatusByName((prev) => {
+      const next = new Map(prev);
+      if (next.get(item.name)?.status === "incompatible") next.delete(item.name);
+      persistForgeStatus(next);
+      return next;
+    });
+  }
+
+  async function unacceptOnSpt(item: ForgeUpdateItem) {
+    if (!item.originalName) return;
+    const res = await window.modManagerAPI.unacceptSptIncompatibility(item.originalName);
+    pushToast(tMsg(res.message), res.success);
+    if (!res.success) return;
+    setForgeResult((prev) =>
+      prev
+        ? {
+            ...prev,
+            acceptedOnSpt: (prev.acceptedOnSpt ?? []).filter((i) => i.originalName !== item.originalName),
+            incompatible: [...prev.incompatible, item]
+          }
+        : prev
+    );
+    setForgeStatusByName((prev) => {
+      const next = new Map(prev);
+      if (!next.has(item.name)) next.set(item.name, { status: "incompatible" });
+      persistForgeStatus(next);
+      return next;
+    });
+  }
+
+  /**
    * Accepts a guessed match. The pin outranks all automatic strategies from here on, so
    * the same guess never has to be re-made or re-confirmed.
    */
@@ -2329,6 +2397,34 @@ export default function App() {
   function relinkForgeMatch(originalName: string, displayName: string) {
     setRelinkTarget({ originalName, displayName });
     setRelinkInput("");
+    setRelinkAddonCandidates([]);
+    window.modManagerAPI
+      .listAddonLinkCandidates(originalName)
+      .then((r) => setRelinkAddonCandidates(r.success ? r.candidates : []))
+      .catch(() => setRelinkAddonCandidates([]));
+  }
+
+  /**
+   * Records the folder as an addon instead of pinning it to a mod.
+   *
+   * Never goes through setForgeMatch: that pin is the MOD namespace, and addons are numbered
+   * separately — addon 123 is not mod 123. Once linked, the folder is an addon of its parent, so
+   * it leaves the mod lookup entirely and the row it came from no longer applies.
+   */
+  async function linkFolderAsAddon(
+    originalName: string,
+    choice: { forgeAddonId?: number; name?: string; parentName?: string }
+  ) {
+    setRelinkTarget(null);
+    const res = await window.modManagerAPI.linkFolderToAddon(originalName, undefined, choice);
+    pushToast(tMsg(res.message), res.success);
+    if (res.success) {
+      setForgeResult((prev) =>
+        prev ? { ...prev, unconfirmed: (prev.unconfirmed ?? []).filter((u) => u.originalName !== originalName) } : prev
+      );
+      await refreshMods();
+      await refreshAddonSuggestions();
+    }
   }
 
   /**
@@ -2346,6 +2442,11 @@ export default function App() {
     const target = relinkTarget;
     setRelinkTarget(null);
     const resolved = await window.modManagerAPI.resolveModRef(trimmed);
+    // An addon page: link it as an addon. Reading it as a mod id would pin an unrelated mod.
+    if (resolved.addonId) {
+      await linkFolderAsAddon(target.originalName, { forgeAddonId: resolved.addonId });
+      return;
+    }
     if (!resolved.success || !resolved.modId) {
       pushToast(tMsg(resolved.message) || t("forge.relinkInvalid"), false);
       return;
@@ -3201,7 +3302,32 @@ export default function App() {
                 <>
                   <p><strong>{t("forge.incompatibleTitle")}</strong></p>
                   {forgeResult.incompatible.map((i) => (
-                    <p key={`incompatible-${i.name}`}>{i.name} ({i.currentVersion})</p>
+                    <div className="unconfirmed-row" key={`incompatible-${i.name}`}>
+                      <span>{i.name} ({i.currentVersion})</span>
+                      {i.originalName && i.currentVersion && (
+                        <div className="unconfirmed-actions">
+                          <button
+                            onClick={() => acceptOnSpt(i, forgeResult.sptVersionUsed)}
+                            title={t("forge.acceptTitle", { spt: forgeResult.sptVersionUsed })}
+                          >
+                            {t("forge.acceptButton", { spt: forgeResult.sptVersionUsed })}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </>
+              )}
+              {(forgeResult.acceptedOnSpt?.length ?? 0) > 0 && (
+                <>
+                  <p><strong>{t("forge.acceptedTitle", { spt: forgeResult.sptVersionUsed })}</strong></p>
+                  {forgeResult.acceptedOnSpt!.map((i) => (
+                    <div className="unconfirmed-row" key={`accepted-${i.name}`}>
+                      <span>{i.name} ({i.currentVersion})</span>
+                      <div className="unconfirmed-actions">
+                        <button onClick={() => unacceptOnSpt(i)}>{t("forge.acceptUndo")}</button>
+                      </div>
+                    </div>
                   ))}
                 </>
               )}
@@ -3966,6 +4092,37 @@ export default function App() {
                 {t("forge.relinkSave")}
               </button>
             </div>
+            {relinkAddonCandidates.length > 0 && (
+              <div className="relink-addons">
+                <p><strong>{t("forge.relinkAddonTitle")}</strong></p>
+                <p className="compare-note">{t("forge.relinkAddonHelp", { name: relinkTarget.displayName })}</p>
+                {relinkAddonCandidates.map((c) => (
+                  <div className="unconfirmed-row" key={`addon-candidate-${c.forgeAddonId ?? `${c.name}|${c.parentName}`}`}>
+                    <div className="unconfirmed-info">
+                      <span className="unconfirmed-mod">
+                        {c.name}
+                        {c.version ? ` ${c.version}` : ""}
+                      </span>
+                      <span className="mod-addon-of">{t("forge.addonOf", { parent: c.parentName })}</span>
+                    </div>
+                    <div className="unconfirmed-actions">
+                      <button
+                        onClick={() =>
+                          linkFolderAsAddon(
+                            relinkTarget.originalName,
+                            c.forgeAddonId !== undefined
+                              ? { forgeAddonId: c.forgeAddonId }
+                              : { name: c.name, parentName: c.parentName }
+                          )
+                        }
+                      >
+                        {t("forge.relinkAddonButton")}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

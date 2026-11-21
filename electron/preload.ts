@@ -85,6 +85,15 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   detectAddonLinks: () => ipcRenderer.invoke("detect-addon-links"),
   setAddonParent: (id: string, type: "server" | "client", parentName: string | null) =>
     ipcRenderer.invoke("set-addon-parent", id, type, parentName),
+  // A folder being treated as a mod that is really an addon: candidates come from this
+  // install's own addon ledger, and linking repairs both the registry row and that ledger.
+  listAddonLinkCandidates: (folderId: string, folderType?: "server" | "client") =>
+    ipcRenderer.invoke("list-addon-link-candidates", folderId, folderType),
+  linkFolderToAddon: (
+    folderId: string,
+    folderType: "server" | "client" | undefined,
+    choice: { forgeAddonId?: number; name?: string; parentName?: string }
+  ) => ipcRenderer.invoke("link-folder-to-addon", folderId, folderType, choice),
   // No version argument: which build fits is a function of the PARENT's installed version,
   // and only the main process knows that.
   installForgeAddon: (jobId: string, addonId: number) => ipcRenderer.invoke("install-forge-addon", jobId, addonId),
@@ -177,6 +186,10 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   dismissForgeUpdate: (originalName: string, version: string) =>
     ipcRenderer.invoke("dismiss-forge-update", originalName, version),
   undismissForgeUpdate: (originalName: string) => ipcRenderer.invoke("undismiss-forge-update", originalName),
+  // "It works on this SPT" — keyed by folder, installed version AND the SPT the check ran against.
+  acceptSptIncompatibility: (originalName: string, version: string, spt: string) =>
+    ipcRenderer.invoke("accept-spt-incompatibility", originalName, version, spt),
+  unacceptSptIncompatibility: (originalName: string) => ipcRenderer.invoke("unaccept-spt-incompatibility", originalName),
   checkAppUpdate: () => ipcRenderer.invoke("check-app-update"),
   listAppReleases: () => ipcRenderer.invoke("list-app-releases"),
   installAppRelease: (tag: string) => ipcRenderer.invoke("install-app-release", tag),

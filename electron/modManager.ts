@@ -1130,12 +1130,91 @@ export function refreshFingerprint(sptPath: string, id: string, type: ModType, i
 
 function addToRegistry(sptPath: string, entry: RegistryEntry) {
   const reg = loadRegistry(sptPath);
+  const previous = reg.find((e) => e.id === entry.id && e.type === entry.type);
   // An entry's identity is id + type, not id alone: one package can install a server part
   // and a client part with the SAME folder name (Wedge does this). Filtering by id alone
   // made the second one's registry entry erase the first's.
   const filtered = reg.filter((e) => !(e.id === entry.id && e.type === entry.type));
-  filtered.push(entry);
+  filtered.push(carryAddonMark(previous, entry));
   saveRegistry(sptPath, filtered);
+}
+
+/**
+ * Keeps a row's addon identity when the row is rewritten by something that does not know about
+ * addons.
+ *
+ * The archive installers build each row from scratch, so reinstalling or updating an addon that
+ * has its OWN folder replaced its row with one that had no `addonOf` — and the folder went back to
+ * being treated as a mod. Measured on the 4.1 install: ORBIT's Fika addon (folder `Orbit.Fika`)
+ * was updated in-app, lost its mark, and was then fuzzy-matched to an unrelated catalogue mod
+ * ("Fika Hub") and offered for confirmation as though it were one.
+ *
+ * Being an addon is a recorded fact about the folder, not about one install of it, so only an
+ * explicit unlink (`clearAddonMark`) or a row that states its own addon fields changes it.
+ */
+export function carryAddonMark(previous: RegistryEntry | undefined, incoming: RegistryEntry): RegistryEntry {
+  if (!previous?.addonOf) return incoming;
+  const incomingSaysAnything =
+    incoming.addonOf !== undefined ||
+    incoming.addonOfType !== undefined ||
+    incoming.forgeAddonId !== undefined ||
+    incoming.addonParentConstraint !== undefined;
+  if (incomingSaysAnything) return incoming;
+  return {
+    ...incoming,
+    addonOf: previous.addonOf,
+    addonOfType: previous.addonOfType,
+    forgeAddonId: previous.forgeAddonId,
+    addonParentConstraint: previous.addonParentConstraint
+  };
+}
+
+/**
+ * Gives a row a version taken from the addon ledger — but only if its files have not changed
+ * since the row was last fingerprinted.
+ *
+ * Used when a folder is linked to an addon record by hand. The registry row for ORBIT's Fika
+ * addon read 1.0.0 while the addon ledger recorded the 1.2.0 that was actually installed: the
+ * addon install had wrongly "restored" the row's old version, treating the addon's own folder as
+ * an unrelated mod it had clobbered. The fingerprint was written by that same 1.2.0 install, so
+ * while it still matches the disk, the ledger's version describes these exact files. If the
+ * fingerprint no longer matches, nothing is claimed — the files changed since, and the ledger
+ * would be describing something that is no longer there.
+ */
+/**
+ * Starts tracking a folder the app never installed, so it can carry a mark.
+ *
+ * Marking an addon writes to the folder's registry row, and a hand-installed folder has none —
+ * so the mark silently landed nowhere. The row claims no version: the app did not install these
+ * files and has no evidence of which build they are.
+ */
+export function trackFolderIfUntracked(sptPath: string, id: string, type: ModType, installedPath: string): boolean {
+  if (loadRegistry(sptPath).some((e) => e.id === id && e.type === type)) return false;
+  addToRegistry(sptPath, {
+    id,
+    displayName: id,
+    type,
+    installedAt: new Date().toISOString(),
+    source: "manual",
+    fingerprint: fingerprintPath(installedPath)
+  });
+  return true;
+}
+
+export function adoptLedgerVersionIfUnchanged(
+  sptPath: string,
+  id: string,
+  type: ModType,
+  installedPath: string,
+  version: string,
+  evidence: string,
+  origin: VersionOrigin
+): boolean {
+  const existing = loadRegistry(sptPath).find((e) => e.id === id && e.type === type);
+  if (!existing) return false;
+  if (!fingerprintMatches(existing.fingerprint, fingerprintPath(installedPath))) return false;
+  addToRegistry(sptPath, { ...existing, installedVersion: version, versionOrigin: origin, versionEvidence: evidence });
+  return true;
 }
 
 function removeFromRegistry(sptPath: string, id: string, type?: ModType) {
@@ -2927,6 +3006,8 @@ export interface ForgeUpdateCheckResult {
   blocked: ForgeUpdateItem[];
   upToDate: ForgeUpdateItem[];
   incompatible: ForgeUpdateItem[];
+  /** Called incompatible by the catalogue, but accepted by the user on this SPT. */
+  acceptedOnSpt?: ForgeUpdateItem[];
   infoOnly: ForgeUpdateItem[];
   unmatched: string[];
   skippedByBudget?: string[]; // never queried: the request budget ran out first
@@ -4009,7 +4090,92 @@ export function pickForgeVersionForSpt(
 
   const compatible = withLink.find((v) => checkSptCompatibility(v.sptConstraint, sptVersion) === "compatible");
   if (compatible) return compatible;
-  return withLink.find((v) => checkSptCompatibility(v.sptConstraint, sptVersion) === "unknown");
+
+  /*
+   * A build that declares NO SPT version is a maybe — but only if it is newer than every build
+   * that does declare one.
+   *
+   * Authors started declaring constraints at some point, so a constraint-less build numbered BELOW
+   * a constrained one is almost always from before that, for an SPT long gone. UnityToolkit is the
+   * case that found this: 2.0.2 declares exactly "4.1.5", nothing declares 4.1.6, and the newest
+   * build declaring nothing is 1.1.0 from January 2025. The fallback picked 1.1.0 — so the update
+   * check called it "the catalogue's current build", and a bulk reinstall for 4.1.6 would have
+   * DOWNGRADED 2.0.2 to it and broken every mod that depends on it.
+   *
+   * A newer constraint-less build is different: the author stopped declaring, and that build is
+   * still the best guess. Returning nothing otherwise is the honest outcome — the caller reports
+   * it and leaves the installed copy alone.
+   */
+  const newestConstrained = withLink
+    .filter((v) => (v.sptConstraint ?? "").trim() !== "")
+    .reduce<string | undefined>(
+      (max, v) => (v.version && (!max || compareVersions(v.version, max) > 0) ? v.version : max),
+      undefined
+    );
+  return withLink.find(
+    (v) =>
+      checkSptCompatibility(v.sptConstraint, sptVersion) === "unknown" &&
+      (!newestConstrained || (v.version !== undefined && compareVersions(v.version, newestConstrained) > 0))
+  );
+}
+
+/* ==========================================================================
+ * "It works on this SPT" — accepting a mod the catalogue calls incompatible.
+ *
+ * Authors pin their builds, and pin them narrowly: UnityToolkit 2.0.2 declares exactly "4.1.5".
+ * On 4.1.6 the catalogue then calls it incompatible and offers nothing, while a litany of mods
+ * built FOR 4.1.6 require it and it runs fine. Only the person running it knows that.
+ *
+ * Keyed by folder name, the version installed AND the SPT version, so it lapses on its own the
+ * moment any of the three changes: a new build, or a new SPT, is a new question. Same shape as
+ * the per-version "Already have it" dismissal.
+ *
+ * Accepting never installs anything. It changes what is REPORTED, and makes reinstall-type paths
+ * keep the build that is installed rather than hunting for one that "fits".
+ * ========================================================================== */
+const SPT_ACCEPTED_FILE = ".spt-mod-manager-spt-accepted.json";
+
+export interface SptAcceptance {
+  version: string;
+  spt: string;
+  acceptedAt: string;
+}
+
+const normVersion = (v: string | undefined) => (v ?? "").trim().replace(/^v/i, "");
+
+export function loadSptAcceptances(root: string): Record<string, SptAcceptance> {
+  try {
+    const file = path.join(root, SPT_ACCEPTED_FILE);
+    if (!fs.existsSync(file)) return {};
+    const parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
+    return typeof parsed === "object" && parsed && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Whether an acceptance still describes this exact install: same build, same SPT. */
+export function acceptanceApplies(
+  entry: SptAcceptance | undefined,
+  installedVersion: string | undefined,
+  sptVersion: string | undefined
+): boolean {
+  if (!entry || !installedVersion || !sptVersion) return false;
+  return normVersion(entry.version) === normVersion(installedVersion) && normVersion(entry.spt) === normVersion(sptVersion);
+}
+
+export function acceptSptIncompatibility(root: string, originalName: string, version: string, spt: string): void {
+  const data = loadSptAcceptances(root);
+  data[originalName] = { version: normVersion(version), spt: normVersion(spt), acceptedAt: new Date().toISOString() };
+  fs.writeFileSync(path.join(root, SPT_ACCEPTED_FILE), JSON.stringify(data, null, 2), "utf-8");
+}
+
+export function unacceptSptIncompatibility(root: string, originalName: string): boolean {
+  const data = loadSptAcceptances(root);
+  if (!data[originalName]) return false;
+  delete data[originalName];
+  fs.writeFileSync(path.join(root, SPT_ACCEPTED_FILE), JSON.stringify(data, null, 2), "utf-8");
+  return true;
 }
 
 export async function findForgeDownloadsForNames(
@@ -4216,6 +4382,13 @@ export async function checkForgeUpdates(
   const originalByDisplayName = new Map<string, string>();
   for (const m of mods) originalByDisplayName.set(m.name, m.originalName);
   const dismissed = cacheRoot ? loadDismissedUpdates(cacheRoot) : {};
+  const accepted = cacheRoot ? loadSptAcceptances(cacheRoot) : {};
+  const localVersionByOriginal = new Map<string, string | undefined>();
+  for (const m of mods) localVersionByOriginal.set(m.originalName, m.version);
+  /** The user has said this exact build runs on this exact SPT. */
+  const isAccepted = (originalName: string | undefined) =>
+    !!originalName &&
+    acceptanceApplies(accepted[originalName], localVersionByOriginal.get(originalName), trimmedVersion);
   const unmatched: string[] = [];
   const skippedByBudget: string[] = [];
   const infoOnly: ForgeUpdateItem[] = [];
@@ -4284,7 +4457,9 @@ export async function checkForgeUpdates(
        * classify as an update must not also be reported as this.
        */
       const newest = pickForgeVersionForSpt(info.versions, trimmedVersion);
-      if (newest?.version && compareVersions(newest.version, mod.version) < 0) {
+      // An accepted build is the one the user has said is right here; a lower "current" build
+      // for this SPT is not news about it.
+      if (newest?.version && compareVersions(newest.version, mod.version) < 0 && !isAccepted(mod.originalName)) {
         renumbered.push({
           guid: info.identifier,
           name: mod.name,
@@ -4310,6 +4485,7 @@ export async function checkForgeUpdates(
     blocked: [],
     upToDate: [],
     incompatible: [],
+    acceptedOnSpt: [],
     infoOnly,
     unmatched,
     skippedByBudget,
@@ -4341,6 +4517,12 @@ export async function checkForgeUpdates(
    * information rather than as an update, because whether to take it is a judgement. Sometimes
    * the author renumbered; sometimes you are simply ahead of the catalogue.
    */
+  // Carries the folder name, so accepting one can be keyed by something that never changes.
+  const incompatibleRows: ForgeUpdateItem[] = (data.incompatible_with_spt || []).map((i: any) => {
+    const name = nameFor(i.guid, i.name);
+    return { name, originalName: originalByDisplayName.get(name), currentVersion: i.version, guid: i.guid, reason: i.reason };
+  });
+
   const offeredGuids = new Set<string>((data.updates || []).map((u: any) => String(u.current_version?.guid ?? "")));
   for (const item of renumbered) {
     if (offeredGuids.has(item.guid)) continue;
@@ -4398,11 +4580,8 @@ export async function checkForgeUpdates(
       currentVersion: u.version,
       reason: "up_to_date"
     })),
-    incompatible: (data.incompatible_with_spt || []).map((i: any) => ({
-      name: nameFor(i.guid, i.name),
-      currentVersion: i.version,
-      reason: i.reason
-    })),
+    incompatible: incompatibleRows.filter((i) => !isAccepted(i.originalName)),
+    acceptedOnSpt: incompatibleRows.filter((i) => isAccepted(i.originalName)),
     infoOnly,
     unmatched,
     skippedByBudget,

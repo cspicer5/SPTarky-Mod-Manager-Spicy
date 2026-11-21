@@ -181,6 +181,18 @@ export interface RemoteMod {
    * entries reports mods as missing that are sitting right there on disk.
    */
   area?: string;
+  /**
+   * The mod this folder is an addon of, from that machine's own registry row.
+   *
+   * Carried so a folder pulled from the server arrives as what it IS there. Without it ORBIT's
+   * Fika addon (its own folder, `Orbit.Fika`) would be pulled as a plain mod, lose its addon
+   * identity on this machine, and be looked up in the MOD catalogue — the exact fault that put it
+   * in "Needs confirmation" matched to an unrelated mod.
+   */
+  addonOf?: string;
+  addonOfType?: "server" | "client";
+  /** That machine's catalogue addon id for this folder, when it recorded one. */
+  forgeAddonId?: number;
 }
 
 export interface RemoteManifest {
@@ -227,7 +239,10 @@ export function readManifest(body: unknown): RemoteManifest | null {
 
   // The ledger is the remote machine's registry file as text. A corrupt one is not fatal: fall
   // back to declared versions and SAY so, rather than losing the mod list along with it.
-  let ledger: Record<string, { installedVersion?: string; forgeGuid?: string }> = {};
+  let ledger: Record<
+    string,
+    { installedVersion?: string; forgeGuid?: string; type?: string; addonOf?: string; addonOfType?: string; forgeAddonId?: number }
+  > = {};
   let ledgerParsed = false;
   if (typeof raw.registryJson === "string" && raw.registryJson.trim()) {
     try {
@@ -285,7 +300,16 @@ export function readManifest(body: unknown): RemoteManifest | null {
       displayName: typeof entry.displayName === "string" ? entry.displayName : undefined,
       enabled: entry.enabled !== false,
       ...(typeof entry.area === "string" ? { area: entry.area } : {}),
-      ...(entry.loaded === false ? { failedToLoad: true } : {})
+      ...(entry.loaded === false ? { failedToLoad: true } : {}),
+      // Only from a row of the SAME half: one folder name can be both a server mod and a client
+      // plugin, and the ledger map here is keyed by id alone.
+      ...(typeof entryInLedger?.addonOf === "string" && entryInLedger.addonOf && (!entryInLedger.type || entryInLedger.type === type)
+        ? {
+            addonOf: entryInLedger.addonOf,
+            addonOfType: entryInLedger.addonOfType === "server" ? ("server" as const) : ("client" as const),
+            ...(typeof entryInLedger.forgeAddonId === "number" ? { forgeAddonId: entryInLedger.forgeAddonId } : {})
+          }
+        : {})
     };
   };
 

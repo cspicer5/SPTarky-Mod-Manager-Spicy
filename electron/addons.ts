@@ -701,7 +701,18 @@ export function snapshotVersions(registryPath: string): VersionSnapshot {
  * own, and its version is the addon's. A mod that was already installed is never the addon,
  * so any change to its recorded version during an addon install is wrong by definition.
  */
-export function restoreClobberedVersions(registryPath: string, before: VersionSnapshot): string[] {
+export function restoreClobberedVersions(
+  registryPath: string,
+  before: VersionSnapshot,
+  /**
+   * Rows that ARE the addon, as `type:id-lowercase`. Their new version is the addon's own and
+   * must stay. "A mod that was already installed is never the addon" stops being true the moment
+   * an addon with its own folder is updated or reinstalled: the folder existed before, so without
+   * this its fresh version was reverted to the old one (ORBIT's Fika addon read 1.0.0 after
+   * installing 1.2.0).
+   */
+  keep: Set<string> = new Set()
+): string[] {
   let registry: any[];
   try {
     registry = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
@@ -711,6 +722,7 @@ export function restoreClobberedVersions(registryPath: string, before: VersionSn
   const restored: string[] = [];
   for (const entry of registry) {
     const key = `${entry.type}:${String(entry.id).toLowerCase()}`;
+    if (keep.has(key)) continue;
     const prior = before[key];
     if (!prior) continue; // created by this install — genuinely the addon's own folder
 
@@ -735,6 +747,172 @@ export function restoreClobberedVersions(registryPath: string, before: VersionSn
   }
   if (restored.length) fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2), "utf-8");
   return restored;
+}
+
+/* --------------------------------------------------------------------------
+ * Which folders an addon install produced AS THE ADDON
+ * ----------------------------------------------------------------------- */
+
+/** A registry row's addon identity, keyed `type:id-lowercase`. */
+export interface AddonMarkSnapshot {
+  [key: string]: { addonOf: string; addonOfType?: ModType; forgeAddonId?: number };
+}
+
+/** Every row that is already marked as an addon, as it stands BEFORE an install rewrites rows. */
+export function snapshotAddonMarks(registryPath: string): AddonMarkSnapshot {
+  const snap: AddonMarkSnapshot = {};
+  try {
+    for (const e of JSON.parse(fs.readFileSync(registryPath, "utf-8"))) {
+      if (!e?.addonOf) continue;
+      snap[`${e.type}:${String(e.id).toLowerCase()}`] = {
+        addonOf: e.addonOf,
+        addonOfType: e.addonOfType,
+        forgeAddonId: e.forgeAddonId
+      };
+    }
+  } catch {
+    /* no registry yet */
+  }
+  return snap;
+}
+
+/**
+ * Folders that already existed and whose registry row this install rewrote.
+ *
+ * The installers stamp a fresh `installedAt` on every folder they write, so a changed stamp is
+ * direct evidence the archive wrote that folder — no plumbing through three installers needed.
+ * A folder that was on disk but untracked, and is tracked now, was written too.
+ */
+export function foldersRewrittenSince(
+  registryPath: string,
+  versionsBefore: VersionSnapshot,
+  foldersBefore: Set<string>
+): { id: string; type: ModType }[] {
+  let registry: any[];
+  try {
+    registry = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
+  } catch {
+    return [];
+  }
+  const out: { id: string; type: ModType }[] = [];
+  for (const e of registry) {
+    if (!foldersBefore.has(`${e.type}:${e.id}`)) continue; // new this install — counted as added
+    const prior = versionsBefore[`${e.type}:${String(e.id).toLowerCase()}`];
+    if (!prior || prior.installedAt !== e.installedAt) out.push({ id: e.id, type: e.type });
+  }
+  return out;
+}
+
+/**
+ * Which folders are the addon's OWN — not merely which ones are new.
+ *
+ * The first version of this was "folders that did not exist before", which is right for a first
+ * install and wrong for every update after it: the addon's folder already exists, so nothing is
+ * new, and the install concluded the addon had merged into its parent. ORBIT's Fika addon was
+ * recorded that way — `mergedIntoParent: true`, no folders, no files — while sitting in its own
+ * `Orbit.Fika` folder the whole time.
+ *
+ * A pre-existing folder the install rewrote counts only with EVIDENCE that it belongs to this
+ * addon: its row was already marked as an addon of this parent, or this addon's previous ledger
+ * record listed it. Without that it is something else the archive happened to touch — a bundled
+ * copy of a dependency, say — and claiming it would turn a real mod into an addon. Names are
+ * deliberately not evidence.
+ *
+ * The parent is never its own addon, even when the archive writes into its folder.
+ */
+export function addonOwnFolders(args: {
+  parent: { id: string; type: ModType };
+  added: { id: string; type: ModType }[];
+  rewritten: { id: string; type: ModType }[];
+  priorMarks: AddonMarkSnapshot;
+  priorRecord?: InstalledAddonRecord;
+  forgeAddonId?: number;
+}): { id: string; type: ModType }[] {
+  const isParent = (f: { id: string; type: ModType }) =>
+    f.type === args.parent.type && f.id.toLowerCase() === args.parent.id.toLowerCase();
+  const key = (f: { id: string; type: ModType }) => `${f.type}:${f.id.toLowerCase()}`;
+  const recordedHere = new Set((args.priorRecord?.folders ?? []).map(key));
+
+  const evidenced = (f: { id: string; type: ModType }) => {
+    if (recordedHere.has(key(f))) return true;
+    const mark = args.priorMarks[key(f)];
+    if (!mark) return false;
+    if (mark.addonOf.toLowerCase() !== args.parent.id.toLowerCase()) return false;
+    if (mark.addonOfType && mark.addonOfType !== args.parent.type) return false;
+    // Both carry a catalogue id and they differ: a DIFFERENT addon of the same parent.
+    if (mark.forgeAddonId !== undefined && args.forgeAddonId !== undefined && mark.forgeAddonId !== args.forgeAddonId) {
+      return false;
+    }
+    return true;
+  };
+
+  const out: { id: string; type: ModType }[] = [];
+  const seen = new Set<string>();
+  for (const f of args.added) {
+    if (isParent(f) || seen.has(key(f))) continue;
+    seen.add(key(f));
+    out.push(f);
+  }
+  for (const f of args.rewritten) {
+    if (isParent(f) || seen.has(key(f)) || !evidenced(f)) continue;
+    seen.add(key(f));
+    out.push(f);
+  }
+  return out;
+}
+
+/* --------------------------------------------------------------------------
+ * Linking a folder to an addon record by hand
+ * ----------------------------------------------------------------------- */
+
+/** This addon's record in the ledger, by the same identity rule the ledger itself uses. */
+export function findAddonRecord(
+  ledger: InstalledAddonRecord[],
+  identity: Pick<InstalledAddonRecord, "forgeAddonId" | "name" | "parentName">
+): InstalledAddonRecord | undefined {
+  return ledger.find((e) => sameAddon(e, identity));
+}
+
+/**
+ * Ledger records a folder could plausibly be the own folder of.
+ *
+ * Offered when a folder is being treated as a mod but is really an addon. The source is the LOCAL
+ * ledger rather than the live catalogue, because the case that needs this most is an addon the
+ * catalogue no longer lists: ORBIT's Fika addon (id 123) has been delisted, so nothing online can
+ * say what it is any more — but this install recorded it.
+ *
+ * A record whose recorded evidence already says where it lives is not offered: one that put
+ * files into its parent's folder is a merged addon, and one with a different own folder that is
+ * still on disk has a home. Offering those would let a click contradict evidence.
+ */
+export function addonLinkCandidates(
+  ledger: InstalledAddonRecord[],
+  folder: { id: string; type: ModType },
+  isInstalled: (f: { id: string; type: ModType }) => boolean
+): InstalledAddonRecord[] {
+  const sameFolder = (f: { id: string; type: ModType }) =>
+    f.type === folder.type && f.id.toLowerCase() === folder.id.toLowerCase();
+  return ledger.filter((r) => {
+    if (r.parentType === folder.type && r.parentName.toLowerCase() === folder.id.toLowerCase()) return false; // its own parent
+    if (!isInstalled({ id: r.parentName, type: r.parentType })) return false;
+    if ((r.folders ?? []).some(sameFolder)) return true;
+    if ((r.parentFiles?.length ?? 0) > 0 || (r.parentFileMarks?.length ?? 0) > 0) return false;
+    if ((r.folders ?? []).some((f) => isInstalled(f))) return false;
+    return true;
+  });
+}
+
+/**
+ * The record rewritten to say the addon lives in `folder`.
+ *
+ * Keeps everything else the record knew — its catalogue id, version, constraint and source — since
+ * linking corrects WHERE the addon is, not what it is.
+ */
+export function asOwnFolderRecord(record: InstalledAddonRecord, folder: { id: string; type: ModType }): InstalledAddonRecord {
+  const others = (record.folders ?? []).filter(
+    (f) => !(f.type === folder.type && f.id.toLowerCase() === folder.id.toLowerCase())
+  );
+  return { ...record, folders: [...others, { id: folder.id, type: folder.type }], mergedIntoParent: false };
 }
 
 /* --------------------------------------------------------------------------

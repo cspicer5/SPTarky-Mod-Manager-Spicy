@@ -1243,6 +1243,13 @@ h2 {
   font-size: 12.5px;
 }
 
+/* The "or is it an addon?" half of the relink dialog, set apart from the mod half above it. */
+.relink-addons {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
 /* A button that reads as a link: used for the Forge mod name, which opens its page so the
    suggested match can be eyeballed before accepting it. */
 .link-button {

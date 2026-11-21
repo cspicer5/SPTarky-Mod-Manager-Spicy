@@ -142,6 +142,13 @@ const en: Dict = {
   "forge.updatedChip": "Updated",
   "forge.blockedTitle": "Blocked updates (would break a dependency):",
   "forge.incompatibleTitle": "Incompatible with this SPT version:",
+  "forge.acceptButton": "It works on {spt}",
+  "forge.acceptTitle":
+    "The author's build doesn't declare SPT {spt}. If you know it runs — for example because mods built for {spt} require it — accept it here.",
+  "forge.acceptConfirm":
+    "Treat {name} {version} as working on SPT {spt}?\n\nIt stops being reported as incompatible, and reinstalls keep {version} instead of looking for an older build. Nothing is downloaded or installed.\n\nIt will be asked about again if {name} or SPT changes version.",
+  "forge.acceptedTitle": "Accepted by you on SPT {spt}:",
+  "forge.acceptUndo": "Undo",
   "forge.infoOnlyTitle": "Worth a look, but not offered as an update:",
   "forge.infoHasVersion": "Catalogue has v{version}",
   /* A current release numbered BELOW what is installed. The catalogue's own update check cannot
@@ -168,9 +175,13 @@ const en: Dict = {
   "forge.unconfirmedOpenTitle": "Open this mod's catalogue page to check",
   "forge.relinkTitle": "Which catalogue mod is \"{name}\"?",
   "forge.relinkHelp":
-    "Find the mod in the catalogue and paste its page URL here, or enter just the numeric ID. This choice is saved and overrides automatic matching from then on.",
+    "Find the mod in the catalogue and paste its page URL here, or enter just the numeric ID. This choice is saved and overrides automatic matching from then on. An addon's page URL works too — it is linked as an addon, not as a mod.",
   "forge.relinkSave": "Link it",
   "forge.relinkInvalid": "That didn't look like a mod page URL or ID.",
+  "forge.relinkAddonTitle": "Or is it an addon?",
+  "forge.relinkAddonHelp":
+    "Addons this install has a record of. Picking one marks \"{name}\" as that addon's own folder, so it is checked against its parent mod instead of being looked up as a mod.",
+  "forge.relinkAddonButton": "It's this addon",
   // Shows both accepted forms. The slug URL is what the browser gives you today; the bare
   // ID still works, and is what someone reading an older guide will have.
   "forge.relinkPlaceholder": "https://.../mods/sain    or    791",
