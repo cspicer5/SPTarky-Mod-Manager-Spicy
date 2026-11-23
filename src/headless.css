@@ -920,17 +920,21 @@
 /* Prepatchers reuse the addon list's layout. Red for what Sync will fix (a missing dependency
    stops a patch loading at all), amber for what it will not, so the colour says which button —
    Sync or a reinstall — is the remedy. */
-.hl-patcher-copy .hl-addon-status,
-.hl-patcher-ref-copy .hl-addon-status {
+.hl-patcher-copy .hl-addon-status {
   color: var(--danger-strong);
   border-color: var(--danger);
 }
 
 .hl-patcher-report .hl-addon-status,
-.hl-patcher-ref-report .hl-addon-status,
-.hl-patcher-ref-reinstall .hl-addon-status {
+.hl-patcher-reinstall .hl-addon-status {
   color: var(--warn, #e0a03a);
   font-weight: 600;
+}
+
+/* What the missing piece takes down with it. A shade brighter than the detail above it,
+   because it names the patches that will not run rather than restating the fix. */
+.hl-addon-detail.hl-patcher-impact {
+  color: var(--text-dim);
 }
 
 /* A patch that is not intact on the MAIN install either.

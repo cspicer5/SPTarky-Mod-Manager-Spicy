@@ -233,6 +233,104 @@ console.log("\nparity: a prepatcher whose referenced assembly is missing");
   check("an assembly that could not be read is listed as not checked", unreadable.unreadable, [{ side: "headless", patcher: "Odd.dll" }]);
 }
 
+console.log("\nfindings: grouped by what is missing, for the view");
+{
+  const file = (entry, relPath) => ({ entry, relPath, bytes: 100 });
+  const asm = (entry, relPath, unresolved) => ({ entry, relPath, assemblyName: entry.replace(/\.dll$/i, ""), managed: true, unresolved });
+  const report = buildPatcherParity({
+    mainFiles: [
+      file("BlackDiv", "BlackDiv/BlackDiv.dll"),
+      file("ISBSpecialForces.dll", "ISBSpecialForces.dll"),
+      file("RUAFComeHome", "RUAFComeHome/RUAFComeHome.dll"),
+      file("MoreBotsPrepatch", "MoreBotsPrepatch/MoreBotsPrepatch.dll"),
+      file("Mystery.dll", "Mystery.dll"),
+      file("LeftOff", "LeftOff/LeftOff.dll"),
+      file("GhostA.dll", "GhostA.dll"),
+      file("GhostB.dll", "GhostB.dll")
+    ],
+    headlessFiles: [
+      file("BlackDiv", "BlackDiv/BlackDiv.dll"),
+      file("ISBSpecialForces.dll", "ISBSpecialForces.dll"),
+      file("RUAFComeHome", "RUAFComeHome/RUAFComeHome.dll"),
+      file("GhostA.dll", "GhostA.dll"),
+      file("GhostB.dll", "GhostB.dll")
+    ],
+    attribution: {
+      byEntry: {
+        morebotsprepatch: { kind: "mod", via: "ledger", mods: ["MoreBotsPlugin"] },
+        leftoff: { kind: "mod", via: "ledger", mods: ["LeftOffPlugin"] }
+      },
+      byAssembly: { ghostlib: ["GhostMod"] }
+    },
+    headlessClientModIds: ["MoreBotsPlugin"],
+    mainRefs: {
+      files: [asm("GhostA.dll", "GhostA.dll", ["GhostLib"]), asm("GhostB.dll", "GhostB.dll", ["GhostLib"])],
+      providers: { morebotsprepatch: { entry: "MoreBotsPrepatch", relPath: "MoreBotsPrepatch/MoreBotsPrepatch.dll" } },
+      available: ["morebotsprepatch"]
+    },
+    headlessRefs: {
+      files: [
+        asm("BlackDiv", "BlackDiv/BlackDiv.dll", ["MoreBotsPrepatch"]),
+        asm("ISBSpecialForces.dll", "ISBSpecialForces.dll", ["MoreBotsPrepatch"]),
+        asm("RUAFComeHome", "RUAFComeHome/RUAFComeHome.dll", ["MoreBotsPrepatch"]),
+        asm("GhostA.dll", "GhostA.dll", ["GhostLib"]),
+        asm("GhostB.dll", "GhostB.dll", ["GhostLib"]),
+        { entry: "Odd", relPath: "Odd.dll", managed: true }
+      ],
+      providers: {},
+      available: []
+    }
+  });
+  const f = report.findings;
+  check(
+    "one finding per missing thing, most urgent first",
+    f.map((x) => [x.side, x.name, x.status]),
+    [
+      ["headless", "MoreBotsPrepatch", "missing"],
+      ["headless", "Mystery.dll", "missing"],
+      ["headless", "GhostLib", "can't copy"],
+      ["headless", "LeftOff", "missing · not synced"],
+      ["main", "GhostLib", "broken on main"],
+      ["headless", "Odd.dll", "not checked"]
+    ]
+  );
+  // The incident's shape: three broken references and the missing entry are ONE finding.
+  check("the missing prepatcher absorbs its three broken references", f[0].neededBy, ["BlackDiv", "ISBSpecialForces", "RUAFComeHome"]);
+  check("it keeps its own row's action and owner", [f[0].action, /installed with MoreBotsPlugin/.test(f[0].detail)], ["copy", true]);
+  check(
+    "and says what it takes down, once",
+    f[0].impact,
+    "BlackDiv, ISBSpecialForces and RUAFComeHome reference it, so BepInEx skips those patches on the headless client until it is there."
+  );
+  check("a dependency nothing provides is grouped under the assembly", [f[2].action, f[2].neededBy], ["reinstall", ["GhostA", "GhostB"]]);
+  check("naming the mod to reinstall", /arriving with GhostMod/.test(f[2].detail), true);
+  check("the main side is its own finding", [f[4].action, /at startup on the main install/.test(f[4].impact)], ["reinstall", true]);
+  check("rows nothing references carry no dependents", [f[1].neededBy, f[3].neededBy], [undefined, undefined]);
+  check("the issue count leaves out what was not checked", report.counts.issues, 5);
+  check("and grouping does not change what Sync copies", report.counts.toSync, 2);
+  check("the raw references are still all there", report.references.length, 7);
+
+  // One dependent reads in the singular.
+  const one = buildPatcherParity({
+    mainFiles: [file("BlackDiv", "BlackDiv/BlackDiv.dll"), file("MoreBotsPrepatch", "MoreBotsPrepatch/MoreBotsPrepatch.dll")],
+    headlessFiles: [file("BlackDiv", "BlackDiv/BlackDiv.dll")],
+    attribution: { byEntry: {}, byAssembly: {} },
+    headlessClientModIds: [],
+    mainRefs: { files: [], providers: { morebotsprepatch: { entry: "MoreBotsPrepatch", relPath: "MoreBotsPrepatch/MoreBotsPrepatch.dll" } }, available: [] },
+    headlessRefs: { files: [asm("BlackDiv", "BlackDiv/BlackDiv.dll", ["MoreBotsPrepatch"])], providers: {}, available: [] }
+  });
+  check("one dependent reads in the singular", one.findings[0].impact, "BlackDiv references it, so BepInEx skips that patch on the headless client until it is there.");
+
+  // A clean pair has nothing to show.
+  const clean = buildPatcherParity({
+    mainFiles: [file("BlackDiv", "BlackDiv/BlackDiv.dll")],
+    headlessFiles: [file("BlackDiv", "BlackDiv/BlackDiv.dll")],
+    attribution: { byEntry: {}, byAssembly: {} },
+    headlessClientModIds: []
+  });
+  check("a clean pair has no findings", [clean.findings, clean.counts.issues], [[], 0]);
+}
+
 /* ------------------------------------------------------------------------- */
 console.log("\non disk: the incident, reproduced and repaired");
 {
@@ -329,6 +427,7 @@ console.log("\non disk: the incident, reproduced and repaired");
   );
   const after = scanPatcherParity(MAIN, HEADLESS, ids, ids);
   check("after which the prepatchers match", after.counts, {
+    issues: 0,
     missingOnHeadless: 0,
     differentBuild: 0,
     headlessOnly: 0,

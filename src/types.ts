@@ -292,11 +292,24 @@ export interface PatcherReferenceRow {
   detail: string;
 }
 
+/** Mirrors electron/headless.ts: rows and references grouped by what is missing, for display. */
+export interface PatcherFinding {
+  name: string;
+  side: "main" | "headless";
+  status: string;
+  action: "copy" | "report" | "reinstall";
+  detail: string;
+  neededBy?: string[];
+  impact?: string;
+}
+
 export interface PatcherParityReport {
   rows: PatcherParityRow[];
   references: PatcherReferenceRow[];
   unreadable: { side: "main" | "headless"; patcher: string }[];
+  findings: PatcherFinding[];
   counts: {
+    issues: number;
     missingOnHeadless: number;
     differentBuild: number;
     headlessOnly: number;

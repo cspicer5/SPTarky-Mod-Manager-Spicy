@@ -560,12 +560,42 @@ export interface PatcherReferenceRow {
   detail: string;
 }
 
+/**
+ * One problem as the view shows it: the rows and references above, grouped by what is missing.
+ *
+ * Grouped because one missing prepatcher is usually several broken references. MoreBotsPrepatch
+ * alone left four prepatchers unable to load, and listing each as its own finding made one
+ * missing file read as five problems, with the cause repeated in every paragraph.
+ */
+export interface PatcherFinding {
+  /** The patchers/ entry at fault or, when no entry can be named, the assembly that is missing. */
+  name: string;
+  side: "main" | "headless";
+  /** Short label for the status pill. */
+  status: string;
+  /**
+   *   copy      — Sync fixes it.
+   *   report    — Sync leaves it alone; `detail` says why and what to do.
+   *   reinstall — missing from the main install too; a reinstall there is the fix.
+   */
+  action: "copy" | "report" | "reinstall";
+  detail: string;
+  /** Prepatchers that reference this and do not load without it, sorted. */
+  neededBy?: string[];
+  /** What happens to `neededBy` meanwhile, as a sentence. */
+  impact?: string;
+}
+
 export interface PatcherParityReport {
   rows: PatcherParityRow[];
   references: PatcherReferenceRow[];
   /** Managed prepatchers whose references could not be read — not checked, so not called clean. */
   unreadable: { side: "main" | "headless"; patcher: string }[];
+  /** `rows`, `references` and `unreadable` grouped for display, most urgent first. */
+  findings: PatcherFinding[];
   counts: {
+    /** Findings that are problems: everything in `findings` except "not checked". */
+    issues: number;
     missingOnHeadless: number;
     differentBuild: number;
     headlessOnly: number;
@@ -582,6 +612,136 @@ function describeOwner(owner: PatcherOwnership): string {
   if (owner.kind === "unknown") return "owner unknown";
   const names = owner.mods.join(", ");
   return owner.via === "ledger" ? `installed with ${names}` : `belongs to ${names}, going by its name`;
+}
+
+/** "A", "A and B", "A, B and C". */
+function listNames(names: string[]): string {
+  return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+function patcherIssueLabel(issue: PatcherIssue): string {
+  return issue === "different-build" ? "different build" : issue === "incomplete-on-headless" ? "incomplete" : "missing";
+}
+
+/**
+ * Folds the report's rows and references into one finding per missing thing.
+ *
+ *   - Headless references Sync can repair are grouped by the main install's entry that provides
+ *     them, and merged with that entry's own "missing" row: the entry is the one fault.
+ *   - References it cannot repair are grouped by the assembly they point at, per side.
+ *   - Rows nothing references stay as they are; unreadable assemblies come last.
+ */
+function groupPatcherFindings(
+  rows: PatcherParityRow[],
+  references: PatcherReferenceRow[],
+  unreadable: PatcherParityReport["unreadable"],
+  mainRefs: PatcherReferenceScan | undefined,
+  ownerOf: (entry: string) => PatcherOwnership,
+  reinstallHint: (ref: string) => string
+): PatcherFinding[] {
+  const groups = new Map<string, { sample: PatcherReferenceRow; names: Set<string> }>();
+  for (const r of references) {
+    const key =
+      r.side === "headless" && r.action === "copy" && r.providedOnMainBy
+        ? `copy:${r.providedOnMainBy.toLowerCase()}`
+        : `${r.side}:${r.action}:${r.reference.toLowerCase()}`;
+    if (!groups.has(key)) groups.set(key, { sample: r, names: new Set() });
+    groups.get(key)!.names.add(r.assemblyName ?? r.entry);
+  }
+
+  const ranked: { rank: number; finding: PatcherFinding }[] = [];
+  const merged = new Set<string>();
+  const skips = (names: string[], where: string) =>
+    `${listNames(names)} ${names.length === 1 ? "references" : "reference"} it, so BepInEx skips ${
+      names.length === 1 ? "that patch" : "those patches"
+    } ${where}.`;
+
+  for (const { sample, names: nameSet } of groups.values()) {
+    const neededBy = [...nameSet].sort((a, b) => a.localeCompare(b));
+    const ref = sample.reference;
+
+    if (sample.side === "headless" && sample.action === "copy" && sample.providedOnMainBy) {
+      const entry = sample.providedOnMainBy;
+      const row = rows.find((r) => r.issue && r.issue !== "headless-only" && r.entry.toLowerCase() === entry.toLowerCase());
+      if (row) merged.add(row.entry.toLowerCase());
+      const provider = mainRefs?.providers[ref.toLowerCase()];
+      ranked.push({
+        rank: 0,
+        finding: {
+          name: row?.entry ?? entry,
+          side: "headless",
+          status: row?.issue ? patcherIssueLabel(row.issue) + (row.action === "report" ? " · not synced" : "") : "missing dependency",
+          action: row?.action ?? "copy",
+          detail:
+            row?.detail ??
+            `${ref} is not on the headless client. The main install has it in patchers/${provider?.relPath ?? entry} (${describeOwner(
+              ownerOf(entry)
+            )}); Sync copies it.`,
+          neededBy,
+          impact: skips(neededBy, "on the headless client until it is there")
+        }
+      });
+    } else if (sample.side === "headless") {
+      ranked.push({
+        rank: 2,
+        finding: {
+          name: ref,
+          side: "headless",
+          status: "can't copy",
+          action: sample.action,
+          detail:
+            sample.action === "reinstall"
+              ? `Not on the headless client or the main install, so copying cannot fix it. ${reinstallHint(ref)}`
+              : "Not on the headless client. The main install resolves it from BepInEx/core or the game's Managed folder, which Sync does not copy: the two installs' BepInEx or game files differ.",
+          neededBy,
+          impact: skips(neededBy, "on the headless client")
+        }
+      });
+    } else {
+      ranked.push({
+        rank: 4,
+        finding: {
+          name: ref,
+          side: "main",
+          status: "broken on main",
+          action: "reinstall",
+          detail: `Not on the main install. ${reinstallHint(ref)}`,
+          neededBy,
+          impact: skips(neededBy, "at startup on the main install")
+        }
+      });
+    }
+  }
+
+  for (const r of rows) {
+    if (!r.issue || r.issue === "headless-only" || merged.has(r.entry.toLowerCase())) continue;
+    ranked.push({
+      rank: r.action === "copy" ? 1 : 3,
+      finding: {
+        name: r.entry,
+        side: "headless",
+        status: patcherIssueLabel(r.issue) + (r.action === "report" ? " · not synced" : ""),
+        action: r.action ?? "report",
+        detail: r.detail ?? ""
+      }
+    });
+  }
+
+  for (const u of unreadable) {
+    ranked.push({
+      rank: 5,
+      finding: {
+        name: u.patcher,
+        side: u.side,
+        status: "not checked",
+        action: "report",
+        detail: `Couldn't read this assembly's references on the ${u.side === "main" ? "main install" : "headless client"}, so its dependencies were not checked.`
+      }
+    });
+  }
+
+  // Stable within a rank: rows arrive sorted by severity, references in scan order.
+  return ranked.sort((a, b) => a.rank - b.rank).map((x) => x.finding);
 }
 
 /**
@@ -797,11 +957,15 @@ export function buildPatcherParity(input: {
   };
   rows.sort((a, b) => (a.issue ? severity[a.issue] : 9) - (b.issue ? severity[b.issue] : 9) || a.entry.localeCompare(b.entry));
 
+  const findings = groupPatcherFindings(rows, references, unreadable, input.mainRefs, ownerOf, reinstallHint);
+
   return {
     rows,
     references,
     unreadable,
+    findings,
     counts: {
+      issues: findings.filter((f) => f.status !== "not checked").length,
       missingOnHeadless: rows.filter((r) => r.issue === "missing-on-headless" || r.issue === "incomplete-on-headless").length,
       differentBuild: rows.filter((r) => r.issue === "different-build").length,
       headlessOnly: rows.filter((r) => r.issue === "headless-only").length,

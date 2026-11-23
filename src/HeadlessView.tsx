@@ -929,7 +929,34 @@ function ParityGutter({ parity }: { parity: ParityReport | null }) {
         <li>
           <strong>{counts.needsReview}</strong> to review
         </li>
+        {/* Counted up here because the plugin counts beside it can all read zero while a missing
+            prepatcher is the one thing lighting up the Sync button. */}
+        {parity.patchers && (
+          <li className={parity.patchers.counts.issues ? "bad" : ""} title="Problems in BepInEx/patchers, listed under Prepatchers below">
+            <strong>{parity.patchers.counts.issues}</strong> prepatcher {parity.patchers.counts.issues === 1 ? "issue" : "issues"}
+          </li>
+        )}
       </ul>
+
+      {/* Prepatchers, compared as files and checked for their dependencies. Shown only when
+          something is wrong: a list of nine healthy prepatchers is noise in a narrow gutter.
+          Placed first: a prepatcher that does not load can crash the headless client at raid
+          start, which nothing in the addon list below can do. */}
+      {parity.patchers && parity.patchers.findings.length > 0 && (
+        <div className="hl-gutter-addons hl-gutter-patchers">
+          <div className="hl-gutter-title">Prepatchers</div>
+          <ul>
+            {parity.patchers.findings.map((f) => (
+              <li key={`${f.side}:${f.status}:${f.name}`} className={`hl-patcher-${f.action}`}>
+                <span className="hl-addon-name">{f.name}</span>
+                <span className="hl-addon-status">{f.status}</span>
+                <span className="hl-addon-detail">{f.detail}</span>
+                {f.impact && <span className="hl-addon-detail hl-patcher-impact">{f.impact}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Compatibility patches, which the plugin rows above cannot show: most live inside
           their parent's folder, so the parent's row looks the same whether the patch is
@@ -973,57 +1000,11 @@ function ParityGutter({ parity }: { parity: ParityReport | null }) {
         </div>
       )}
 
-      {/* Prepatchers, compared as files and checked for their dependencies. Shown only when
-          something is wrong: a list of nine healthy prepatchers is noise in a narrow gutter. */}
-      {parity.patchers &&
-        (parity.patchers.rows.some((r) => r.issue && r.issue !== "headless-only") ||
-          parity.patchers.references.length > 0 ||
-          parity.patchers.unreadable.length > 0) && (
-          <div className="hl-gutter-addons hl-gutter-patchers">
-            <div className="hl-gutter-title">Prepatchers</div>
-            <ul>
-              {parity.patchers.references.map((r) => (
-                <li key={`ref:${r.side}:${r.patcher}:${r.reference}`} className={`hl-patcher-ref-${r.action}`}>
-                  <span className="hl-addon-name">
-                    {r.assemblyName ?? r.entry} → {r.reference}
-                  </span>
-                  <span className="hl-addon-status">
-                    {r.side === "main" ? "broken on main" : r.action === "copy" ? "missing dependency" : "can't copy"}
-                  </span>
-                  <span className="hl-addon-detail">{r.detail}</span>
-                </li>
-              ))}
-              {parity.patchers.rows
-                .filter((r) => r.issue && r.issue !== "headless-only")
-                .map((r) => (
-                  <li key={`patcher:${r.entry}`} className={`hl-patcher-${r.action ?? "report"}`}>
-                    <span className="hl-addon-name">{r.entry}</span>
-                    <span className="hl-addon-status">
-                      {r.issue === "different-build" ? "different build" : r.issue === "incomplete-on-headless" ? "incomplete" : "missing"}
-                      {r.action === "report" ? " · not synced" : ""}
-                    </span>
-                    <span className="hl-addon-detail">{r.detail}</span>
-                  </li>
-                ))}
-              {parity.patchers.unreadable.map((u) => (
-                <li key={`unreadable:${u.side}:${u.patcher}`} className="hl-patcher-report">
-                  <span className="hl-addon-name">{u.patcher}</span>
-                  <span className="hl-addon-status">not checked</span>
-                  <span className="hl-addon-detail">
-                    Couldn't read this assembly's references on the {u.side === "main" ? "main install" : "headless client"}, so its
-                    dependencies were not checked.
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
       {problems.length === 0 ? (
         <p className="hl-gutter-clear">
           {/* Worded to claim only what it covers when the prepatcher section above has findings:
               "nothing to reconcile" next to a missing prepatcher is the contradiction this replaced. */}
-          {parity.patchers && (parity.patchers.references.length > 0 || parity.patchers.counts.missingOnHeadless + parity.patchers.counts.differentBuild > 0)
+          {parity.patchers?.counts.issues
             ? "Every mod that changes raid behaviour is present on both sides at the same version — but see Prepatchers above."
             : "Nothing to reconcile. Every mod that changes raid behaviour is present on both sides at the same version."}
         </p>
