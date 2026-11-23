@@ -81,8 +81,17 @@ import {
   syncPatchersToHeadless,
   HeadlessClass
 } from "./headless";
-import { fetchServerSnapshot, buildServerSyncReport, normaliseServerUrl, remoteAddonForFolder } from "./sptServer";
-import { installModFromServer, installAddonFromServer } from "./serverFiles";
+import {
+  fetchServerSnapshot,
+  buildServerSyncReport,
+  normaliseServerUrl,
+  remoteAddonForFolder,
+  serverClientParts,
+  type SptServerSnapshot
+} from "./sptServer";
+import { installModFromServer, installAddonFromServer, MOD_HALVES, type ModHalf, type ServerPullOptions } from "./serverFiles";
+import { pullPrepatchersFromServer, serverPatchers, serverPatchersOwnedBy, type PrepatcherPullResult } from "./serverPatchers";
+import { isSptOwnPatcher } from "./modManager";
 import {
   readInstallState,
   installCompanion,
@@ -2055,7 +2064,14 @@ ipcMain.handle(
       {
         onProgress: (done, total, bytes) => {
           mainWindow?.webContents.send("server-pull-progress", { modId: addon.name, done, total, bytes });
-        }
+        },
+        // An own "folder" may be one loose DLL (Quick Sell's is), which only the manifest says.
+        entryFor: (half, id) => {
+          if (half !== "client") return undefined;
+          const part = serverClientParts(snapshot, id).find((p) => p.id.toLowerCase() === id.toLowerCase());
+          return part ? { kind: part.kind, sizeBytes: part.sizeBytes } : undefined;
+        },
+        stagingRootFor: (half) => pullStagingRoot(roots.clientRoot, half)
       }
     );
     if (!result.success) return result;
@@ -2646,49 +2662,154 @@ ipcMain.handle("get-server-sync", async () => {
  * Writes only into the local instance. The server is read-only in both directions: this GETs
  * files from it and never sends anything back.
  */
+/** Where a pull for each half is staged: beside BepInEx's folders for the client halves, never inside them. */
+function pullStagingRoot(clientRoot: string, half: ModHalf): string | undefined {
+  // BepInEx loads every DLL under plugins/ and patchers/, recursively — a staging folder left in
+  // either by a crash mid-pull would be loaded as a mod. BepInEx/ itself is not scanned.
+  return half === "server" ? undefined : path.join(clientRoot, "BepInEx", ".sptarky-pull");
+}
+
+/**
+ * What a pull did about prepatchers, split in two: `info` for what arrived, `warning` for what did
+ * not. Kept apart because a warning here is the crash this exists to prevent, and it must reach
+ * the user even when the success message is suppressed — Match server runs quietly.
+ */
+function describePrepatcherPull(r: PrepatcherPullResult): { info: string; warning: string } {
+  const info = r.pulled.length ? ` Also pulled its prepatcher${r.pulled.length > 1 ? "s" : ""} from the server: ${r.pulled.join(", ")}.` : "";
+  const warnings: string[] = [];
+  if (r.failed.length) {
+    warnings.push(
+      `Could not pull ${r.failed.map((f) => f.entry).join(", ")} — without it BepInEx may skip this mod's patches: ${r.failed
+        .map((f) => f.message)
+        .join(" ")}`
+    );
+  }
+  if (r.unresolved.length) {
+    warnings.push(
+      `Still missing on this install: ${r.unresolved.map((u) => `${u.patcher} needs ${u.reference}`).join("; ")} — and none of the server's prepatchers could be matched to it.`
+    );
+  }
+  return { info, warning: warnings.join(" ") };
+}
+
 ipcMain.handle(
   "install-mod-from-server",
-  async (_event, args: { modId: string; half: "server" | "client"; version?: string }) => {
+  async (_event, args: { modId: string; half: ModHalf; version?: string }) => {
     const serverUrl = store.get("serverUrl");
     if (!serverUrl) return { success: false, message: "No SPT server is configured." };
     const roots = rootsFor("main");
     if (!roots) return { success: false, message: "No SPT instance configured." };
+    // The half picks the folder that gets written into, so it is checked, not trusted.
+    if (!MOD_HALVES.includes(args.half)) return { success: false, message: `"${args.half}" is not something this app pulls.` };
+    if (args.half === "patchers" && isSptOwnPatcher(args.modId)) {
+      return { success: false, message: "That is SPT's own prepatcher. Each install gets it from its own SPT." };
+    }
 
-    const targetRoot =
-      args.half === "server" ? path.join(roots.serverRoot, "user", "mods") : path.join(roots.clientRoot, "BepInEx", "plugins");
-
+    // Asked FIRST now, not only afterwards: what the server says this mod is decides how it is
+    // fetched — every part of it, and each as a file or a folder.
     // No token header, deliberately consistent with `get-server-sync`: the companion's token is
     // default-off and this app has nowhere to store one yet. When that arrives it belongs on
     // both call sites at once, not smuggled into whichever was written last.
-    const result = await installModFromServer(serverUrl, args.half, args.modId, targetRoot, {
-      onProgress: (done, total, bytes) => {
-        mainWindow?.webContents.send("server-pull-progress", { modId: args.modId, done, total, bytes });
-      }
-    });
+    const snapshot: SptServerSnapshot = await fetchServerSnapshot(serverUrl);
+    if (!snapshot.reachable) return { success: false, message: snapshot.error ?? "The server could not be reached." };
 
-    if (result.success) {
-      const type: ModType = args.half === "server" ? "server" : "client";
+    const targetRoot =
+      args.half === "server"
+        ? path.join(roots.serverRoot, "user", "mods")
+        : path.join(roots.clientRoot, "BepInEx", args.half === "patchers" ? "patchers" : "plugins");
+    const stagingRoot = pullStagingRoot(roots.clientRoot, args.half);
+    const onProgress = (done: number, total: number, bytes: number) => {
+      mainWindow?.webContents.send("server-pull-progress", { modId: args.modId, done, total, bytes });
+    };
+
+    let parts: { id: string; entry?: ServerPullOptions["entry"] }[];
+    if (args.half === "client") {
+      // `Mod.dll` AND `Mod/` when it ships as both: one row, and it must arrive whole.
+      const found = serverClientParts(snapshot, args.modId);
+      parts = found.length ? found.map((p) => ({ id: p.id, entry: { kind: p.kind, sizeBytes: p.sizeBytes } })) : [{ id: args.modId }];
+    } else if (args.half === "patchers") {
+      if (!snapshot.companion?.patchers) {
+        return { success: false, message: "The server's companion is too old to send prepatchers. Update it on the server (1.3.0 or later)." };
+      }
+      const p = serverPatchers(snapshot).find((m) => m.id.toLowerCase() === args.modId.toLowerCase());
+      parts = [{ id: p?.id ?? args.modId, entry: p ? { kind: p.kind, sizeBytes: p.sizeBytes } : undefined }];
+    } else {
+      parts = [{ id: args.modId }];
+    }
+
+    let files = 0;
+    let bytes = 0;
+    let lastMessage = "";
+    for (const part of parts) {
+      const r = await installModFromServer(serverUrl, args.half, part.id, targetRoot, { entry: part.entry, stagingRoot, onProgress });
+      if (!r.success) {
+        // A part that already landed stays — it is the server's exact file — and the message says
+        // which part is missing, so a retry or a by-hand copy knows what to fetch.
+        return { success: false, message: parts.length > 1 ? `${r.message} (${part.id}, part of ${args.modId})` : r.message };
+      }
+      files += r.files ?? 0;
+      bytes += r.bytes ?? 0;
+      lastMessage = r.message;
       // Recorded with the version the SERVER reported, not one inferred from the files. This is
       // the whole reason a pull beats a catalogue download: no lookup chose the build, so there
-      // is nothing to be wrong about.
-      recordServerPullInstall(roots.clientRoot, {
-        id: args.modId,
-        type,
-        installedPath: path.join(targetRoot, args.modId),
-        version: args.version,
-        serverUrl
-      });
+      // is nothing to be wrong about. Prepatchers are not mods and have no row of their own.
+      if (args.half !== "patchers") {
+        recordServerPullInstall(roots.clientRoot, {
+          id: part.id,
+          type: args.half === "server" ? "server" : "client",
+          installedPath: path.join(targetRoot, part.id),
+          version: args.version,
+          serverUrl
+        });
+      }
+    }
+    const result = {
+      success: true,
+      files,
+      bytes,
+      message:
+        parts.length > 1
+          ? `Pulled ${parts.map((p) => p.id).join(" and ")} — ${files} file(s) — straight from the server.`
+          : lastMessage
+    };
 
+    // Its prepatchers, from the same server. Without them a pulled plugin can be half a mod, and a
+    // prepatcher another one references is what crashed the headless client.
+    let patcherNote = "";
+    let patcherWarning = "";
+    if (args.half === "client") {
+      const owned = serverPatchersOwnedBy(
+        parts.map((p) => p.id),
+        snapshot
+      );
+      if (owned.length && snapshot.companion?.patchers) {
+        const described = describePrepatcherPull(
+          await pullPrepatchersFromServer(serverUrl, roots.clientRoot, serverPatchers(snapshot), owned, { stagingRoot, onProgress })
+        );
+        patcherNote = described.info;
+        patcherWarning = described.warning;
+      } else if (owned.length) {
+        // A companion without `patchers` sends no install records either, so this match is by
+        // name only — and it is said to be.
+        patcherWarning = `${args.modId}: the server also runs ${owned.map((p) => p.id).join(", ")}, which looks like ${
+          owned.length > 1 ? "its prepatchers" : "its prepatcher"
+        } going by the name. Its companion is too old to send prepatchers — update the companion there, or copy ${
+          owned.length > 1 ? "them" : "it"
+        } into BepInEx/patchers by hand.`;
+      }
+    }
+
+    {
+      const type: ModType = args.half === "server" ? "server" : "client";
       /*
        * If the server records this folder as an ADDON, it arrives here as one.
        *
        * Otherwise an own-folder addon pulled through its plugin row lands as a plain mod and is
        * looked up in the mod catalogue — how ORBIT's Fika addon ended up "matched" to an
-       * unrelated mod. Re-read rather than trusted from the renderer: the server's records are
-       * the evidence, and they are only as good as that machine's own bookkeeping.
+       * unrelated mod. Read from the server rather than trusted from the renderer: the server's
+       * records are the evidence, and they are only as good as that machine's own bookkeeping.
        */
-      const snapshot = await fetchServerSnapshot(serverUrl);
-      const owner = snapshot.reachable ? remoteAddonForFolder(snapshot, { id: args.modId, type }) : undefined;
+      const owner = args.half !== "patchers" ? remoteAddonForFolder(snapshot, { id: args.modId, type }) : undefined;
       if (owner) {
         const parentType: ModType = owner.parentType ?? "client";
         const localParent = scanInstance("main").find(
@@ -2718,11 +2839,13 @@ ipcMain.handle(
           ...result,
           message:
             `${result.message} Recorded as ${owner.name}, an addon of "${parentName}", as the server has it.` +
-            (localParent ? "" : ` "${parentName}" is not installed here yet — install it too.`)
+            (localParent ? "" : ` "${parentName}" is not installed here yet — install it too.`) +
+            patcherNote,
+          ...(patcherWarning ? { warning: patcherWarning } : {})
         };
       }
     }
-    return result;
+    return { ...result, message: result.message + patcherNote, ...(patcherWarning ? { warning: patcherWarning } : {}) };
   }
 );
 

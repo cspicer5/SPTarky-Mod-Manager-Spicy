@@ -204,15 +204,29 @@ console.log("\nwhat makes a row fetchable");
   check("and it is the CATALOGUE id that travels, not the assembly's", quicksell.guid, "com.swiftxp.showmethemoney");
 
   // The guard. An assembly GUID looks like a perfectly good identifier and is the wrong one;
-  // accepting it here is how a lookup lands on a different mod.
+  // accepting it here is how a lookup lands on a different mod. Since the server can send the
+  // files itself (1.3.0 work), the row IS installable — but only by copying from the server, never
+  // by a catalogue lookup.
   const byHand = rowFor(report, "client:handinstalled");
-  check("a [BepInPlugin] GUID alone does NOT make a row fetchable", byHand.installable, false);
-  check("and the reason names where the gap is", /installed by hand there/.test(byHand.notInstallableReason), true);
+  check("a [BepInPlugin] GUID alone does NOT allow a catalogue lookup", byHand.catalogueLookup, false);
+  check("the only route left is copying it from the server", [byHand.pullable, byHand.installable], [true, true]);
+  const noServing = rowFor(
+    buildServerSyncReport(
+      snapshot({
+        companion: { present: true, manifest: true, files: false, clientVersions: true },
+        clientMods: [{ id: "HandInstalled", type: "client", version: "1.0.0", versionSource: "declared", guid: "com.someone.handinstalled", enabled: true, area: "plugins" }]
+      }),
+      []
+    ),
+    "client:handinstalled"
+  );
+  check("without that route it is not fetchable at all", noServing.installable, false);
+  check("and the reason names where the gap is", /installed by hand there/.test(noServing.notInstallableReason), true);
 
   // The load-order prefix is stripped from the KEY, so "01-SomeHelper.dll" and "SomeHelper"
-  // are the same plugin — but a name is still not enough to fetch one by.
+  // are the same plugin — but a name is still not enough to look one up by.
   const helper = rowFor(report, "client:somehelper");
-  check("nor does a bare file name", helper.installable, false);
+  check("nor does a bare file name", helper.catalogueLookup, false);
 
   // The side door: on an OUTDATED row the local mod is present, and its GUID is
   // catalogue-first with an assembly-GUID plan B. A plugin installed by hand on BOTH machines
@@ -226,7 +240,7 @@ console.log("\nwhat makes a row fetchable");
   );
   const row = rowFor(outdated, "client:handboth");
   check("an outdated hand-installed plugin is still caught", row.issue, "outdated-locally");
-  check("but the local assembly GUID does not make it fetchable", row.installable, false);
+  check("but the local assembly GUID does not allow a catalogue lookup", row.catalogueLookup, false);
 }
 
 console.log("\nclient plugins match on the ASSEMBLY guid, never across GUID namespaces");
@@ -622,6 +636,86 @@ console.log("\nreading the version a server reports");
   check("a missing value is undefined", parseSptVersionText(undefined), undefined);
   check("so is a non-string", parseSptVersionText({ Version: "4.1.5" }), undefined);
   check("and so is an empty string", parseSptVersionText("   "), undefined);
+}
+
+console.log("\ncopying from the server: what can be pulled, and what may be looked up");
+{
+  const { serverClientParts, canPullClientParts } = require(path.join(__dirname, "..", "dist-electron", "sptServer.js"));
+  // ShowMeTheMoney, as this user's server has it: the client half is ONE loose DLL, installed
+  // from the catalogue there once (so a catalogue id exists) — and since delisted.
+  const smtm = remoteClient({ id: "SwiftXP.ShowMeTheMoney.dll", version: "2.5.0", kind: "file", sizeBytes: 70144 });
+  const byHand = remoteClient({ id: "PrivateBuild.dll", version: "1.0.0", kind: "file", sizeBytes: 1234 });
+
+  const r = buildServerSyncReport(snapshot({ clientMods: [{ ...smtm, catalogueGuid: "com.dark.spt.showmethemoney" }, byHand] }), []);
+  const row = rowFor(r, "client:swiftxp.showmethemoney");
+  check("a missing single-DLL plugin can be pulled from a 1.2.0 companion", [row.pullable, row.installable], [true, true]);
+  check("and may still be looked up, since the server recorded its catalogue id", row.catalogueLookup, true);
+  const hand = rowFor(r, "client:privatebuild");
+  // Before this, a plugin with no catalogue id was "install it by hand" even with the server able
+  // to send it — which is how a mod only the server still has became impossible to get.
+  check("a hand-installed plugin is pullable now", [hand.pullable, hand.installable], [true, true]);
+  check("but never looked up by its file name", hand.catalogueLookup, false);
+
+  const none = buildServerSyncReport(snapshot({ companion: { present: true, manifest: true, files: false, clientVersions: true }, clientMods: [byHand] }), []);
+  const noFiles = rowFor(none, "client:privatebuild");
+  check("without file serving it is not installable", [noFiles.pullable, noFiles.installable], [false, false]);
+  check("and says to install it by hand", /Install it by hand/.test(noFiles.notInstallableReason), true);
+
+  // A single file the manifest gave no size for cannot be checked against anything on a 1.2.0
+  // companion, so it is not offered — but 1.3.0's file list covers it.
+  const sizeless = remoteClient({ id: "Sizeless.dll", version: "1.0.0", kind: "file" });
+  check("a sizeless single file is not pullable from 1.2.0", canPullClientParts(snapshot({}), [sizeless]), false);
+  check("but is from 1.3.0, which lists single files", canPullClientParts(snapshot({ companion: { present: true, manifest: true, files: true, clientVersions: true, singleFiles: true } }), [sizeless]), true);
+
+  // `Mod.dll` plus `Mod/` is one row and must be pulled whole.
+  const parts = serverClientParts(
+    snapshot({
+      clientMods: [
+        remoteClient({ id: "BlackDiv.dll", version: "1.3.1", kind: "file", sizeBytes: 10 }),
+        remoteClient({ id: "BlackDiv", kind: "folder" }),
+        remoteClient({ id: "BlackDiv.dll", area: "patchers", kind: "file", sizeBytes: 5 }),
+        remoteClient({ id: "BlackDivOld", enabled: false, kind: "folder" })
+      ]
+    }),
+    "BlackDiv.dll"
+  );
+  check("a plugin's file and folder halves are both its parts", parts.map((p) => p.id), ["BlackDiv.dll", "BlackDiv"]);
+
+  // Prepatcher rows: copied from a 1.3.0 companion, never from the catalogue.
+  const patcher = (over) => remoteClient({ area: "patchers", kind: "folder", ...over });
+  const local = [];
+  const with13 = buildServerSyncReport(
+    snapshot({
+      companion: { present: true, manifest: true, files: true, clientVersions: true, singleFiles: true, patchers: true },
+      clientMods: [patcher({ id: "MoreBotsPrepatch", version: "2.1.2" })]
+    }),
+    [],
+    undefined,
+    undefined,
+    local
+  );
+  const pRow = rowFor(with13, "patcher:morebotsprepatch");
+  check("a missing prepatcher is pullable from a 1.3.0 companion", [pRow.issue, pRow.pullable, pRow.installable], ["missing-locally", true, true]);
+  check("addressed by its entry name", pRow.serverModId, "MoreBotsPrepatch");
+  check("and never looked up in the catalogue", pRow.catalogueLookup, false);
+  check("it still does not block readiness", with13.readyToPlay, true);
+
+  const with12 = buildServerSyncReport(snapshot({ clientMods: [patcher({ id: "MoreBotsPrepatch", version: "2.1.2" })] }), [], undefined, undefined, local);
+  const oldRow = rowFor(with12, "patcher:morebotsprepatch");
+  check("from a 1.2.0 companion it is not", oldRow.installable, false);
+  check("and the reason names the fix", /too old to send prepatchers/.test(oldRow.notInstallableReason), true);
+
+  const disabled = buildServerSyncReport(
+    snapshot({
+      companion: { present: true, manifest: true, files: true, clientVersions: true, patchers: true },
+      clientMods: [patcher({ id: "MoreBotsPrepatch", version: "2.1.2" })]
+    }),
+    [],
+    undefined,
+    undefined,
+    [{ id: "MoreBotsPrepatch", enabled: false, version: "2.1.2" }]
+  );
+  check("a prepatcher that is here but switched off is not re-pulled", rowFor(disabled, "patcher:morebotsprepatch").installable, false);
 }
 
 console.log(`

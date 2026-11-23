@@ -634,9 +634,25 @@ export interface PatcherAttribution {
  * nothing — and "unknown" is reported as unknown, never as a best guess.
  */
 export function attributePatchers(clientRoot: string, installedClientModIds: string[], entries: string[]): PatcherAttribution {
+  return attributePatchersFromLedgers(loadRegistry(clientRoot), loadManifest(clientRoot), installedClientModIds, entries);
+}
+
+/**
+ * The same rule, applied to ledgers already in hand — another machine's, as its companion sent
+ * them, so a plugin pulled from a server brings the prepatchers THAT machine recorded with it.
+ * Entries the registry or manifest cannot be read for are skipped rather than trusted.
+ */
+export function attributePatchersFromLedgers(
+  registryInput: unknown[],
+  manifestInput: Record<string, string[]>,
+  installedClientModIds: string[],
+  entries: string[]
+): PatcherAttribution {
   const installed = new Map(installedClientModIds.map((id) => [id.toLowerCase(), id]));
-  const manifest = loadManifest(clientRoot);
-  const registry = loadRegistry(clientRoot);
+  const manifest = manifestInput;
+  const registry = registryInput.filter(
+    (r): r is RegistryEntry => !!r && typeof r === "object" && typeof (r as RegistryEntry).id === "string"
+  );
 
   const ownersOfKey = new Map<string, Set<string>>();
   const link = (key: string, modId: string) => {

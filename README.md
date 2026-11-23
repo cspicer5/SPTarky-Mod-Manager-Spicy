@@ -120,9 +120,13 @@ The **SPTarky Companion** is a small C# server mod, built into this app and inst
 |---|---|
 | `/sptarky/version` | the companion's version, and its capabilities by name |
 | `/sptarky/manifest` | the host's server mods and client plugins, plus this app's records from that machine, verbatim |
-| `/sptarky/filelist/` · `/sptarky/filedata/` | the files of a mod or addon, byte for byte |
+| `/sptarky/filelist/` · `/sptarky/filedata/` | the files of a mod or addon, byte for byte — from `user/mods`, `BepInEx/plugins`, and (1.3.0) `BepInEx/patchers` |
 
 With it, the **server pane** compares a host against your install row for row, and installs what you are missing **from the host itself** — the exact bytes it runs, including mods the catalogue no longer lists. Without it, only server mods can be compared, and the pane says so.
+
+- **Single-file mods.** A plugin that is one loose DLL (ShowMeTheMoney's client half, Quick Sell) is pulled as that file. This works against companion 1.2.0 too: its data route always served the file, and the manifest carries its size.
+- **Prepatchers come with their plugin** (companion 1.3.0). Pulling a plugin also pulls the prepatchers the host's own install records say came with it, then any prepatcher those reference that you lack — BlackDiv's needs MoreBotsPrepatch, and without it the game crashes at raid start. Missing prepatchers can also be installed from the server's Prepatchers list, and Match server includes them. An older companion cannot send them; the pane says so and names the fix.
+- **No catalogue ID needed to pull.** A plugin installed by hand on the host is copied from the host. The catalogue is still never searched by a file name: if the host cannot send it, the row says to install it by hand.
 
 - **Two builds.** SPT 4.0 runs on .NET 9 and SPT 4.1 on .NET 10, and an assembly for one cannot load on the other. The installer picks the right build for the SPT version it detects, and refuses rather than guesses if it cannot tell.
 - **Read-only in both directions.** Nothing is ever sent to the host, and nothing on it is changed. A host whose own records are wrong has to be fixed on that machine.

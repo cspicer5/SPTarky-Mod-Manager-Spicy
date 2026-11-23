@@ -1452,18 +1452,38 @@ export default function App() {
      *
      * Addons are excluded: they have no folder of their own to pull, living inside their
      * parent, so there is nothing for the file routes to serve.
+     *
+     * A row the catalogue must not be searched for — a plugin with no catalogue id, a prepatcher —
+     * is pulled whatever the Source toggle says: the server is the only correct place to get it,
+     * and for a mod the catalogue has dropped (ShowMeTheMoney) it is the only place at all.
      */
-    if (preferServerSource && serverSync?.companionPresent && row.side !== "addon" && row.serverModId) {
+    const serverOnly = row.catalogueLookup === false;
+    if (
+      (preferServerSource || serverOnly) &&
+      serverSync?.companionPresent &&
+      row.side !== "addon" &&
+      row.serverModId &&
+      row.pullable !== false
+    ) {
       setInstallingFromServer(row.key);
       try {
         const result = await window.modManagerAPI.installModFromServer({
           modId: row.serverModId,
-          half: row.side === "client" ? "client" : "server",
+          half: row.side === "client" ? "client" : row.side === "patcher" ? "patchers" : "server",
           version: row.serverVersion
         });
         if (result.success) {
           if (!options.quiet) pushToast(tMsg(result.message), true);
+          // Never quiet, and never green: a prepatcher that did not come with its plugin is how a
+          // client crashes at raid start, and Match server would otherwise report success over it.
+          if (result.warning) pushToast(tMsg(result.warning), false);
           return true;
+        }
+        // Nothing to fall back TO. Searching the catalogue by a file name is the lookup that
+        // installs the wrong mod over a working one, so the server's own reason is the answer.
+        if (serverOnly) {
+          pushToast(tMsg(result.message), false);
+          return false;
         }
         /*
          * Falls through to the catalogue rather than stopping. A server that cannot serve this
@@ -1516,6 +1536,15 @@ export default function App() {
       } finally {
         setInstallingFromServer(null);
       }
+    }
+
+    // Reached only when the server could not be asked (no companion, or pulling is switched off
+    // for a row it cannot send). A row that must not be looked up stops here, with its reason.
+    if (row.catalogueLookup === false) {
+      if (!options.quiet) {
+        pushToast(row.notInstallableReason ?? `"${row.name}" can only be copied from the server, and the server cannot send it.`, false);
+      }
+      return false;
     }
 
     // The name to search the catalogue with. For a client plugin the row's `name` is a BepInEx
@@ -1585,10 +1614,13 @@ export default function App() {
     // merely switched the wrong way, which are a toggle rather than a download.
     const rows = (serverSync?.rows ?? []).filter(
       (r) =>
-        r.issue === "missing-locally" ||
-        r.issue === "outdated-locally" ||
-        r.issue === "disabled-locally" ||
-        r.issue === "enabled-locally"
+        // A prepatcher only when the server can actually send it. With an older companion every
+        // one would fail in turn and bury the summary under the same message.
+        (r.side !== "patcher" || r.installable !== false) &&
+        (r.issue === "missing-locally" ||
+          r.issue === "outdated-locally" ||
+          r.issue === "disabled-locally" ||
+          r.issue === "enabled-locally")
     );
     if (rows.length === 0) {
       pushToast("Nothing to take from the server — every mod it has is already here.", true);
@@ -1597,7 +1629,7 @@ export default function App() {
     if (
       !window.confirm(
         `Install or update ${rows.length} mod(s) to match the server?\n\n` +
-          `Each is looked up in the catalogue and installed the same way the per-mod button does. ` +
+          `Each is installed the same way the per-mod button does it — copied from the server where it can be, otherwise looked up in the catalogue. ` +
           `Mods you have that the server does not, and mods where you are already newer, are left alone.`
       )
     )
@@ -1616,6 +1648,19 @@ export default function App() {
       setSyncingAllFromServer(false);
     }
     pushToast(`${done} of ${rows.length} mod(s) taken from the server.`, done === rows.length);
+    // The prepatchers the server runs and this install lacks, which this run could NOT take. Left
+    // out of the run above so each one does not fail in turn — but said, because "N of N taken"
+    // with a prepatcher still missing is exactly the success that hid the headless crash.
+    const leftBehind = (serverSync?.rows ?? []).filter(
+      (r) => r.side === "patcher" && r.installable === false && (r.issue === "missing-locally" || r.issue === "outdated-locally")
+    );
+    if (leftBehind.length) {
+      pushToast(
+        `${leftBehind.length} prepatcher(s) on the server were not taken: ${leftBehind.map((r) => r.name).join(", ")}. ` +
+          (leftBehind[0].notInstallableReason ?? ""),
+        false
+      );
+    }
   }
 
   async function handleSyncMod(mod: ModInfo) {

@@ -38,7 +38,7 @@ public class SptarkyRouter : StaticRouter
     /// </summary>
     private const int Protocol = 1;
 
-    private const string CompanionVersion = "1.2.0";
+    private const string CompanionVersion = "1.3.0";
 
     /// <summary>
     /// What this build can do, asked about BY NAME. The manager checks for a capability rather
@@ -53,8 +53,15 @@ public class SptarkyRouter : StaticRouter
     /// The capability says which, so the app can tell someone to update their companion instead
     /// of leaving them to wonder why half the list says "cannot be compared".
     /// </para>
+    /// <para>
+    /// 1.3.0 adds two, again without a protocol change — both are additive:
+    /// <c>singleFiles</c>, the file list answering for a mod that is one loose DLL, and
+    /// <c>patchers</c>, BepInEx/patchers served as a third half alongside the manifest carrying
+    /// the install-manifest ledger. A manager seeing neither knows not to offer a prepatcher pull
+    /// that would only fail.
+    /// </para>
     /// </summary>
-    private static readonly List<string> Capabilities = ["manifest", "files", "clientVersions"];
+    private static readonly List<string> Capabilities = ["manifest", "files", "clientVersions", "singleFiles", "patchers"];
 
     public SptarkyRouter(
         JsonUtil jsonUtil,
@@ -91,7 +98,7 @@ public class SptarkyRouter : StaticRouter
         // the server's own log rather than by probing it from somewhere else.
         logger.Success(
             $"[Spicy's Tarky Mod Manager Companion] active — v{CompanionVersion}, protocol {Protocol}. " +
-            $"Serving /sptarky/version, /sptarky/manifest, {SptarkyFileRouter.ListRoute}, {SptarkyFileRouter.DataRoute}");
+            $"Serving /sptarky/version, /sptarky/manifest, {SptarkyFileRouter.ListRoute}, {SptarkyFileRouter.DataRoute} (server, client, patchers)");
     }
 }
 

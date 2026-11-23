@@ -53,6 +53,15 @@ public class ManifestResponse
     [JsonPropertyName("addonsJson")]
     public string? AddonsJson { get; set; }
 
+    /// <summary>
+    /// The manager's install-manifest ledger (which files each archive put where), verbatim, or
+    /// null (1.3.0). It is what ties a prepatcher to the plugin that shipped it — MoreBotsPrepatch
+    /// to MoreBotsPlugin — which no file or folder name can: the two share no word. Without it
+    /// a manager pulling a plugin from here could not tell which prepatchers belong with it.
+    /// </summary>
+    [JsonPropertyName("installManifestJson")]
+    public string? InstallManifestJson { get; set; }
+
     /// <summary>Anything that went wrong while gathering, in words. A partial manifest is more useful than an error.</summary>
     [JsonPropertyName("warnings")]
     public List<string> Warnings { get; set; } = [];
@@ -147,6 +156,7 @@ public static class ManifestBuilder
 {
     private const string RegistryFile = ".spt-mod-manager-registry.json";
     private const string AddonsFile = ".spt-mod-manager-addons.json";
+    private const string InstallManifestFile = ".spt-mod-manager-manifest.json";
 
     public static ManifestResponse Build(InstallLayout layout, IReadOnlyList<SptMod> loadedMods, int protocol, string companionVersion)
     {
@@ -292,6 +302,7 @@ public static class ManifestBuilder
 
         manifest.RegistryJson = ReadIfPresent(manifest, Path.Combine(root, RegistryFile));
         manifest.AddonsJson = ReadIfPresent(manifest, Path.Combine(root, AddonsFile));
+        manifest.InstallManifestJson = ReadIfPresent(manifest, Path.Combine(root, InstallManifestFile));
 
         if (manifest.RegistryJson == null)
         {

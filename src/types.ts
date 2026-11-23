@@ -373,6 +373,10 @@ export interface ServerSyncRow {
    */
   installable?: boolean;
   notInstallableReason?: string;
+  /** The server's companion can send this row's files (see electron/sptServer.ts). */
+  pullable?: boolean;
+  /** False when the catalogue must not be searched for this row; a failed pull then stops there. */
+  catalogueLookup?: boolean;
 }
 
 export interface ServerSyncReport {
@@ -1223,9 +1227,17 @@ export interface ModManagerAPI {
    */
   installModFromServer: (args: {
     modId: string;
-    half: "server" | "client";
+    /** "patchers" needs a 1.3.0 companion; the report only offers it when the server has one. */
+    half: "server" | "client" | "patchers";
     version?: string;
-  }) => Promise<{ success: boolean; message: string; files?: number; bytes?: number }>;
+  }) => Promise<{
+    success: boolean;
+    message: string;
+    files?: number;
+    bytes?: number;
+    /** A prepatcher the mod needs that did not come with it. Shown even during Match server. */
+    warning?: string;
+  }>;
   /** Pass the guid when there is one: a folder name is not the published name. */
   findForgeDownloadForName: (
     name: string,

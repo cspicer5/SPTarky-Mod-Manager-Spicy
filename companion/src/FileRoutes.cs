@@ -60,6 +60,19 @@ public class SptarkyFileRouter : DynamicRouter
         var listing = new FileListing();
         InstallLayout layout = InstallLayout.Detect();
         string? modRoot = FilePaths.Resolve(layout, url, ListRoute);
+
+        // A mod that is ONE file — a loose Mod.dll in plugins/ or patchers/, which is how plenty
+        // ship. Before 1.3.0 this answered "No such mod" because only folders were looked for,
+        // while the data route below would have served the very same file: ShowMeTheMoney's
+        // client half could not be pulled from a server that had it. Listed as itself, named by
+        // its own file name, so the manager fetches it with no inner path.
+        if (modRoot != null && File.Exists(modRoot))
+        {
+            listing.Kind = "file";
+            listing.Files.Add(new FileEntry { Path = Path.GetFileName(modRoot), SizeBytes = new FileInfo(modRoot).Length });
+            return listing;
+        }
+
         if (modRoot == null || !Directory.Exists(modRoot))
         {
             listing.Error = "No such mod on this server.";
@@ -142,8 +155,15 @@ public class SptarkyFileSerializer : ISerializer
 public static class FilePaths
 {
     /// <summary>
-    /// URL shape: <c>{prefix}{server|client}/{rest of relative path}</c>.
-    /// Returns null for anything outside the mod area, or that names neither half.
+    /// URL shape: <c>{prefix}{server|client|patchers}/{rest of relative path}</c>.
+    /// Returns null for anything outside the mod area, or that names none of the three.
+    ///
+    /// <para>
+    /// <c>patchers</c> is BepInEx/patchers (1.3.0). A prepatcher is part of the mod that ships it,
+    /// and a client that pulled the plugin without it got a mod that does not load — or, when
+    /// another prepatcher depends on it, a game that crashes at raid start. Same containment rule
+    /// as the other two: the path must land strictly inside that folder.
+    /// </para>
     /// </summary>
     public static string? Resolve(InstallLayout layout, string url, string prefix)
     {
@@ -167,6 +187,7 @@ public static class FilePaths
         {
             "server" => layout.ServerRoot == null ? null : Path.Combine(layout.ServerRoot, "user", "mods"),
             "client" => layout.ClientRoot == null ? null : Path.Combine(layout.ClientRoot, "BepInEx", "plugins"),
+            "patchers" => layout.ClientRoot == null ? null : Path.Combine(layout.ClientRoot, "BepInEx", "patchers"),
             _ => null
         };
         if (area == null) return null;
@@ -201,6 +222,14 @@ public static class FilePaths
 
 public class FileListing
 {
+    /// <summary>
+    /// "folder", or "file" for a mod that is a single file (1.3.0). For a file, <see cref="Files"/>
+    /// holds that one file under its own name, and its bytes come from
+    /// <c>/sptarky/filedata/{half}/{name}</c> — no inner path, because there is no folder.
+    /// </summary>
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = "folder";
+
     [JsonPropertyName("files")]
     public List<FileEntry> Files { get; set; } = [];
 

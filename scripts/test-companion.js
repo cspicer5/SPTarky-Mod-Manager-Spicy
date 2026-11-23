@@ -283,6 +283,33 @@ console.log("\ndegrading without losing the useful part");
   check("as is null", C.readManifest(null), null);
 }
 
+console.log("\ncompanion 1.3.0: single files, prepatchers, and the install manifest");
+{
+  const caps = C.readCapabilities(200, { version: "1.3.0", protocol: 1, capabilities: ["manifest", "files", "clientVersions", "singleFiles", "patchers"] });
+  check("1.3.0 says it lists single files and serves prepatchers", [caps.singleFiles, caps.patchers], [true, true]);
+  // Additive, so the protocol did not move: an older manager keeps using everything it knew.
+  check("on the same protocol", caps.protocol, 1);
+  const old = C.readCapabilities(200, { version: "1.2.0", protocol: 1, capabilities: ["manifest", "files", "clientVersions"] });
+  check("1.2.0 claims neither", [old.singleFiles, old.patchers], [false, false]);
+
+  const m = C.readManifest({
+    ...liveish,
+    clientMods: [
+      { name: "SwiftXP.ShowMeTheMoney.dll", kind: "file", area: "plugins", enabled: true, sizeBytes: 70144 },
+      { name: "MoreBotsPrepatch", kind: "folder", area: "patchers", enabled: true, sizeBytes: 0 }
+    ],
+    installManifestJson: JSON.stringify({ "k-morebots": ["BepInEx/patchers/MoreBotsPrepatch/MoreBotsPrepatch.dll"] })
+  });
+  const smtm = m.clientMods.find((c) => c.id === "SwiftXP.ShowMeTheMoney.dll");
+  check("a loose plugin keeps its kind and size", [smtm.kind, smtm.sizeBytes], ["file", 70144]);
+  const folder = m.clientMods.find((c) => c.id === "MoreBotsPrepatch");
+  // A folder's 0 means "not measured", and passing it on would fail every size check against it.
+  check("a folder keeps its kind and no size", [folder.kind, folder.sizeBytes], ["folder", undefined]);
+  check("the install manifest arrives parsed, beside the registry", Object.keys(m.ledgers.installManifest), ["k-morebots"]);
+  check("with the registry entries as sent", m.ledgers.registry.length, 3);
+  check("an older companion sends no install manifest, so no ledgers", C.readManifest(liveish).ledgers, undefined);
+}
+
 
 console.log(`
 ${failures === 0 ? "all checks passed" : `${failures} check(s) failed`}`);

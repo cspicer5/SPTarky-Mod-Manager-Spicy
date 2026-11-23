@@ -209,7 +209,7 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   findForgeDownloadForName: (name: string, sptVersion?: string, guid?: string) =>
     ipcRenderer.invoke("find-forge-download-for-name", name, sptVersion, guid),
   /** Pulls a mod's files straight from the connected server. See electron/serverFiles.ts. */
-  installModFromServer: (args: { modId: string; half: "server" | "client"; version?: string }) =>
+  installModFromServer: (args: { modId: string; half: "server" | "client" | "patchers"; version?: string }) =>
     ipcRenderer.invoke("install-mod-from-server", args),
   installForgeMod: (
     jobId: string,

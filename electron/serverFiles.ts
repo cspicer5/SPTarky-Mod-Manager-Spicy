@@ -34,11 +34,16 @@ export interface ServerFileEntry {
 }
 
 export interface ServerFileListing {
+  /** "file" when the mod is one loose file (companion 1.3.0); otherwise a folder. */
+  kind?: "file" | "folder";
   files: ServerFileEntry[];
   error?: string;
 }
 
-export type ModHalf = "server" | "client";
+/** user/mods, BepInEx/plugins, or BepInEx/patchers (companion 1.3.0). */
+export type ModHalf = "server" | "client" | "patchers";
+
+export const MOD_HALVES: readonly ModHalf[] = ["server", "client", "patchers"];
 
 /**
  * A mod folder's contents, as the server sees them.
@@ -63,7 +68,7 @@ export async function listServerModFiles(
     return { files: [], error: "The server's file list could not be read." };
   }
 
-  const raw = parsed as { files?: unknown; error?: unknown };
+  const raw = parsed as { kind?: unknown; files?: unknown; error?: unknown };
   if (typeof raw?.error === "string" && raw.error) return { files: [], error: raw.error };
   if (!Array.isArray(raw?.files)) return { files: [], error: "The server did not return a file list." };
 
@@ -73,7 +78,7 @@ export async function listServerModFiles(
     if (typeof e?.path !== "string" || !e.path) continue;
     files.push({ path: e.path, sizeBytes: typeof e.sizeBytes === "number" ? e.sizeBytes : -1 });
   }
-  return { files };
+  return { kind: raw.kind === "file" ? "file" : "folder", files };
 }
 
 /** One file's bytes, verified against the size the listing promised. */
@@ -92,7 +97,9 @@ export async function fetchServerModFile(
     .filter(Boolean)
     .map((segment) => encodeURIComponent(segment))
     .join("/");
-  const url = `/sptarky/filedata/${half}/${encodeURIComponent(modId)}/${encoded}`;
+  // An empty relative path is a mod that IS one file: it is addressed by its own name, with
+  // nothing after it. Checked against companions 1.2.0 and 1.3.0, which both serve that form.
+  const url = `/sptarky/filedata/${half}/${encodeURIComponent(modId)}${encoded ? `/${encoded}` : ""}`;
 
   const { status, body } = await request(origin, url, options.timeoutMs ?? 120000, options.headers, { raw: true });
   if (status !== 200) return { ok: false, error: `${relativePath}: the server answered ${status}.` };
@@ -112,18 +119,36 @@ export interface ServerInstallResult {
   bytes?: number;
 }
 
+export interface ServerPullOptions extends ServerRequestOptions {
+  onProgress?: (done: number, total: number, bytes: number) => void;
+  /**
+   * What the server's manifest says this entry is. A loose file with a known size is fetched
+   * directly, without asking for a file list — which a companion before 1.3.0 refuses for a
+   * single file even though it serves the file itself. Absent: ask the file list.
+   */
+  entry?: { kind?: "file" | "folder"; sizeBytes?: number };
+  /**
+   * Where to stage the download, on the same volume as `targetRoot`. Defaults to inside
+   * `targetRoot`. Pass a folder OUTSIDE it for BepInEx/plugins and BepInEx/patchers: BepInEx loads
+   * every DLL under those folders recursively, so a staging folder left behind by a crash would
+   * be loaded as a mod.
+   */
+  stagingRoot?: string;
+}
+
 /**
- * Pulls one mod's whole folder from the server into the local install.
+ * Pulls one mod from the server into the local install: a whole folder, or a mod that is one
+ * loose file (ShowMeTheMoney's client half is `SwiftXP.ShowMeTheMoney.dll`, nothing else).
  *
- * `targetRoot` is the directory the mod's folder goes INTO — `BepInEx/plugins` or `user/mods`.
- * Nothing outside `targetRoot/modId` is ever written.
+ * `targetRoot` is the directory the mod goes INTO — `BepInEx/plugins`, `BepInEx/patchers` or
+ * `user/mods`. Nothing outside `targetRoot/modId` is ever written, apart from staging.
  */
 export async function installModFromServer(
   origin: string,
   half: ModHalf,
   modId: string,
   targetRoot: string,
-  options: ServerRequestOptions & { onProgress?: (done: number, total: number, bytes: number) => void } = {}
+  options: ServerPullOptions = {}
 ): Promise<ServerInstallResult> {
   // A mod id is a folder name and nothing else. It arrives from the server's own listing, but
   // this writes to disk, so it is checked here rather than trusted: a separator or a ".." would
@@ -132,14 +157,27 @@ export async function installModFromServer(
     return { success: false, message: `"${modId}" is not a valid mod folder name.` };
   }
 
+  if (options.entry?.kind === "file" && typeof options.entry.sizeBytes === "number") {
+    return installSingleFileFromServer(origin, half, modId, targetRoot, options.entry.sizeBytes, options);
+  }
+
   const listing = await listServerModFiles(origin, half, modId, options);
   if (listing.error) return { success: false, message: listing.error };
+  if (listing.kind === "file") {
+    // Named by its own file name, so the one entry must be exactly that. Anything else is a
+    // listing this code does not understand, and a write based on it would be a guess.
+    const only = listing.files[0];
+    if (listing.files.length !== 1 || !only || only.path !== modId) {
+      return { success: false, message: `The server described "${modId}" as a single file but listed something else.` };
+    }
+    return installSingleFileFromServer(origin, half, modId, targetRoot, only.sizeBytes, options);
+  }
   if (listing.files.length === 0) return { success: false, message: `The server reported no files for "${modId}".` };
 
   const destination = path.join(targetRoot, modId);
-  // Staged beside the destination rather than in the system temp folder, so the final move is a
-  // rename on the same volume — atomic, and not a cross-device copy that can half-finish.
-  const staging = path.join(targetRoot, `.sptarky-pull-${modId}`);
+  // Staged on the same volume rather than in the system temp folder, so the final move is a
+  // rename — atomic, and not a cross-device copy that can half-finish.
+  const staging = options.stagingRoot ? path.join(options.stagingRoot, modId) : path.join(targetRoot, `.sptarky-pull-${modId}`);
 
   try {
     fs.rmSync(staging, { recursive: true, force: true });
@@ -173,6 +211,7 @@ export async function installModFromServer(
     // it was, which is the whole reason for staging.
     fs.rmSync(destination, { recursive: true, force: true });
     fs.renameSync(staging, destination);
+    removeIfEmpty(options.stagingRoot);
 
     return {
       success: true,
@@ -183,10 +222,71 @@ export async function installModFromServer(
   } catch (err: any) {
     try {
       fs.rmSync(staging, { recursive: true, force: true });
+      removeIfEmpty(options.stagingRoot);
     } catch {
       /* the staging folder is already gone, or locked — not worth reporting over the real error */
     }
     return { success: false, message: `Could not install "${modId}" from the server: ${err?.message ?? err}` };
+  }
+}
+
+/**
+ * A mod that is one file: fetched by its own name, checked against the size the server declared,
+ * staged, then moved into place over any older copy.
+ *
+ * The staged name ends in `.part`, never `.dll`, so nothing that scans for assemblies can mistake
+ * a half-finished download for a mod.
+ */
+async function installSingleFileFromServer(
+  origin: string,
+  half: ModHalf,
+  name: string,
+  targetRoot: string,
+  expectedBytes: number,
+  options: ServerPullOptions
+): Promise<ServerInstallResult> {
+  const destination = path.join(targetRoot, name);
+  const staged = options.stagingRoot ? path.join(options.stagingRoot, `${name}.part`) : path.join(targetRoot, `.sptarky-pull-${name}.part`);
+
+  const result = await fetchServerModFile(origin, half, name, "", expectedBytes, options);
+  if (!result.ok) {
+    // The relative path is empty, so the fetch's own message starts with ": " — name the file.
+    return { success: false, message: `Could not pull "${name}" from the server. ${name}${result.error}` };
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(staged), { recursive: true });
+    fs.writeFileSync(staged, result.data);
+    fs.mkdirSync(targetRoot, { recursive: true });
+    // Replaces an older copy whatever shape it had. Only now, after the bytes are in hand.
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.renameSync(staged, destination);
+    removeIfEmpty(options.stagingRoot);
+    options.onProgress?.(1, 1, result.data.length);
+    return {
+      success: true,
+      files: 1,
+      bytes: result.data.length,
+      message: `Pulled ${name} (${formatBytes(result.data.length)}) straight from the server.`
+    };
+  } catch (err: any) {
+    try {
+      fs.rmSync(staged, { force: true });
+      removeIfEmpty(options.stagingRoot);
+    } catch {
+      /* already gone or locked — not worth reporting over the real error */
+    }
+    return { success: false, message: `Could not install "${name}" from the server: ${err?.message ?? err}` };
+  }
+}
+
+/** Tidies a staging folder this module created, once nothing is left in it. Never removes anything with content. */
+function removeIfEmpty(dir: string | undefined): void {
+  if (!dir) return;
+  try {
+    if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+  } catch {
+    /* in use by a concurrent pull, or locked — harmless to leave */
   }
 }
 
@@ -243,7 +343,13 @@ export async function installAddonFromServer(
   addon: ServerAddonPull,
   localParentDir: string,
   targetRootFor: (half: ModHalf) => string,
-  options: ServerRequestOptions & { onProgress?: (done: number, total: number, bytes: number) => void } = {}
+  options: ServerRequestOptions & {
+    onProgress?: (done: number, total: number, bytes: number) => void;
+    /** The server manifest's word on one of the addon's own entries — a single DLL or a folder. */
+    entryFor?: (half: ModHalf, id: string) => ServerPullOptions["entry"];
+    /** Staging location per half; see ServerPullOptions.stagingRoot. */
+    stagingRootFor?: (half: ModHalf) => string | undefined;
+  } = {}
 ): Promise<ServerInstallResult> {
   if (!addon.mergedIntoParent) {
     // Own folders: each is a mod-shaped pull, and installModFromServer already stages, size-checks
@@ -251,7 +357,13 @@ export async function installAddonFromServer(
     let files = 0;
     let bytes = 0;
     for (const folder of addon.folders) {
-      const r = await installModFromServer(origin, folder.half, folder.id, targetRootFor(folder.half), options);
+      // An own "folder" may be one loose DLL — Quick Sell's is SwiftXP.SPT.ShowMeTheMoney.QuickSell.dll —
+      // so the manifest's word on its shape travels with it.
+      const r = await installModFromServer(origin, folder.half, folder.id, targetRootFor(folder.half), {
+        ...options,
+        entry: options.entryFor?.(folder.half, folder.id),
+        stagingRoot: options.stagingRootFor?.(folder.half)
+      });
       if (!r.success) return r;
       files += r.files ?? 0;
       bytes += r.bytes ?? 0;

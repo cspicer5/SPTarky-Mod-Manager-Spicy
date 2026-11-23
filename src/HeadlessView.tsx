@@ -669,9 +669,11 @@ function ServerPane({
               onClick={() => onInstall(row)}
               disabled={installing !== null}
               title={
-                row.issue === "outdated-locally"
-                  ? `Get ${row.serverVersion} from the catalogue and install it here`
-                  : "Find this in the catalogue and install it into the main install"
+                row.catalogueLookup === false
+                  ? "Copy it from the server into the main install — the server's exact files"
+                  : row.issue === "outdated-locally"
+                    ? `Get ${row.serverVersion} from the catalogue and install it here`
+                    : "Find this in the catalogue and install it into the main install"
               }
             >
               {installing === row.key ? "…" : row.issue === "outdated-locally" ? "Update" : "Install"}

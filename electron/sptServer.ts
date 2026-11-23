@@ -96,6 +96,11 @@ export interface SptServerSnapshot {
   addons?: RemoteAddon[];
   /** Gaps the companion reported while gathering, in words. */
   companionWarnings?: string[];
+  /**
+   * The server machine's registry and install-manifest ledgers (companion 1.3.0), for matching
+   * its prepatchers to the plugins that shipped them. Absent means not known.
+   */
+  remoteLedgers?: { registry: unknown[]; installManifest: Record<string, string[]> };
 }
 
 /**
@@ -370,7 +375,12 @@ export async function fetchServerSnapshot(input: string, timeoutMs = 8000, token
 
   // The companion, if this server has one. Everything above works without it; everything below
   // is the part a stock server cannot answer.
-  const { companion, clientMods, remoteServerMods, addons, companionWarnings } = await readCompanion(origin, token, timeoutMs, mods);
+  const { companion, clientMods, remoteServerMods, addons, companionWarnings, remoteLedgers } = await readCompanion(
+    origin,
+    token,
+    timeoutMs,
+    mods
+  );
 
   return {
     url: origin,
@@ -384,7 +394,8 @@ export async function fetchServerSnapshot(input: string, timeoutMs = 8000, token
     clientMods,
     remoteServerMods,
     addons,
-    companionWarnings
+    companionWarnings,
+    remoteLedgers
   };
 }
 
@@ -411,6 +422,7 @@ async function readCompanion(
   remoteServerMods?: RemoteMod[];
   addons?: RemoteAddon[];
   companionWarnings?: string[];
+  remoteLedgers?: SptServerSnapshot["remoteLedgers"];
 }> {
   const headers = token ? { [COMPANION_TOKEN_HEADER]: token } : undefined;
 
@@ -443,7 +455,8 @@ async function readCompanion(
       remoteServerMods: manifest.serverMods,
       // Same rule for addons: no ledger on that machine means unknown, not none.
       addons: manifest.addonsKnown ? readRemoteAddons(manifest.addons) : undefined,
-      companionWarnings: manifest.warnings.length ? manifest.warnings : undefined
+      companionWarnings: manifest.warnings.length ? manifest.warnings : undefined,
+      remoteLedgers: manifest.clientKnown ? manifest.ledgers : undefined
     };
   } catch {
     return { companion: caps };
@@ -673,6 +686,22 @@ export interface ServerSyncRow {
    */
   installable?: boolean;
   notInstallableReason?: string;
+  /**
+   * The server's companion can send this row's files, so it can be copied from the server.
+   *
+   * Kept apart from `installable` because the two routes have different rules. A pull asks the
+   * server for the exact files it runs and needs no catalogue identity at all — which is the only
+   * way to get a mod the catalogue has since dropped, like ShowMeTheMoney. A catalogue lookup
+   * needs an identity the catalogue understands.
+   */
+  pullable?: boolean;
+  /**
+   * False when the catalogue must NOT be searched for this row: a client plugin with no catalogue
+   * id (its file name finds the wrong mod as often as the right one), or a prepatcher (never in
+   * the catalogue on its own). Such a row is pulled from the server or not installed at all —
+   * a failed pull must not fall back to a lookup by name. Absent means the catalogue may be used.
+   */
+  catalogueLookup?: boolean;
 }
 
 export interface ServerSyncReport {
@@ -1187,10 +1216,19 @@ export function buildServerSyncReport(
         // `row.guid` can fall back to the local mod's, and that one is catalogue-first with an
         // assembly-GUID plan B — so a locally hand-installed plugin would supply a BepInPlugin
         // GUID and put the wrong namespace back into the lookup by the side door.
-        row.installable = Boolean(remote.catalogueGuid);
+        row.catalogueLookup = Boolean(remote.catalogueGuid);
+        /*
+         * The server can send it whatever the catalogue knows. This is what makes a delisted mod
+         * — ShowMeTheMoney — or one installed by hand on the host obtainable at all: the only
+         * copy left is the one the server is running. Every part is checked, because a plugin
+         * that ships as `Mod.dll` plus a `Mod/` folder is one row and must arrive whole.
+         */
+        row.pullable = canPullClientParts(snapshot, serverClientParts(snapshot, remote.id));
+        row.installable = row.pullable || row.catalogueLookup;
         if (!row.installable) {
-          row.notInstallableReason =
-            "The server has no catalogue record for this plugin — it was installed by hand there — so it could only be looked up by its file name, which finds the wrong mod as often as the right one. Install it by hand.";
+          row.notInstallableReason = snapshot.companion?.files
+            ? "The server has no catalogue record for this plugin and could not say how to send it. Install it by hand."
+            : "The server has no catalogue record for this plugin — it was installed by hand there — so it could only be looked up by its file name, which finds the wrong mod as often as the right one. Install it by hand.";
         }
       }
       rows.push(row);
@@ -1233,11 +1271,15 @@ export function buildServerSyncReport(
   /*
    * Prepatcher differences are counted SEPARATELY and never block readiness.
    *
-   * They are not installable on their own — they arrive with the mod that ships them — and the
-   * section is hidden unless asked for. Feeding them into the shared counts produced the worst
-   * combination available: "Not ready", "1 to install", nothing visible in the list, and a
-   * Match server button that could only fail. A state nobody can see or act on must not be the
-   * thing standing between someone and a raid.
+   * The section is hidden unless asked for, and on a server whose companion predates 1.3.0 they
+   * cannot be fetched at all. Feeding them into the shared counts produced the worst combination
+   * available: "Not ready", "1 to install", nothing visible in the list, and a Match server
+   * button that could only fail. A state nobody can see or act on must not be the thing standing
+   * between someone and a raid.
+   *
+   * With a 1.3.0 companion a missing one IS fetchable (see `canPull` below), and Match server
+   * takes it — but it still does not block readiness: the commonest cause is a leftover on the
+   * server from a mod removed there, which this install is right not to have.
    *
    * Still reported, though — `patcherDiffs` is what the pane uses to say "look in there".
    */
@@ -1270,20 +1312,34 @@ export function buildServerSyncReport(
       const local = localByKey.get(key);
       if (local) claimedPatchers.add(key);
 
+      /*
+       * Copied from the server when its companion can send prepatchers (1.3.0), and never looked
+       * up in the catalogue, which does not list them on their own.
+       *
+       * Until 1.3.0 this was never installable, on the grounds that a prepatcher arrives with its
+       * mod. That held for catalogue installs and not for pulls from the server: the companion
+       * served plugins/ and user/mods only, so pulling MoreBotsPlugin from the server left
+       * MoreBotsPrepatch behind, and BlackDiv's prepatcher — which references it — then failed to
+       * load. A pulled plugin now brings its prepatchers, and these rows cover anything else the
+       * server runs that this install lacks.
+       */
+      const canPull = Boolean(snapshot.companion?.patchers) && remote.enabled;
       const row: ServerSyncRow = {
         key: "patcher:" + key,
         side: "patcher",
         name: local?.id ?? remote.id,
+        serverModId: remote.id,
         serverVersion: remote.version,
         localVersion: local?.version,
         matchedBy: local ? "name" : undefined,
-        // Never installable on its own. A patcher arrives with the mod that ships it, and the
-        // companion's file routes do not serve BepInEx/patchers at all — they are rooted at
-        // user/mods and BepInEx/plugins. Fetching one in isolation would also be the wrong
-        // repair: the parent is what is actually missing or behind.
-        installable: false,
-        notInstallableReason:
-          "Prepatchers arrive with the mod that ships them. Install or update that mod and this comes with it."
+        pullable: canPull,
+        catalogueLookup: false,
+        installable: canPull,
+        notInstallableReason: canPull
+          ? undefined
+          : snapshot.companion?.files
+            ? "The server's companion is too old to send prepatchers. Update it on the server (1.3.0 or later), or reinstall the mod that ships this one."
+            : "Prepatchers arrive with the mod that ships them. Install or update that mod and this comes with it."
       };
 
       if (!local) {
@@ -1316,6 +1372,14 @@ export function buildServerSyncReport(
         } else {
           /* in sync: nothing to report for a prepatcher */
         }
+      }
+      // A pull fixes "absent" and "behind" only. A disabled one is sitting here already and the
+      // fix is enabling its mod; pulling would leave two copies, one in each folder.
+      if (row.installable && row.issue !== "missing-locally" && row.issue !== "outdated-locally") {
+        row.installable = false;
+        row.pullable = false;
+        row.notInstallableReason =
+          row.issue === "disabled-locally" ? "It is here but switched off. Enable the mod it belongs to." : undefined;
       }
       rows.push(row);
     }
@@ -1497,12 +1561,39 @@ export function buildServerSyncReport(
  * because people rename plugins to control BepInEx load order — `01-SomeMod` and `SomeMod`
  * are the same plugin and must not be reported as one missing and one extra.
  */
-function clientKey(name: string | undefined): string {
+export function clientKey(name: string | undefined): string {
   return (name ?? "")
     .trim()
     .toLowerCase()
     .replace(/\.dll$/, "")
     .replace(/^\d+[-_.\s]+/, "");
+}
+
+/**
+ * Every part of one client plugin on the server: `Mod.dll` AND a `Mod/` folder when it ships as
+ * both. They collapse to one row, and a pull of that row has to fetch them all — asking for the
+ * row's id alone fetched whichever half carried the version and left the other behind.
+ *
+ * Running parts only (BepInEx/plugins). One in plugins.disabled is not served and is not what the
+ * server runs.
+ */
+export function serverClientParts(snapshot: Pick<SptServerSnapshot, "clientMods">, modId: string): RemoteMod[] {
+  const key = clientKey(modId);
+  return (snapshot.clientMods ?? []).filter(
+    (m) => (m.area ?? "plugins") === "plugins" && m.enabled && clientKey(m.id) === key && !isSptOwnedPlugin(m.id)
+  );
+}
+
+/**
+ * Whether the server can send every one of these parts.
+ *
+ * A folder needs the file routes. A loose file needs them too, plus its size from the manifest:
+ * the data route has always served single files, but the file LIST only learned to in 1.3.0, so
+ * against an older companion the manifest's size is the only thing to check the download against.
+ */
+export function canPullClientParts(snapshot: Pick<SptServerSnapshot, "companion">, parts: RemoteMod[]): boolean {
+  if (!snapshot.companion?.files || parts.length === 0) return false;
+  return parts.every((p) => p.kind !== "file" || typeof p.sizeBytes === "number" || Boolean(snapshot.companion?.singleFiles));
 }
 
 /**

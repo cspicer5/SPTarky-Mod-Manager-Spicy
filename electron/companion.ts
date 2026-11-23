@@ -59,6 +59,18 @@ export interface CompanionCapabilities {
    * so the app can say "update the companion" instead of leaving someone to guess.
    */
   clientVersions: boolean;
+  /**
+   * The file list answers for a mod that is one loose DLL (companion 1.3.0). Not needed to PULL
+   * one — the data route has always served a single file, and the manifest carries its size —
+   * but it says the listing can be trusted for those too.
+   */
+  singleFiles?: boolean;
+  /**
+   * BepInEx/patchers is served as a third half, and the manifest carries the install-manifest
+   * ledger that ties a prepatcher to its plugin (companion 1.3.0). Without it a prepatcher cannot
+   * be pulled at all, so the app must not offer to.
+   */
+  patchers?: boolean;
   /** The companion wants a token and this manager has not supplied a valid one. */
   unauthorised?: boolean;
   /**
@@ -123,7 +135,9 @@ export function readCapabilities(status: number, body: unknown): CompanionCapabi
     // companion can ship one before the other without this having to know release history.
     manifest: capabilities.includes("manifest"),
     files: capabilities.includes("files"),
-    clientVersions: capabilities.includes("clientVersions")
+    clientVersions: capabilities.includes("clientVersions"),
+    singleFiles: capabilities.includes("singleFiles"),
+    patchers: capabilities.includes("patchers")
   };
 }
 
@@ -182,6 +196,14 @@ export interface RemoteMod {
    */
   area?: string;
   /**
+   * "file" for a loose DLL, "folder" otherwise — client entries only; a server mod is always a
+   * folder. A pull needs it: a single file is fetched by its own name and written AS a file,
+   * where a folder is listed first and written as a folder.
+   */
+  kind?: "file" | "folder";
+  /** A loose file's size, which a pull checks the download against. Unknown (absent) for folders. */
+  sizeBytes?: number;
+  /**
    * The mod this folder is an addon of, from that machine's own registry row.
    *
    * Carried so a folder pulled from the server arrives as what it IS there. Without it ORBIT's
@@ -214,6 +236,12 @@ export interface RemoteManifest {
   clientKnown: boolean;
   /** True when no ledger was found, so every version is only what the mods claim. */
   versionsAreDeclaredOnly: boolean;
+  /**
+   * That machine's registry and install-manifest ledgers, parsed, for working out which plugin a
+   * prepatcher belongs to with the same rule the local install uses. Absent when not sent (a
+   * companion before 1.3.0 sends no install manifest) or unreadable — unknown, not empty.
+   */
+  ledgers?: { registry: unknown[]; installManifest: Record<string, string[]> };
   warnings: string[];
 }
 
@@ -244,6 +272,7 @@ export function readManifest(body: unknown): RemoteManifest | null {
     { installedVersion?: string; forgeGuid?: string; type?: string; addonOf?: string; addonOfType?: string; forgeAddonId?: number }
   > = {};
   let ledgerParsed = false;
+  let registryEntries: unknown[] | undefined;
   if (typeof raw.registryJson === "string" && raw.registryJson.trim()) {
     try {
       const entries = JSON.parse(raw.registryJson);
@@ -252,9 +281,27 @@ export function readManifest(body: unknown): RemoteManifest | null {
           if (e && typeof e.id === "string") ledger[e.id] = e;
         }
         ledgerParsed = true;
+        registryEntries = entries;
       }
     } catch {
       warnings.push("The server's version ledger could not be read, so only declared versions are available.");
+    }
+  }
+
+  // The install manifest: archive key -> files it placed. Only useful beside the registry, which
+  // is what ties a key to a mod, so it is carried only when both parsed.
+  let installManifest: Record<string, string[]> | undefined;
+  if (typeof raw.installManifestJson === "string" && raw.installManifestJson.trim()) {
+    try {
+      const parsed = JSON.parse(raw.installManifestJson);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        installManifest = {};
+        for (const [key, files] of Object.entries(parsed as Record<string, unknown>)) {
+          if (Array.isArray(files)) installManifest[key] = files.filter((f): f is string => typeof f === "string");
+        }
+      }
+    } catch {
+      warnings.push("The server's install manifest could not be read, so its prepatchers can only be matched to plugins by name.");
     }
   }
 
@@ -300,6 +347,9 @@ export function readManifest(body: unknown): RemoteManifest | null {
       displayName: typeof entry.displayName === "string" ? entry.displayName : undefined,
       enabled: entry.enabled !== false,
       ...(typeof entry.area === "string" ? { area: entry.area } : {}),
+      ...(type === "client" && (entry.kind === "file" || entry.kind === "folder") ? { kind: entry.kind } : {}),
+      // A folder reports 0 — not its size, just "not measured" — so only a file's is kept.
+      ...(type === "client" && entry.kind === "file" && typeof entry.sizeBytes === "number" ? { sizeBytes: entry.sizeBytes } : {}),
       ...(entry.loaded === false ? { failedToLoad: true } : {}),
       // Only from a row of the SAME half: one folder name can be both a server mod and a client
       // plugin, and the ledger map here is keyed by id alone.
@@ -322,6 +372,7 @@ export function readManifest(body: unknown): RemoteManifest | null {
     addonsKnown: addonsParsed,
     clientKnown: raw.clientRootFound === true,
     versionsAreDeclaredOnly: !ledgerParsed,
+    ...(registryEntries && installManifest ? { ledgers: { registry: registryEntries, installManifest } } : {}),
     warnings
   };
 }
@@ -335,7 +386,7 @@ export function readManifest(body: unknown): RemoteManifest | null {
  */
 export function describeCapabilities(caps: CompanionCapabilities): string {
   if (caps.present) {
-    const has = [caps.manifest ? "mods and addons" : null, caps.files ? "mod files" : null].filter(Boolean);
+    const has = [caps.manifest ? "mods and addons" : null, caps.files ? "mod files" : null, caps.patchers ? "prepatchers" : null].filter(Boolean);
     if (!has.length) return `Server companion ${caps.version ?? ""} connected, but it offers nothing this manager uses.`;
     // Named as a limitation of that companion rather than a fact about the server's plugins, and
     // it names the fix. Without this the older build's client rows read "cannot be compared",
