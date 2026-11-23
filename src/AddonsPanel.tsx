@@ -39,8 +39,28 @@ function SuggestionRow({
 }: {
   s: AddonSuggestion;
   busy: boolean;
-  onInstall: (id: number) => void;
+  onInstall: (id: number, options?: { ignoreParentConstraint?: boolean }) => void;
 }) {
+  /*
+   * "Install anyway", for when no build says it supports the parent version installed here.
+   * Declared requirements are often stale — left at the version an author tested against — and
+   * the person installing may know the addon works. So it is allowed, but only past a confirm
+   * that names the build, what it asks for and what is installed: overriding a check should be a
+   * decision, never a slip of the mouse onto a button that looks like the normal one.
+   */
+  const installAnyway = () => {
+    const build = s.unfitBuild;
+    if (!build) return;
+    const ok = window.confirm(
+      `No build of "${s.addon.name}" says it supports ${s.parentName} ${s.parentVersion ?? "(unknown version)"}.\n\n` +
+        `Install the newest, v${build.version}, anyway?` +
+        (build.modConstraint ? ` It declares it needs ${s.parentName} ${build.modConstraint}.` : "") +
+        `\n\nIt may not load, or may break ${s.parentName}. To undo it: if it adds its own folder, uninstall that from ` +
+        `the mod list; if it merges into ${s.parentName}'s folder, reinstall ${s.parentName}.`
+    );
+    if (ok) onInstall(s.addon.id, { ignoreParentConstraint: true });
+  };
+
   return (
     <li className={`addon-row addon-fit-${s.fit}`}>
       <div className="addon-row-main">
@@ -66,18 +86,32 @@ function SuggestionRow({
           </span>
         ) : (
           // Actionable: the fix is to update the parent, not to go hunting for the addon.
-          <span className="addon-warn">Update {s.parentName} to use this.</span>
+          <span className="addon-warn">
+            Update {s.parentName} to use this
+            {s.unfitBuild ? ` — v${s.unfitBuild.version} needs ${s.parentName} ${s.unfitBuild.modConstraint ?? "(another version)"}` : ""}.
+          </span>
         )}
       </div>
       <div className="addon-row-actions">
-        <button
-          className={s.fit === "declared" && !s.installed ? "primary" : ""}
-          disabled={busy || !s.pick}
-          onClick={() => onInstall(s.addon.id)}
-          title={s.pick ? `Download and install v${s.pick.version}` : "No build supports the version you have installed"}
-        >
-          {s.installed ? "Reinstall" : "Install"}
-        </button>
+        {s.pick || !s.unfitBuild ? (
+          <button
+            className={s.fit === "declared" && !s.installed ? "primary" : ""}
+            disabled={busy || !s.pick}
+            onClick={() => onInstall(s.addon.id)}
+            title={s.pick ? `Download and install v${s.pick.version}` : "No build supports the version you have installed"}
+          >
+            {s.installed ? "Reinstall" : "Install"}
+          </button>
+        ) : (
+          <button
+            className="addon-install-anyway"
+            disabled={busy}
+            onClick={installAnyway}
+            title={`No build declares support for ${s.parentName} ${s.parentVersion ?? ""}. Install v${s.unfitBuild.version} regardless — you'll be asked to confirm.`}
+          >
+            {s.installed ? "Reinstall anyway" : "Install anyway"}
+          </button>
+        )}
         {s.addon.detailUrl && (
           <a className="addon-link" href={s.addon.detailUrl} target="_blank" rel="noreferrer">
             Addon page
@@ -140,7 +174,7 @@ export default function AddonsPanel({
   /** Where each installed addon stands against the catalogue. See electron/addons.ts. */
   updates: AddonUpdateRow[];
   onForgetAddon: (forgeAddonId?: number, name?: string) => void;
-  onInstallForgeAddon: (addonId: number) => void;
+  onInstallForgeAddon: (addonId: number, options?: { ignoreParentConstraint?: boolean }) => void;
   /** Restores the build this record names — NOT the newest that fits. */
   onReinstallAddon: (record: InstalledAddonRecord) => void;
   onReinstallAll: () => void;

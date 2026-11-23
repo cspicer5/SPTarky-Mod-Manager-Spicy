@@ -158,6 +158,7 @@ import {
   suggestAddons,
   pickAddonVersionForParent,
   pickAddonVersionToRestore,
+  newestAddonBuild,
   detectAddonLinks,
   findKnownIntegrations,
   markInstalledAsAddon,
@@ -643,6 +644,11 @@ ipcMain.handle("run-bulk-reinstall", async (_event, opts: { sptVersion?: string;
   }
 
   let index = 0;
+  // One install per archive. A mod with a server half and a client half is two entries here and
+  // both resolve to the same archive, which lays down both halves at once — it was downloaded and
+  // installed twice. Only successes are remembered, so a failed attempt is retried by the other
+  // half rather than reported twice from one try.
+  const installedByLink = new Map<string, Awaited<ReturnType<typeof installForgeModVersion>>>();
   for (const mod of mods) {
     index++;
     report({ phase: "install", done: index, total: mods.length, current: mod.name });
@@ -663,15 +669,19 @@ ipcMain.handle("run-bulk-reinstall", async (_event, opts: { sptVersion?: string;
       continue;
     }
     try {
-      const result = await installForgeModVersion(
-        roots.clientRoot,
-        roots.serverRoot,
-        hit.downloadLink,
-        hit.name ?? mod.originalName,
-        (receivedBytes, totalBytes) =>
-          report({ phase: "install", done: index, total: mods.length, current: mod.name, message: `${receivedBytes}/${totalBytes}` }),
-        { name: hit.name, version: hit.version, guid: hit.guid, origin: hit.origin, sourceUrl: hit.sourceUrl }
-      );
+      const earlier = installedByLink.get(hit.downloadLink);
+      const result =
+        earlier ??
+        (await installForgeModVersion(
+          roots.clientRoot,
+          roots.serverRoot,
+          hit.downloadLink,
+          hit.name ?? mod.originalName,
+          (receivedBytes, totalBytes) =>
+            report({ phase: "install", done: index, total: mods.length, current: mod.name, message: `${receivedBytes}/${totalBytes}` }),
+          { name: hit.name, version: hit.version, guid: hit.guid, origin: hit.origin, sourceUrl: hit.sourceUrl }
+        ));
+      if (!earlier && result.success) installedByLink.set(hit.downloadLink, result);
       // A mod that was DISABLED must come back disabled.
       //
       // Installing always writes to the enabled location, so reinstalling a disabled mod
@@ -998,6 +1008,9 @@ ipcMain.handle("sync-install-to-preset", async (_event, id: string, fromStore?: 
   const done: string[] = [];
   const failed: { name: string; message: string }[] = [];
   let index = 0;
+  // Archives already installed by this sync. A mod's server and client halves are two steps that
+  // resolve to one archive, which installs both — fetched once, and the second step counts as done.
+  const installedLinks = new Set<string>();
 
   const report_ = (step: string, name: string) =>
     mainWindow?.webContents.send("preset-sync-progress", {
@@ -1047,6 +1060,8 @@ ipcMain.handle("sync-install-to-preset", async (_event, id: string, fromStore?: 
         const release = repo ? await fetchLatestGithubRelease(repo) : null;
         if (!release?.assetUrl) {
           failed.push({ name: step.name, message: `No downloadable release at ${step.sourceUrl}` });
+        } else if (installedLinks.has(release.assetUrl)) {
+          done.push(step.name);
         } else {
           const r = await installForgeModVersion(
             roots.clientRoot,
@@ -1064,6 +1079,7 @@ ipcMain.handle("sync-install-to-preset", async (_event, id: string, fromStore?: 
               }),
             { version: release.version, origin: "github", sourceUrl: step.sourceUrl }
           );
+          if (r.success) installedLinks.add(release.assetUrl);
           r.success ? done.push(step.name) : failed.push({ name: step.name, message: r.message });
         }
         index++;
@@ -1103,6 +1119,8 @@ ipcMain.handle("sync-install-to-preset", async (_event, id: string, fromStore?: 
                   ? "Not found in the catalogue."
                   : "Not found in the catalogue, and this preset records no GUID for it."))
           });
+        } else if (installedLinks.has(found.downloadLink)) {
+          done.push(step.name);
         } else {
           const r = await installForgeModVersion(
             roots.clientRoot,
@@ -1120,6 +1138,7 @@ ipcMain.handle("sync-install-to-preset", async (_event, id: string, fromStore?: 
               }),
             { name: found.forgeName, version: found.version }
           );
+          if (r.success) installedLinks.add(found.downloadLink);
           r.success ? done.push(step.name) : failed.push({ name: step.name, message: r.message });
         }
         index++;
@@ -1336,6 +1355,8 @@ function finishAddonInstall(
     parentConstraint?: string;
     /** Folders another machine's record says are this addon's own — see addonOwnFolders. */
     knownFolders?: { id: string; type: ModType }[];
+    /** "Install anyway" — see InstalledAddonRecord.installedAnyway. */
+    installedAnyway?: boolean;
   }
 ): { added: { id: string; type: ModType }[]; mergedIntoParent: boolean; messageSuffix: string } {
   const newFolders = scanInstance("main")
@@ -1385,6 +1406,7 @@ function finishAddonInstall(
     parentName: parent.id,
     parentType: parent.type,
     parentConstraint: record.parentConstraint,
+    ...(record.installedAnyway ? { installedAnyway: true } : {}),
     installedAt: new Date().toISOString(),
     source: record.source,
     folders: added,
@@ -1896,7 +1918,13 @@ async function installCataloguedAddon(
    * because no target version ever reached the resolver. A reinstall that silently upgrades you
    * is the same bug wearing a third hat.
    */
-  wantVersion?: string
+  wantVersion?: string,
+  /**
+   * "Install anyway": when no build declares support for the parent version installed here, take
+   * the newest build regardless. Only ever set by a person confirming the mismatch in the Addons
+   * panel — no sync, preset or bulk path passes it.
+   */
+  options: { ignoreParentConstraint?: boolean } = {}
 ): Promise<{ success: boolean; message: string; installedAs?: string[]; mergedIntoParent?: boolean }> {
   const roots = rootsFor("main");
   if (!roots) return { success: false, message: "No SPT instance configured." };
@@ -1916,7 +1944,15 @@ async function installCataloguedAddon(
     return { success: false, message: `"${addon.name}" attaches to a mod you don't have installed.` };
   }
 
-  const picked = pickAddonVersionToRestore(addon, parent.version, wantVersion);
+  let picked = pickAddonVersionToRestore(addon, parent.version, wantVersion);
+  let overridden: { constraint?: string } | undefined;
+  if (!picked?.version.link && options.ignoreParentConstraint) {
+    const newest = newestAddonBuild(addon);
+    if (newest?.link) {
+      picked = { version: newest, fit: "unconstrained", restored: false };
+      overridden = { constraint: newest.modConstraint };
+    }
+  }
   if (!picked?.version.link) {
     return {
       success: false,
@@ -1943,7 +1979,8 @@ async function installCataloguedAddon(
     version: picked.version.version,
     source: "forge",
     forgeAddonId: addon.id,
-    parentConstraint: picked.version.modConstraint
+    parentConstraint: picked.version.modConstraint,
+    installedAnyway: overridden !== undefined
   });
 
   return {
@@ -1953,16 +1990,29 @@ async function installCataloguedAddon(
       // Said plainly rather than left to be discovered. Asking for a build that the catalogue no
       // longer carries and receiving a different one without being told is how someone ends up
       // debugging a version they did not choose.
-      (wantVersion && !picked.restored
+      (wantVersion && !picked.restored && !overridden
         ? ` NOTE: v${wantVersion} is no longer in the catalogue, so v${picked.version.version} was installed instead.`
+        : "") +
+      // Kept on the record of what happened: this build says it wants a different parent version,
+      // and if the mod misbehaves later this is the line that explains why.
+      (overridden
+        ? ` Installed anyway: v${picked.version.version} declares it needs ${parent.id} ${overridden.constraint ?? "(another version)"}, and you have ${
+            parent.version ?? "an unknown version"
+          }. If ${parent.id} misbehaves, undo it: ${
+            done.mergedIntoParent ? `it merged into ${parent.id}'s folder, so reinstall ${parent.id}` : "uninstall its folder from the mod list"
+          }.`
         : ""),
     installedAs: done.added.map((a) => a.id),
     mergedIntoParent: done.mergedIntoParent
   };
 }
 
-ipcMain.handle("install-forge-addon", (_event, jobId: string, addonId: number) =>
-  installCataloguedAddon(jobId, addonId)
+ipcMain.handle(
+  "install-forge-addon",
+  (_event, jobId: string, addonId: number, options?: { ignoreParentConstraint?: boolean }) =>
+    // Only the one flag is read, and only as a strict boolean: nothing else from the renderer
+    // reaches the picker.
+    installCataloguedAddon(jobId, addonId, undefined, { ignoreParentConstraint: options?.ignoreParentConstraint === true })
 );
 
 /**

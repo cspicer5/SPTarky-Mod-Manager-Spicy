@@ -687,6 +687,8 @@ export interface AddonSuggestion {
    * "none" — the addon exists but no build supports the parent version installed.
    */
   fit: "declared" | "unconstrained" | "none";
+  /** When nothing fits: the newest build, which "Install anyway" would install. */
+  unfitBuild?: AddonVersion;
   installed: boolean;
 }
 
@@ -1006,10 +1008,15 @@ export interface ModManagerAPI {
     folderType: ModType | undefined,
     choice: { forgeAddonId?: number; name?: string; parentName?: string }
   ) => Promise<{ success: boolean; message: string }>;
-  /** No version argument: which build fits depends on the parent's installed version. */
+  /**
+   * No version argument: which build fits depends on the parent's installed version.
+   * `ignoreParentConstraint` is "Install anyway" — the newest build when none fits, after the
+   * person has confirmed the mismatch.
+   */
   installForgeAddon: (
     jobId: string,
-    addonId: number
+    addonId: number,
+    options?: { ignoreParentConstraint?: boolean }
   ) => Promise<{ success: boolean; message: string; installedAs?: string[] }>;
   /**
    * Reinstalls an addon already in the ledger, restoring the build it RECORDS rather than the

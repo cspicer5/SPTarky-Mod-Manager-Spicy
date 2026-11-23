@@ -1074,10 +1074,10 @@ export default function App() {
     }
   }
 
-  async function handleInstallForgeAddon(addonId: number) {
+  async function handleInstallForgeAddon(addonId: number, options?: { ignoreParentConstraint?: boolean }) {
     setAddonBusy(true);
     try {
-      const result = await window.modManagerAPI.installForgeAddon(`addon-${addonId}`, addonId);
+      const result = await window.modManagerAPI.installForgeAddon(`addon-${addonId}`, addonId, options);
       pushToast(tMsg(result.message), result.success);
       if (result.success) {
         await refreshMods();
@@ -1396,7 +1396,15 @@ export default function App() {
    * summary instead of N. A FAILURE is still announced either way — that is the part worth
    * interrupting for, and a bulk run that swallowed them would look like it worked.
    */
-  async function installOneFromServer(row: ServerSyncRow, options: { quiet?: boolean } = {}): Promise<boolean> {
+  async function installOneFromServer(
+    row: ServerSyncRow,
+    /**
+     * `downloaded`: catalogue archives already installed in this run. A mod with a server half
+     * and a client half is two rows here, and both resolve to the SAME archive — which installs
+     * both halves at once. Match server used to download and install it twice.
+     */
+    options: { quiet?: boolean; downloaded?: Set<string> } = {}
+  ): Promise<boolean> {
     // Rows the report has already decided cannot be fetched. The reason travels with the row
     // because it is a property of the data, not of the button — a client plugin that declares no
     // ID, or an addon that never came from the catalogue. Refusing here as well as hiding the
@@ -1571,6 +1579,8 @@ export default function App() {
         );
         return false;
       }
+      // The other half of a mod whose archive this run already installed: nothing to fetch.
+      if (options.downloaded?.has(hit.downloadLink)) return true;
       const queueId = pushQueueItem(hit.forgeName ?? lookupName);
       markQueueActive(queueId);
       const result = await installArchiveWithConfirmFlow(
@@ -1582,6 +1592,7 @@ export default function App() {
       );
       markQueueDone(queueId, result.success, tMsg(result.message));
       if (!options.quiet || !result.success) pushToast(tMsg(result.message), result.success);
+      if (result.success) options.downloaded?.add(hit.downloadLink);
       return result.success;
     } finally {
       setInstallingFromServer(null);
@@ -1637,9 +1648,11 @@ export default function App() {
 
     setSyncingAllFromServer(true);
     let done = 0;
+    // One download per catalogue archive for the whole run, however many rows it satisfies.
+    const downloaded = new Set<string>();
     try {
       for (const row of rows) {
-        const ok = await installOneFromServer(row, { quiet: true });
+        const ok = await installOneFromServer(row, { quiet: true, downloaded });
         if (ok) done++;
       }
       await refreshMods();
@@ -2081,11 +2094,19 @@ export default function App() {
         const notFound = targets.filter((name) => !found[name]);
         let installedCount = 0;
         const failed: string[] = [];
+        // Removing duplicate NAMES (above) is not enough: a mod's server folder and client DLL
+        // have different names and come from the same archive, which installs both. Installed
+        // once per run, and the other name counts as installed with it.
+        const downloaded = new Set<string>();
 
         for (let i = 0; i < installable.length; i++) {
           const name = installable[i];
           const lookup = found[name]!;
           setInstallProgress({ done: i + 1, total: installable.length });
+          if (downloaded.has(lookup.downloadLink)) {
+            installedCount++;
+            continue;
+          }
           const queueId = pushQueueItem(lookup.forgeName ?? name);
           markQueueActive(queueId);
           const installResult = await installArchiveWithConfirmFlow(
@@ -2098,8 +2119,10 @@ export default function App() {
             })
           );
           markQueueDone(queueId, installResult.success, tMsg(installResult.message));
-          if (installResult.success) installedCount++;
-          else failed.push(name);
+          if (installResult.success) {
+            installedCount++;
+            downloaded.add(lookup.downloadLink);
+          } else failed.push(name);
         }
         setInstallProgress(null);
 

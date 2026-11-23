@@ -154,6 +154,29 @@ function main() {
     // exist", and sends the user to update the parent rather than to go looking.
     check("...marked as having no compatible build", suggestions[0].fit, "none");
     check("with nothing picked", suggestions[0].pick, undefined);
+    // "Install anyway": declared requirements go stale, and the person installing may know the
+    // addon works. The row needs to name exactly which build that would be and what it asks for.
+    check("but the newest build is offered for Install anyway", suggestions[0].unfitBuild?.version, "2.3.0");
+    check("with the requirement it is overriding", suggestions[0].unfitBuild?.modConstraint, "~2.7.0");
+  }
+  {
+    // Only when nothing fits: a row with a fitting build must never offer the override.
+    const fitting = A.suggestAddons([mod("x", "client", { version: "2.7.1" })], { x: "2299" }, [QUICK_SELL]);
+    check("no override is offered when a build fits", fitting[0].unfitBuild, undefined);
+    check("the newest build is the first with a download link", A.newestAddonBuild(QUICK_SELL)?.version, "2.3.0");
+    check("and an addon with none offers nothing to override with", A.newestAddonBuild(NO_LINK), undefined);
+  }
+  {
+    // After "Install anyway", the update check must not read the deliberate mismatch as "this was
+    // probably folded into the mod" — that points at removing something chosen on purpose.
+    const record = { forgeAddonId: 55, name: "Quick-Sell", version: "2.3.0", parentName: "x", parentType: "client", parentConstraint: "~2.7.0", installedAt: "2026-11-23T00:00:00Z", source: "forge", folders: [], mergedIntoParent: true };
+    const rowFor = (r) => A.checkAddonUpdates([r], [QUICK_SELL], () => "9.9.9", () => true)[0];
+    const plain = rowFor(record);
+    check("a plain mismatch still suggests the patch may be built in", /part of x itself/.test(plain.detail), true);
+    const anyway = rowFor({ ...record, installedAnyway: true });
+    check("one installed anyway is described as that", /You installed this anyway/.test(anyway.detail), true);
+    check("naming what it declares and what is installed", /~2\.7\.0.*9\.9\.9/.test(anyway.detail), true);
+    check("and not as folded into the mod", /part of x itself/.test(anyway.detail), false);
   }
 
   console.log("\nnoticing that a parent has outgrown its addon");

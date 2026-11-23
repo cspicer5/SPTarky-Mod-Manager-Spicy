@@ -96,7 +96,8 @@ contextBridge.exposeInMainWorld("modManagerAPI", {
   ) => ipcRenderer.invoke("link-folder-to-addon", folderId, folderType, choice),
   // No version argument: which build fits is a function of the PARENT's installed version,
   // and only the main process knows that.
-  installForgeAddon: (jobId: string, addonId: number) => ipcRenderer.invoke("install-forge-addon", jobId, addonId),
+  installForgeAddon: (jobId: string, addonId: number, options?: { ignoreParentConstraint?: boolean }) =>
+    ipcRenderer.invoke("install-forge-addon", jobId, addonId, options),
   reinstallAddon: (jobId: string, match: { forgeAddonId?: number; name?: string; parentName?: string }) =>
     ipcRenderer.invoke("reinstall-addon", jobId, match),
   reinstallAllAddons: (jobId: string) => ipcRenderer.invoke("reinstall-all-addons", jobId),

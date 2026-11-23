@@ -191,6 +191,14 @@
   color: var(--accent-strong);
 }
 
+/* "Install anyway" overrides a compatibility check, so it must not look like the ordinary
+   Install beside it: amber outline, never the filled primary style. */
+.addon-install-anyway {
+  color: var(--accent-strong);
+  border: 1px dashed var(--accent);
+  background: transparent;
+}
+
 .addon-guid {
   font-family: var(--font-mono, monospace);
   font-size: 9px;

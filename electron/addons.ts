@@ -277,6 +277,18 @@ export function pickAddonVersionToRestore(
   return fitting ? { ...fitting, restored: false } : undefined;
 }
 
+/**
+ * The newest build there is, whatever parent it asks for — for "Install anyway" only.
+ *
+ * pickAddonVersionForParent returning nothing is a judgement made from what the build DECLARES,
+ * and declarations are often stale: authors leave a constraint at the version they tested against
+ * long after the parent moved on without breaking anything. The person installing can know better,
+ * so they get to override it — explicitly, with the mismatch named, and never by default.
+ */
+export function newestAddonBuild(addon: ForgeAddon): AddonVersion | undefined {
+  return addon.versions.find((v) => v.link);
+}
+
 /** Constraints that say "any version", which is the same as saying nothing. */
 function declaresNoParentVersion(constraint: string | undefined): boolean {
   const trimmed = constraint?.trim().toLowerCase() ?? "";
@@ -292,6 +304,11 @@ export interface AddonSuggestion {
   /** The build that fits, when one does. */
   pick?: AddonVersion;
   fit: "declared" | "unconstrained" | "none";
+  /**
+   * When nothing fits: the build "Install anyway" would install, so the row can say exactly which
+   * version and which parent requirement it is overriding. Absent when something fits.
+   */
+  unfitBuild?: AddonVersion;
   /** Already installed here, matched by the folder the addon installs as. */
   installed: boolean;
 }
@@ -335,6 +352,7 @@ export function suggestAddons(
       parentVersion: parent.version,
       pick: picked?.version,
       fit: picked?.fit ?? "none",
+      ...(picked ? {} : { unfitBuild: newestAddonBuild(addon) }),
       installed: installedAddonIds.has(addon.id)
     });
   }
@@ -374,6 +392,12 @@ export interface InstalledAddonRecord {
   parentType: ModType;
   /** Range of parent versions this build declares it fits, e.g. "~2.7.0". */
   parentConstraint?: string;
+  /**
+   * Installed with "Install anyway": the person confirmed it although the parent installed then
+   * did not meet `parentConstraint`. Kept so the update check can say THAT, rather than reading
+   * the mismatch as a sign the patch was folded into its parent.
+   */
+  installedAnyway?: boolean;
   installedAt: string;
   /** "server" = copied byte-for-byte from another machine, the best-evidenced of the four. */
   source: "forge" | "github" | "file" | "server";
@@ -1288,10 +1312,15 @@ export function checkAddonUpdates(
         status: "no-build-for-parent",
         blockedVersion: newest?.version,
         requiresParent: newest?.modConstraint,
-        detail: parentVersion
-          ? `Nothing it offers is built for ${record.parentName} ${parentVersion}. That usually means the patch is ` +
-            `part of ${record.parentName} itself now — check before reinstalling it.`
-          : `Nothing it offers could be matched to ${record.parentName}, whose version is unknown here.`
+        detail: record.installedAnyway
+          ? // Chosen, not stumbled into: saying "probably folded into the mod" here would point at
+            // removing something the person deliberately installed.
+            `You installed this anyway: it declares ${record.parentName} ${record.parentConstraint ?? "another version"}, ` +
+            `and you have ${parentVersion ?? "an unknown version"}. If ${record.parentName} misbehaves, this is the first thing to remove.`
+          : parentVersion
+            ? `Nothing it offers is built for ${record.parentName} ${parentVersion}. That usually means the patch is ` +
+              `part of ${record.parentName} itself now — check before reinstalling it.`
+            : `Nothing it offers could be matched to ${record.parentName}, whose version is unknown here.`
       };
     }
 
