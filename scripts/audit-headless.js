@@ -15,8 +15,14 @@ const fs = require("fs");
 
 const dist = path.join(__dirname, "..", "dist-electron");
 const { scanMods, resolveSptInstance } = require(path.join(dist, "modManager.js"));
-const { classifyForHeadless, buildParityReport, resolveHeadlessInstance, normaliseModKey, buildServerCounterpartIndex } =
-  require(path.join(dist, "headless.js"));
+const {
+  classifyForHeadless,
+  buildParityReport,
+  resolveHeadlessInstance,
+  normaliseModKey,
+  buildServerCounterpartIndex,
+  scanPatcherParity
+} = require(path.join(dist, "headless.js"));
 
 const [mainArg, headlessArg] = process.argv.slice(2);
 if (!mainArg) {
@@ -130,3 +136,41 @@ for (const row of report.rows.filter((r) => r.issue)) {
   console.log(`  [${row.issue}] ${row.name}`);
   if (row.detail) console.log(`      ${row.detail}`);
 }
+
+// BepInEx/patchers, compared on its own. The plugin rows above cannot show a missing prepatcher:
+// its plugin is present on both sides either way, which is how this went unnoticed.
+const clientIds = (mods) => mods.filter((m) => m.type !== "server").map((m) => m.id);
+const patchers = scanPatcherParity(clientRoot, hl.instance.root, clientIds(mainMods), clientIds(headlessMods));
+const pc = patchers.counts;
+
+console.log("");
+console.log("=".repeat(76));
+console.log("PREPATCHERS  —  BepInEx/patchers, file by file, and what each one references");
+console.log("=".repeat(76));
+console.log(`  missing / incomplete on headless : ${pc.missingOnHeadless}`);
+console.log(`  different build on headless      : ${pc.differentBuild}`);
+console.log(`  headless-only                    : ${pc.headlessOnly}`);
+console.log(`  broken references on headless    : ${pc.brokenOnHeadless}`);
+console.log(`  broken references on main        : ${pc.brokenOnMain}`);
+console.log(`  references not checked           : ${pc.unreadable}`);
+console.log(`  entries a Sync would copy        : ${pc.toSync}`);
+console.log("");
+
+const ownerText = (o) =>
+  o.kind === "spt" ? "SPT" : o.kind === "unknown" ? "owner unknown" : `${o.mods.join(", ")} (${o.via === "ledger" ? "install record" : "by name"})`;
+
+for (const row of patchers.rows) {
+  console.log(`  ${row.entry.padEnd(36).slice(0, 36)} ${(row.issue || "ok").padEnd(24)} ${ownerText(row.owner)}`);
+  if (row.issue) console.log(`      ${row.action === "copy" ? "[sync copies]" : "[not synced]"} ${row.detail}`);
+}
+for (const ref of patchers.references) {
+  console.log(`  [broken-reference:${ref.side}] ${ref.assemblyName ?? ref.entry} -> ${ref.reference}`);
+  console.log(`      ${ref.detail}`);
+}
+for (const u of patchers.unreadable) {
+  console.log(`  [not-checked:${u.side}] ${u.patcher} — its references could not be read.`);
+}
+
+const patchersClean = pc.missingOnHeadless + pc.differentBuild + pc.brokenOnHeadless + pc.brokenOnMain + pc.unreadable === 0;
+console.log("");
+console.log(patchersClean ? "  PREPATCHERS CLEAN" : "  PREPATCHERS NEED ATTENTION");

@@ -26,7 +26,17 @@
 import fs from "fs";
 import path from "path";
 import { ModInfo, ModType } from "./types";
-import { compareVersions } from "./modManager";
+import {
+  compareVersions,
+  scanPatcherFiles,
+  attributePatchers,
+  checkPatcherReferences,
+  copyPatcherEntryToHeadless,
+  copyReferencedPatchersToHeadless,
+  type PatcherFile,
+  type PatcherOwnership,
+  type PatcherReferenceScan
+} from "./modManager";
 // Imported rather than reimplemented: telling "present" from "replaced" is the same question the
 // main install asks, and two copies of that comparison would drift.
 import { checkAddonFiles, type InstalledAddonRecord } from "./addons";
@@ -490,6 +500,388 @@ export interface ParityReport {
   };
   /** Compatibility addons and what they mean for the headless side. */
   addons?: AddonParityRow[];
+  /** BepInEx/patchers compared on its own, file by file, plus prepatcher dependencies. */
+  patchers?: PatcherParityReport;
+}
+
+/* --------------------------------------------------------------------------
+ * Prepatcher parity
+ *
+ * Deliberately independent of the plugin rows. A prepatcher is not a mod row — the scanner folds
+ * it into nothing — so a plugin present on both sides said nothing at all about whether its
+ * prepatcher was. That is exactly how MoreBotsPlugin read as aligned while MoreBotsPrepatch was
+ * absent from the headless client and BlackDiv's patch silently failed to load there.
+ * ----------------------------------------------------------------------- */
+
+export type PatcherIssue =
+  /** The entry is on the main install and nowhere in the headless client's patchers/. */
+  | "missing-on-headless"
+  /** The entry is there, but some of its DLLs are not — e.g. an emptied prepatcher folder. */
+  | "incomplete-on-headless"
+  /** The same DLL at a different size: a different build. */
+  | "different-build"
+  /** On the headless client only. Reported, never removed — nothing says it is unwanted. */
+  | "headless-only";
+
+export interface PatcherParityRow {
+  entry: string;
+  presence: "both" | "main-only" | "headless-only";
+  issue?: PatcherIssue;
+  owner: PatcherOwnership;
+  /** Whether a mod that owns it is on the headless client (or about to be). Undefined when no owner is known. */
+  ownerOnHeadless?: boolean;
+  /**
+   * What Sync does about it:
+   *   copy   — Sync copies it from the main install.
+   *   report — Sync leaves it alone, and `detail` says why and what to do.
+   */
+  action?: "copy" | "report";
+  missingFiles?: string[];
+  differentFiles?: string[];
+  detail?: string;
+}
+
+export interface PatcherReferenceRow {
+  side: "main" | "headless";
+  /** The prepatcher whose reference does not resolve, relative to BepInEx/patchers. */
+  patcher: string;
+  entry: string;
+  assemblyName?: string;
+  /** The assembly it references. */
+  reference: string;
+  /** The main install's patchers/ entry that provides it, when there is one. */
+  providedOnMainBy?: string;
+  /**
+   *   copy      — the main install has it in patchers/; Sync brings it across.
+   *   reinstall — it is missing from the main install too; copying cannot help.
+   *   report    — the main install resolves it from somewhere Sync does not copy (core, Managed).
+   */
+  action: "copy" | "reinstall" | "report";
+  detail: string;
+}
+
+export interface PatcherParityReport {
+  rows: PatcherParityRow[];
+  references: PatcherReferenceRow[];
+  /** Managed prepatchers whose references could not be read — not checked, so not called clean. */
+  unreadable: { side: "main" | "headless"; patcher: string }[];
+  counts: {
+    missingOnHeadless: number;
+    differentBuild: number;
+    headlessOnly: number;
+    brokenOnHeadless: number;
+    brokenOnMain: number;
+    unreadable: number;
+    /** Distinct entries a Sync would copy. */
+    toSync: number;
+  };
+}
+
+function describeOwner(owner: PatcherOwnership): string {
+  if (owner.kind === "spt") return "SPT's own prepatcher";
+  if (owner.kind === "unknown") return "owner unknown";
+  const names = owner.mods.join(", ");
+  return owner.via === "ledger" ? `installed with ${names}` : `belongs to ${names}, going by its name`;
+}
+
+/**
+ * Compares BepInEx/patchers between the two installs and checks prepatcher dependencies on both.
+ *
+ * Pure: every input is passed in, so the decisions can be exercised without an install on disk.
+ *
+ * What Sync is allowed to copy, and why the line is where it is:
+ *   - a prepatcher whose owning plugin is on the headless client (or is being synced with it):
+ *     the plugin is half-installed without it;
+ *   - a prepatcher another headless prepatcher references: without it that one does not load;
+ *   - a prepatcher nobody can be shown to own: the main install is the source of truth and has
+ *     it, and Fika's guidance is to copy the main install's BepInEx across. Labelled as
+ *     unattributed rather than given a guessed owner.
+ *   NOT a prepatcher whose known owner is deliberately absent from the headless client — that
+ *   follows the user's decision about the plugin — and never SPT's own.
+ */
+export function buildPatcherParity(input: {
+  mainFiles: PatcherFile[];
+  headlessFiles: PatcherFile[];
+  /** Entries in the headless client's patchers.disabled, to explain a "missing" one that is merely switched off. */
+  headlessDisabledFiles?: PatcherFile[];
+  attribution: { byEntry: Record<string, PatcherOwnership>; byAssembly: Record<string, string[]> };
+  /** Client mod ids on the headless client — plus any a Sync is about to copy there. */
+  headlessClientModIds: string[];
+  mainRefs?: PatcherReferenceScan;
+  headlessRefs?: PatcherReferenceScan;
+}): PatcherParityReport {
+  const { attribution } = input;
+  const onHeadless = new Set(input.headlessClientModIds.map((id) => id.toLowerCase()));
+  const ownerOf = (entry: string): PatcherOwnership => attribution.byEntry[entry.toLowerCase()] ?? { kind: "unknown" };
+
+  const group = (files: PatcherFile[]) => {
+    const m = new Map<string, { entry: string; files: Map<string, PatcherFile> }>();
+    for (const f of files) {
+      const k = f.entry.toLowerCase();
+      if (!m.has(k)) m.set(k, { entry: f.entry, files: new Map() });
+      m.get(k)!.files.set(f.relPath.toLowerCase(), f);
+    }
+    return m;
+  };
+  const main = group(input.mainFiles);
+  const headless = group(input.headlessFiles);
+  const disabledOnHeadless = new Set((input.headlessDisabledFiles ?? []).map((f) => f.entry.toLowerCase()));
+
+  // Entries some headless prepatcher needs and the main install can supply. These are copied
+  // even when their owner is not on the headless client: the alternative is a prepatcher there
+  // that BepInEx refuses to run.
+  const neededByHeadless = new Set<string>();
+  for (const file of input.headlessRefs?.files ?? []) {
+    for (const ref of file.unresolved ?? []) {
+      const provider = input.mainRefs?.providers[ref.toLowerCase()];
+      if (provider) neededByHeadless.add(provider.entry.toLowerCase());
+    }
+  }
+
+  const rows: PatcherParityRow[] = [];
+  for (const [key, m] of main) {
+    const h = headless.get(key);
+    const owner = ownerOf(m.entry);
+    const ownerOnHeadless = owner.kind === "mod" ? owner.mods.some((id) => onHeadless.has(id.toLowerCase())) : undefined;
+
+    let issue: PatcherIssue | undefined;
+    let missingFiles: string[] | undefined;
+    let differentFiles: string[] | undefined;
+    if (!h) {
+      issue = "missing-on-headless";
+    } else {
+      missingFiles = [...m.files.keys()].filter((f) => !h.files.has(f)).map((f) => m.files.get(f)!.relPath);
+      // Contents, not mtime. Copying stamps every file with a fresh mtime, so comparing those
+      // would call every synced file a different build. And contents rather than size: assemblies
+      // are padded to 512-byte alignment, so a rebuild often keeps its size exactly. Size is the
+      // fallback only when a file could not be hashed.
+      const differs = (a: PatcherFile, b: PatcherFile) => (a.hash && b.hash ? a.hash !== b.hash : a.bytes !== b.bytes);
+      differentFiles = [...m.files.keys()]
+        .filter((f) => h.files.has(f) && differs(h.files.get(f)!, m.files.get(f)!))
+        .map((f) => m.files.get(f)!.relPath);
+      if (missingFiles.length) issue = "incomplete-on-headless";
+      else if (differentFiles.length) issue = "different-build";
+    }
+
+    const row: PatcherParityRow = {
+      entry: m.entry,
+      presence: h ? "both" : "main-only",
+      issue,
+      owner,
+      ownerOnHeadless,
+      missingFiles: missingFiles?.length ? missingFiles : undefined,
+      differentFiles: differentFiles?.length ? differentFiles : undefined
+    };
+
+    if (issue) {
+      const what =
+        issue === "missing-on-headless"
+          ? `Not on the headless client${disabledOnHeadless.has(key) ? " (it is in patchers.disabled there, which is never loaded)" : ""}.`
+          : issue === "incomplete-on-headless"
+            ? `On the headless client but missing ${missingFiles!.join(", ")}.`
+            : `A different build on the headless client (${differentFiles!.join(", ")} differs from the main install's).`;
+      const whose = describeOwner(owner);
+
+      if (owner.kind === "spt") {
+        row.action = "report";
+        row.detail = `${what} This is SPT's own prepatcher; each install gets it from its own SPT and Sync never copies it. A difference usually means the two installs run different SPT builds.`;
+      } else if (owner.kind === "mod" && !ownerOnHeadless && !neededByHeadless.has(key)) {
+        row.action = "report";
+        row.detail = `${what} It is ${whose}, which is not on the headless client — sync ${owner.mods.join(
+          " / "
+        )} to bring both across, or leave it if that was left off on purpose.`;
+      } else {
+        row.action = "copy";
+        row.detail =
+          owner.kind === "unknown"
+            ? `${what} No install record or matching plugin says which mod this belongs to; Sync copies it because the main install has it.`
+            : `${what} It is ${whose}${neededByHeadless.has(key) && !ownerOnHeadless ? ", and another prepatcher on the headless client depends on it" : ""}. Sync copies it.`;
+      }
+    }
+    rows.push(row);
+  }
+
+  for (const [key, h] of headless) {
+    if (main.has(key)) continue;
+    rows.push({
+      entry: h.entry,
+      presence: "headless-only",
+      issue: "headless-only",
+      owner: ownerOf(h.entry),
+      detail: "On the headless client but not in the main install's patchers/. Usually the leftovers of an older setup."
+    });
+  }
+
+  const references: PatcherReferenceRow[] = [];
+  const unreadable: PatcherParityReport["unreadable"] = [];
+  const mainAvailable = new Set(input.mainRefs?.available ?? []);
+
+  const reinstallHint = (ref: string) => {
+    const owners = attribution.byAssembly[ref.toLowerCase()];
+    return owners?.length
+      ? `This app's install record has ${ref} arriving with ${owners.join(", ")} — reinstall ${owners.length > 1 ? "one of those" : "it"} on the main install.`
+      : `Nothing this app recorded says which mod ships ${ref}, so it cannot name one to reinstall.`;
+  };
+
+  for (const file of input.headlessRefs?.files ?? []) {
+    if (file.managed && !file.unresolved) {
+      unreadable.push({ side: "headless", patcher: file.relPath });
+      continue;
+    }
+    for (const ref of file.unresolved ?? []) {
+      const who = `${file.assemblyName ?? file.entry} (patchers/${file.relPath})`;
+      const provider = input.mainRefs?.providers[ref.toLowerCase()];
+      if (provider) {
+        const owner = ownerOf(provider.entry);
+        references.push({
+          side: "headless",
+          patcher: file.relPath,
+          entry: file.entry,
+          assemblyName: file.assemblyName,
+          reference: ref,
+          providedOnMainBy: provider.entry,
+          action: "copy",
+          detail: `${who} references ${ref} — not found on the headless client, so BepInEx will skip this patch there. The main install has it in patchers/${provider.relPath} (${describeOwner(owner)}); Sync copies it.`
+        });
+      } else if (mainAvailable.has(ref.toLowerCase())) {
+        references.push({
+          side: "headless",
+          patcher: file.relPath,
+          entry: file.entry,
+          assemblyName: file.assemblyName,
+          reference: ref,
+          action: "report",
+          detail: `${who} references ${ref} — not found on the headless client. The main install resolves it from BepInEx/core or the game's Managed folder, which Sync does not copy: the two installs' BepInEx or game files differ.`
+        });
+      } else {
+        references.push({
+          side: "headless",
+          patcher: file.relPath,
+          entry: file.entry,
+          assemblyName: file.assemblyName,
+          reference: ref,
+          action: "reinstall",
+          detail: `${who} references ${ref} — not found on the headless client or the main install, so copying cannot fix it. ${reinstallHint(ref)}`
+        });
+      }
+    }
+  }
+
+  for (const file of input.mainRefs?.files ?? []) {
+    if (file.managed && !file.unresolved) {
+      unreadable.push({ side: "main", patcher: file.relPath });
+      continue;
+    }
+    for (const ref of file.unresolved ?? []) {
+      references.push({
+        side: "main",
+        patcher: file.relPath,
+        entry: file.entry,
+        assemblyName: file.assemblyName,
+        reference: ref,
+        action: "reinstall",
+        detail: `${file.assemblyName ?? file.entry} (patchers/${file.relPath}, ${describeOwner(ownerOf(file.entry))}) references ${ref} — not found on the main install, so BepInEx skips this patch at startup. ${reinstallHint(ref)}`
+      });
+    }
+  }
+
+  const toSync = new Set<string>();
+  rows.filter((r) => r.action === "copy").forEach((r) => toSync.add(r.entry.toLowerCase()));
+  references.filter((r) => r.action === "copy" && r.providedOnMainBy).forEach((r) => toSync.add(r.providedOnMainBy!.toLowerCase()));
+
+  const severity: Record<string, number> = {
+    "missing-on-headless": 0,
+    "incomplete-on-headless": 1,
+    "different-build": 2,
+    "headless-only": 3
+  };
+  rows.sort((a, b) => (a.issue ? severity[a.issue] : 9) - (b.issue ? severity[b.issue] : 9) || a.entry.localeCompare(b.entry));
+
+  return {
+    rows,
+    references,
+    unreadable,
+    counts: {
+      missingOnHeadless: rows.filter((r) => r.issue === "missing-on-headless" || r.issue === "incomplete-on-headless").length,
+      differentBuild: rows.filter((r) => r.issue === "different-build").length,
+      headlessOnly: rows.filter((r) => r.issue === "headless-only").length,
+      brokenOnHeadless: references.filter((r) => r.side === "headless").length,
+      brokenOnMain: references.filter((r) => r.side === "main").length,
+      unreadable: unreadable.length,
+      toSync: toSync.size
+    }
+  };
+}
+
+/**
+ * Reads both installs and builds the prepatcher report. The one place the disk is touched for
+ * it, so the view, Sync and the audit script cannot disagree about what is there.
+ */
+export function scanPatcherParity(
+  mainClientRoot: string,
+  headlessRoot: string,
+  mainClientModIds: string[],
+  headlessClientModIds: string[]
+): PatcherParityReport {
+  const mainFiles = scanPatcherFiles(mainClientRoot);
+  const headlessFiles = scanPatcherFiles(headlessRoot);
+  const entries = [...new Set([...mainFiles, ...headlessFiles].map((f) => f.entry))];
+  return buildPatcherParity({
+    mainFiles,
+    headlessFiles,
+    headlessDisabledFiles: scanPatcherFiles(headlessRoot, "disabled"),
+    // Ownership comes from the MAIN install's ledger — the headless one only records syncs.
+    attribution: attributePatchers(mainClientRoot, mainClientModIds, entries),
+    headlessClientModIds,
+    mainRefs: checkPatcherReferences(mainClientRoot),
+    headlessRefs: checkPatcherReferences(headlessRoot)
+  });
+}
+
+export interface PatcherSyncResult {
+  /** Entries copied, in order, deduplicated. */
+  copied: string[];
+  failed: string[];
+  /** Dependency problems that remain after the sync — the ones copying cannot fix. */
+  cannotFix: PatcherReferenceRow[];
+}
+
+/**
+ * The prepatcher half of "sync everything": copy what the report says Sync copies, then chase
+ * dependencies until nothing new resolves, then say what is still broken.
+ *
+ * Runs on its own terms and must run even when no plugin needs copying. In the incident that
+ * prompted it every plugin matched — MoreBotsPlugin included — so a sync that only acted on
+ * plugin rows had nothing to do and reported the headless client as matching while BlackDiv's
+ * patch could not load there.
+ *
+ * `headlessClientModIds` should include any plugins the same sync has just copied, so their
+ * prepatchers count as belonging on the headless client.
+ */
+export function syncPatchersToHeadless(
+  mainClientRoot: string,
+  headlessRoot: string,
+  mainClientModIds: string[],
+  headlessClientModIds: string[]
+): PatcherSyncResult {
+  const report = scanPatcherParity(mainClientRoot, headlessRoot, mainClientModIds, headlessClientModIds);
+  const copied: string[] = [];
+  const failed: string[] = [];
+  for (const row of report.rows.filter((r) => r.action === "copy")) {
+    const result = copyPatcherEntryToHeadless(mainClientRoot, headlessRoot, row.entry);
+    if (result.success) copied.push(row.entry);
+    else failed.push(result.message);
+  }
+  const deps = copyReferencedPatchersToHeadless(mainClientRoot, headlessRoot);
+  deps.copied.forEach((c) => copied.push(c.entry));
+  failed.push(...deps.failed);
+
+  const after = scanPatcherParity(mainClientRoot, headlessRoot, mainClientModIds, headlessClientModIds);
+  return {
+    copied: [...new Set(copied)],
+    failed,
+    cannotFix: after.references.filter((r) => r.action !== "copy")
+  };
 }
 
 /**

@@ -260,6 +260,51 @@ export interface ParityReport {
   };
   /** Compatibility addons and what they mean for the headless side. */
   addons?: AddonParityRow[];
+  /** BepInEx/patchers compared on its own, plus prepatcher dependencies. */
+  patchers?: PatcherParityReport;
+}
+
+export type PatcherOwnership =
+  | { kind: "spt" }
+  | { kind: "mod"; via: "ledger" | "name"; mods: string[] }
+  | { kind: "unknown" };
+
+export interface PatcherParityRow {
+  entry: string;
+  presence: "both" | "main-only" | "headless-only";
+  issue?: "missing-on-headless" | "incomplete-on-headless" | "different-build" | "headless-only";
+  owner: PatcherOwnership;
+  ownerOnHeadless?: boolean;
+  action?: "copy" | "report";
+  missingFiles?: string[];
+  differentFiles?: string[];
+  detail?: string;
+}
+
+export interface PatcherReferenceRow {
+  side: "main" | "headless";
+  patcher: string;
+  entry: string;
+  assemblyName?: string;
+  reference: string;
+  providedOnMainBy?: string;
+  action: "copy" | "reinstall" | "report";
+  detail: string;
+}
+
+export interface PatcherParityReport {
+  rows: PatcherParityRow[];
+  references: PatcherReferenceRow[];
+  unreadable: { side: "main" | "headless"; patcher: string }[];
+  counts: {
+    missingOnHeadless: number;
+    differentBuild: number;
+    headlessOnly: number;
+    brokenOnHeadless: number;
+    brokenOnMain: number;
+    unreadable: number;
+    toSync: number;
+  };
 }
 
 /* --- live SPT server ------------------------------------------------------- */

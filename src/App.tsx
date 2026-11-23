@@ -1640,14 +1640,19 @@ export default function App() {
   // that overwrite IS the drift repair, but it should not be a surprise.
   async function handleSyncAll() {
     const pending = headlessData?.parity?.counts;
-    const total = (pending?.missingOnHeadless ?? 0) + (pending?.versionDrift ?? 0);
+    const plugins = (pending?.missingOnHeadless ?? 0) + (pending?.versionDrift ?? 0);
+    // Prepatchers count on their own. When every plugin matches, a missing prepatcher is the
+    // ONLY thing out of step — and returning early here is how a sync would never reach it.
+    const patchers = headlessData?.parity?.patchers?.counts.toSync ?? 0;
+    const total = plugins + patchers;
     if (total === 0) {
       pushToast("Nothing to sync — the headless client already matches.", true);
       return;
     }
+    const what = [plugins ? `${plugins} plugin(s)` : "", patchers ? `${patchers} prepatcher(s)` : ""].filter(Boolean).join(" and ");
     if (
       !window.confirm(
-        `Copy ${total} plugin(s) from the main install to the headless client?\n\n` +
+        `Copy ${what} from the main install to the headless client?\n\n` +
           "Anything already there with the same name is replaced. Only mods that must match are copied — " +
           "display-only and stash-only plugins are left alone."
       )

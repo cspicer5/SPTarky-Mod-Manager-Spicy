@@ -917,6 +917,22 @@
   line-height: 1.4;
 }
 
+/* Prepatchers reuse the addon list's layout. Red for what Sync will fix (a missing dependency
+   stops a patch loading at all), amber for what it will not, so the colour says which button —
+   Sync or a reinstall — is the remedy. */
+.hl-patcher-copy .hl-addon-status,
+.hl-patcher-ref-copy .hl-addon-status {
+  color: var(--danger-strong);
+  border-color: var(--danger);
+}
+
+.hl-patcher-report .hl-addon-status,
+.hl-patcher-ref-report .hl-addon-status,
+.hl-patcher-ref-reinstall .hl-addon-status {
+  color: var(--warn, #e0a03a);
+  font-weight: 600;
+}
+
 /* A patch that is not intact on the MAIN install either.
    Coloured apart from missing-on-headless on purpose: that one is fixed by syncing, and this one
    is not — syncing would copy the gap across. The remedy is to reinstall the addon here first. */

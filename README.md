@@ -152,7 +152,9 @@ So a server mod is never *missing* from the headless client; it cannot exist the
 
 Measured on the reference setup: **26 of 28 client plugins classified (93%)**, 2 left for the user.
 
-The parity report covers version drift, plugins missing from the host, leftovers on the headless side, menu-patching plugins (the headless client drives its own menus to enter and leave raids), and server mods copied where nothing will load them. **Sync** copies a plugin across with its prepatchers, its `BepInEx/config` file and its addons, and records what it copied so the headless side reports the right version.
+The parity report covers version drift, plugins missing from the host, leftovers on the headless side, menu-patching plugins named in the ruleset (the headless client drives its own menus to enter and leave raids), and server mods copied where nothing will load them. **Sync** copies a plugin across with its prepatchers, its `BepInEx/config` file and its addons, and records what it copied so the headless side reports the right version.
+
+**Prepatchers are compared on their own**, file by file, because a plugin row looks the same whether its prepatcher came with it or not. Each prepatcher is attributed to its mod from the install record where there is one, by name where there is not, and reported as unattributed otherwise. Every prepatcher's assembly references are also checked against `BepInEx/patchers`, `BepInEx/core` and the game's `Managed` folder — one prepatcher can depend on another mod's (BlackDiv's references MoreBotsPrepatch), and when that dependency is missing BepInEx silently skips the patch and the raid crashes later on something that looks unrelated. Sync copies a missing prepatcher when its plugin is on the headless client, when another prepatcher there depends on it, or when nothing says whose it is; it leaves one alone when its known owner was left off the headless client, and never copies SPT's own. A dependency missing from the main install too is reported with the mod to reinstall, where the install record knows it.
 
 The app identifies a headless install by `FikaHeadlessManager.exe` and will not accept an ordinary SPT client, since pointing both halves at the same folder would report perfect parity while nothing was hosting.
 
@@ -191,7 +193,7 @@ For UI-only iteration, `npm run dev` runs Vite alone. In that mode `window.modMa
 ### Tests and audits
 
 ```bash
-npm test                                   # 32 suites; checks that need a real SPT install skip when there isn't one
+npm test                                   # 33 suites; checks that need a real SPT install skip when there isn't one
 npm run audit:forge -- "D:\SPT"            # catalogue matching against a real install
 npm run audit:headless -- "D:\SPT" "D:\SPT_Headless"
 npm run audit:server -- <host>:6969 "D:\SPT"   # parity against a live server
@@ -348,7 +350,7 @@ The catalogue allows roughly 300 requests / 60s per IP and answers `429` with `R
 - *Catalogue API tokens* — the API is open and read-only; authentication does nothing. A bogus bearer token gets the same rate limit as none.
 
 **Not planned for now**
-- *Installing prepatchers on their own* — paused. The repair for a missing prepatcher is to reinstall its parent mod.
+- *Installing prepatchers on their own* — paused. The repair for a missing prepatcher is to reinstall its parent mod. (Copying one from the main install to a headless client is not this: that is a sync, from a copy the parent already installed.)
 
 ---
 

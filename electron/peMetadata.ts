@@ -158,7 +158,10 @@ const T = {
   Param: 0x08,
   InterfaceImpl: 0x09,
   MemberRef: 0x0a,
-  CustomAttribute: 0x0c
+  CustomAttribute: 0x0c,
+  Assembly: 0x20,
+  AssemblyRef: 0x23,
+  ManifestResource: 0x28
 } as const;
 
 /**
@@ -217,7 +220,12 @@ const TABLE_SCHEMA: Record<number, Col[]> = {
   0x0c: [CODED.HasCustomAttribute, CODED.CustomAttributeType, "blob"], // CustomAttribute
   0x0d: [CODED.HasFieldMarshal, "blob"], // FieldMarshal
   0x0e: [2, CODED.HasDeclSecurity, "blob"], // DeclSecurity
-  0x0f: [2, 2, { table: 0x02 }], // ClassLayout
+  // ClassLayout: PackingSize (2), ClassSize (4), Parent. ClassSize was declared as 2 bytes, which
+  // went unnoticed while every reader stopped below this table — but any assembly with an
+  // explicit struct layout then misaligned everything above it, Assembly and AssemblyRef
+  // included. FixPluginTypesSerialization.dll read back a compiler-generated method name as its
+  // own assembly name.
+  0x0f: [2, 4, { table: 0x02 }], // ClassLayout
   0x10: [4, { table: 0x04 }], // FieldLayout
   0x11: ["blob"], // StandAloneSig
   0x12: [{ table: 0x02 }, { table: 0x14 }], // EventMap
@@ -232,7 +240,7 @@ const TABLE_SCHEMA: Record<number, Col[]> = {
   0x1b: ["blob"], // TypeSpec
   0x1c: [2, CODED.MemberForwarded, "string", { table: 0x1a }], // ImplMap
   0x1d: [4, { table: 0x04 }], // FieldRVA
-  0x1e: [4], // EncLog (unused shape, kept for alignment safety)
+  0x1e: [4, 4], // EncLog: Token, FuncCode
   0x1f: [4], // EncMap
   0x20: [4, 2, 2, 2, 2, 4, "blob", "string", "string"], // Assembly
   0x21: [4], // AssemblyProcessor
@@ -240,7 +248,7 @@ const TABLE_SCHEMA: Record<number, Col[]> = {
   0x23: [2, 2, 2, 2, 4, "blob", "string", "string", "blob"], // AssemblyRef
   0x24: [4, { table: 0x23 }], // AssemblyRefProcessor
   0x25: [4, 4, 4, { table: 0x23 }], // AssemblyRefOS
-  0x26: [4, "string", "string", CODED.Implementation], // File
+  0x26: [4, "string", "blob"], // File: Flags, Name, HashValue
   0x27: [4, 4, "string", "string", CODED.Implementation], // ExportedType
   0x28: [4, 4, "string", CODED.Implementation], // ManifestResource
   0x29: [{ table: 0x02 }, { table: 0x02 }], // NestedClass
@@ -806,6 +814,101 @@ function ilOperandLength(il: Buffer, p: number): number {
     return 2;
   }
   return 1;
+}
+
+/* --- Assembly references ------------------------------------------------------------ */
+
+export interface AssemblyReference {
+  name: string;
+  version: string;
+}
+
+export interface AssemblyReferenceInfo {
+  /**
+   * False when the file has no CLI header at all — a native DLL. Those have no assembly
+   * references to resolve, and calling them "unreadable" would be a false alarm.
+   */
+  managed: boolean;
+  /** The assembly's own name, from the Assembly table — what other assemblies refer to it by. */
+  name?: string;
+  version?: string;
+  /**
+   * Every assembly this one declares a dependency on, from the AssemblyRef table.
+   *
+   * UNDEFINED, not empty, when the file IS managed but its tables could not be read. The two
+   * must stay apart: an empty list means "depends on nothing", and reporting an assembly we
+   * failed to parse as having no dependencies would turn "couldn't check" into "checked, clean".
+   */
+  references?: AssemblyReference[];
+  /**
+   * Names of the resources embedded in this file.
+   *
+   * Some assemblies carry their dependencies inside themselves and load them from a resolve
+   * handler: FixPluginTypesSerialization.dll references Microsoft.Deployment.Compression and
+   * ships it as "Microsoft.Deployment.Compression.dll" in its own resources — the assembly
+   * exists nowhere on disk. Without this, a working install reports a missing dependency.
+   */
+  embeddedResources?: string[];
+}
+
+/**
+ * Reads which assemblies a .NET assembly depends on.
+ *
+ * Exists for prepatchers. One prepatcher can reference another mod's prepatcher
+ * (BlackDiv.dll references MoreBotsPrepatch), and when the referenced one is absent BepInEx
+ * refuses to run the patch at all — logged once at preload as a FileNotFoundException, then
+ * surfacing much later as an unrelated-looking crash at raid start. The reference is declared
+ * in the metadata, so it can be checked before the game is ever launched.
+ */
+export function readAssemblyReferences(buf: Buffer): AssemblyReferenceInfo {
+  let image: CliImage | null;
+  try {
+    image = parseCliImage(buf);
+  } catch {
+    image = null;
+  }
+  // parseCliImage also returns null for a truncated or non-PE file. Either way there is no
+  // managed metadata here to have dependencies in.
+  if (!image) return { managed: false };
+
+  try {
+    const tables = parseTables(image);
+    if (!tables) return { managed: true };
+
+    const version = (row: number[], from: number) => row.slice(from, from + 4).join(".");
+
+    let name: string | undefined;
+    let ownVersion: string | undefined;
+    if (tables.rowCounts[T.Assembly]) {
+      // Assembly: HashAlgId, Major, Minor, Build, Revision, Flags, PublicKey, Name, Culture
+      const row = readRow(tables, T.Assembly, 1);
+      if (row) {
+        name = readString(tables, row[7]) || undefined;
+        ownVersion = version(row, 1);
+      }
+    }
+
+    const references: AssemblyReference[] = [];
+    for (let i = 1; i <= tables.rowCounts[T.AssemblyRef]; i++) {
+      // AssemblyRef: Major, Minor, Build, Revision, Flags, PublicKeyOrToken, Name, Culture, HashValue
+      const row = readRow(tables, T.AssemblyRef, i);
+      if (!row) return { managed: true, name, version: ownVersion }; // a torn table is "unreadable", not "fewer refs"
+      const refName = readString(tables, row[6]);
+      if (refName) references.push({ name: refName, version: version(row, 0) });
+    }
+
+    const embeddedResources: string[] = [];
+    for (let i = 1; i <= tables.rowCounts[T.ManifestResource]; i++) {
+      // ManifestResource: Offset, Flags, Name, Implementation. Implementation 0 = in this file.
+      const row = readRow(tables, T.ManifestResource, i);
+      if (!row || row[3] !== 0) continue;
+      const resName = readString(tables, row[2]);
+      if (resName) embeddedResources.push(resName);
+    }
+    return { managed: true, name, version: ownVersion, references, embeddedResources };
+  } catch {
+    return { managed: true };
+  }
 }
 
 /* --- Entry point -------------------------------------------------------------------- */

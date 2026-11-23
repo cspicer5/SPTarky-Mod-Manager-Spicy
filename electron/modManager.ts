@@ -1,11 +1,12 @@
 import fs from "fs";
 import path from "path";
+import { createHash } from "crypto";
 import AdmZip from "adm-zip";
 import Seven from "node-7z";
 import { path7za } from "7zip-bin";
 import { createExtractorFromFile } from "node-unrar-js";
 import { ModInfo, ModType, RegistryEntry, ModListComparison, ModFingerprint, VersionOrigin } from "./types";
-import { readAssemblyModMetadata, readAssemblyVersionStrings } from "./peMetadata";
+import { readAssemblyModMetadata, readAssemblyReferences, readAssemblyVersionStrings } from "./peMetadata";
 import { getRegistryApiBase, modPageUrl, parseModRef, readCategoryLabel } from "./registry";
 
 /**
@@ -406,26 +407,64 @@ export function listCompanionFolderNames(dir: string): Set<string> {
  */
 export function findRelatedPatcherFiles(dir: string, modId: string, manifestFiles: string[] = []): string[] {
   if (!fs.existsSync(dir)) return [];
-  const modBase = modId.replace(/\.dll$/i, "").toLowerCase();
-  if (!modBase) return [];
+  if (!modId.replace(/\.dll$/i, "")) return [];
 
+  // The ENTRY each manifest file sits under, not the file's own name. A prepatcher shipped in a
+  // folder is recorded as "BepInEx/patchers/MoreBotsPrepatch/MoreBotsPrepatch.dll", and what
+  // sits in patchers/ is the folder "MoreBotsPrepatch" — comparing basenames matched a loose
+  // file and never a folder, so every folder-shaped prepatcher fell through to the name rule.
   const fromManifest = new Set(
-    manifestFiles
-      .filter((f) => f.toLowerCase().includes("bepinex/patchers/"))
-      .map((f) => path.basename(f).toLowerCase())
+    manifestFiles.map(patcherEntryOfManifestPath).filter((e): e is string => !!e).map((e) => e.toLowerCase())
   );
 
   return fs
     .readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => {
-      const lower = entry.name.toLowerCase();
-      if (fromManifest.has(lower)) return true;
-      const base = lower.replace(/\.dll$/i, "");
-      if (base === modBase) return true;
-      // word boundary: the character right after the mod name must not be alphanumeric
-      return base.startsWith(modBase) && !/[a-z0-9]/.test(base.charAt(modBase.length));
-    })
+    .filter((entry) => fromManifest.has(entry.name.toLowerCase()) || patcherNameMatchesMod(entry.name, modId))
     .map((entry) => path.join(dir, entry.name));
+}
+
+/**
+ * The top-level entry in BepInEx/patchers that a manifest path belongs to — the loose file
+ * itself, or the folder it sits in. Undefined for anything outside patchers/.
+ */
+export function patcherEntryOfManifestPath(relPath: string): string | undefined {
+  const m = /^bepinex\/patchers(?:\.disabled)?\/([^/]+)/i.exec(relPath.replace(/\\/g, "/").replace(/^\/+/, ""));
+  return m ? m[1] : undefined;
+}
+
+/**
+ * The name rule: "Wedge" owns "Wedge.Prepatch.dll" and "Wedge/", but NOT "WedgeExtras.dll" —
+ * the character right after the mod's name must not be alphanumeric, or another mod's patcher
+ * would be moved, copied or deleted along with this one.
+ */
+export function patcherNameMatchesMod(entryName: string, modId: string): boolean {
+  const modBase = modId.replace(/\.dll$/i, "").toLowerCase();
+  if (!modBase) return false;
+  const base = entryName.toLowerCase().replace(/\.dll$/i, "");
+  if (base === modBase) return true;
+  return base.startsWith(modBase) && !/[a-z0-9]/.test(base.charAt(modBase.length));
+}
+
+/**
+ * The files this app recorded as arriving with a mod — its package's manifest, reached through
+ * the registry entry's linkedModId. Empty for mods installed by hand, or before files were
+ * recorded.
+ *
+ * Shared by everything that has to know which prepatchers are a mod's own. The sync used to
+ * skip this and rely on the name rule alone, which cannot see that MoreBotsPlugin owns
+ * MoreBotsPrepatch — so the plugin reached the headless client and its prepatcher never did.
+ */
+export function manifestFilesForMod(clientRoot: string, modId: string): string[] {
+  const manifest = loadManifest(clientRoot);
+  const keys = new Set<string>();
+  for (const r of loadRegistry(clientRoot)) {
+    // Both directions are recorded and neither is complete on its own: a mod points at the
+    // manifest of its LATEST install, while each manifest's own row lists every mod that came
+    // out of that archive — including older installs the mod no longer points at.
+    if (r.id === modId && r.linkedModId) keys.add(r.linkedModId);
+    if (r.linkedModIds?.includes(modId)) keys.add(r.id);
+  }
+  return [...keys].flatMap((key) => manifest[key] ?? []);
 }
 
 /** A file or folder in BepInEx/patchers, which is NOT a mod — see `scanPatchers`. */
@@ -481,6 +520,369 @@ export function scanPatchers(clientRoot: string): LocalPatcher[] {
     }
   }
   return out;
+}
+
+/* --------------------------------------------------------------------------
+ * Prepatchers as files: contents, ownership and dependencies
+ *
+ * Everything below exists because of one incident. A headless client had MoreBotsPlugin, synced
+ * by this app, but not its prepatcher MoreBotsPrepatch — the name rule cannot connect the two.
+ * BlackDiv's prepatcher references MoreBotsPrepatch, so BepInEx refused to run it at preload
+ * ("Could not load file or assembly 'MoreBotsPrepatch'"), the game assembly was left without
+ * BlackDiv's bot types, and the raid crashed at init on "Requested value 'blackDivAssault' was
+ * not found". Parity reported the two installs as matching throughout, because it compared
+ * plugins and the plugin WAS on both sides.
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Prepatchers SPT itself ships. Reported like any other, but never copied: each install gets
+ * its own from its own SPT, and one taken from a different SPT build would be wrong for it.
+ */
+const SPT_OWN_PATCHERS = new Set(["spt-prepatch.dll"]);
+
+export function isSptOwnPatcher(entry: string): boolean {
+  return SPT_OWN_PATCHERS.has(entry.toLowerCase());
+}
+
+/** One assembly inside BepInEx/patchers. */
+export interface PatcherFile {
+  /** The top-level file or folder in patchers/ it belongs to — what is copied as a unit. */
+  entry: string;
+  /** Path relative to BepInEx/patchers, forward slashes. */
+  relPath: string;
+  bytes: number;
+  /**
+   * SHA-256 of the contents. Size alone cannot tell two builds apart: compiled assemblies are
+   * padded to 512-byte file alignment, so a rebuilt prepatcher routinely keeps its exact size —
+   * eight of the nine on the reference install are exact multiples of 512. Prepatchers are a few
+   * KB each, so hashing them all costs nothing worth saving.
+   */
+  hash?: string;
+}
+
+function walkDlls(dir: string, rel = ""): { full: string; rel: string }[] {
+  let out: { full: string; rel: string }[] = [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    const r = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) out = out.concat(walkDlls(full, r));
+    else if (e.name.toLowerCase().endsWith(".dll")) out.push({ full, rel: r });
+  }
+  return out;
+}
+
+/**
+ * Every .dll under BepInEx/patchers, recursively — the ACTIVE folder only, since
+ * patchers.disabled is never loaded.
+ *
+ * File level, not entry level, on purpose. A folder-shaped prepatcher whose DLL is gone still
+ * leaves its folder behind, and comparing top-level entries would call that folder present.
+ * Only DLLs are compared: readmes and licence files sit in these folders too, and a missing
+ * THIRD_PARTY_NOTICES.txt is not a reason to say a prepatcher is broken.
+ */
+export function scanPatcherFiles(clientRoot: string, which: "active" | "disabled" = "active"): PatcherFile[] {
+  const dir = p(clientRoot, which === "active" ? CLIENT_PATCHERS_DIR : CLIENT_PATCHERS_DISABLED_DIR);
+  if (!fs.existsSync(dir)) return [];
+  return walkDlls(dir).map(({ full, rel }) => {
+    let bytes = 0;
+    let hash: string | undefined;
+    try {
+      const buf = fs.readFileSync(full);
+      bytes = buf.length;
+      hash = createHash("sha256").update(buf).digest("hex");
+    } catch {
+      /* raced with a delete or locked; reported with no hash rather than dropped */
+    }
+    return { entry: rel.split("/")[0], relPath: rel, bytes, hash };
+  });
+}
+
+/** Who a prepatcher belongs to, and how that is known. */
+export type PatcherOwnership =
+  | { kind: "spt" }
+  /**
+   * "ledger": this app recorded it arriving in that mod's archive — a fact.
+   * "name": its name matches an installed plugin by the word-boundary rule — an inference, and
+   * labelled as one wherever it is shown.
+   */
+  | { kind: "mod"; via: "ledger" | "name"; mods: string[] }
+  | { kind: "unknown" };
+
+export interface PatcherAttribution {
+  /** Keyed by the lowercased entry name. */
+  byEntry: Record<string, PatcherOwnership>;
+  /**
+   * Installed mods the ledger says shipped a given assembly, keyed by its lowercased file name
+   * without .dll — whether or not the file is on disk now. This is what lets a missing
+   * dependency name the mod to reinstall instead of only saying it is missing.
+   */
+  byAssembly: Record<string, string[]>;
+}
+
+/**
+ * Works out which installed mod each prepatcher belongs to.
+ *
+ * The ledger first, and only through links that are still live: a manifest key counts when a
+ * registry entry ties it to a mod that is installed now. A manifest nothing points at any more
+ * proves nothing about who owns the file today, so it is not used. Then the name rule. Then
+ * nothing — and "unknown" is reported as unknown, never as a best guess.
+ */
+export function attributePatchers(clientRoot: string, installedClientModIds: string[], entries: string[]): PatcherAttribution {
+  const installed = new Map(installedClientModIds.map((id) => [id.toLowerCase(), id]));
+  const manifest = loadManifest(clientRoot);
+  const registry = loadRegistry(clientRoot);
+
+  const ownersOfKey = new Map<string, Set<string>>();
+  const link = (key: string, modId: string) => {
+    const real = installed.get(modId.toLowerCase());
+    if (!real || !manifest[key]) return;
+    if (!ownersOfKey.has(key)) ownersOfKey.set(key, new Set());
+    ownersOfKey.get(key)!.add(real);
+  };
+  for (const r of registry) {
+    if (r.linkedModId) link(r.linkedModId, r.id);
+    for (const id of r.linkedModIds ?? []) link(r.id, id);
+  }
+
+  const ledgerByEntry = new Map<string, Set<string>>();
+  const byAssembly: Record<string, string[]> = {};
+  for (const [key, owners] of ownersOfKey) {
+    for (const file of manifest[key] ?? []) {
+      const entry = patcherEntryOfManifestPath(file);
+      if (!entry) continue;
+      const e = entry.toLowerCase();
+      if (!ledgerByEntry.has(e)) ledgerByEntry.set(e, new Set());
+      owners.forEach((o) => ledgerByEntry.get(e)!.add(o));
+      if (file.toLowerCase().endsWith(".dll")) {
+        const asm = path.posix.basename(file.replace(/\\/g, "/")).slice(0, -4).toLowerCase();
+        byAssembly[asm] = [...new Set([...(byAssembly[asm] ?? []), ...owners])];
+      }
+    }
+  }
+
+  const byEntry: Record<string, PatcherOwnership> = {};
+  for (const entry of entries) {
+    const e = entry.toLowerCase();
+    if (byEntry[e]) continue;
+    if (isSptOwnPatcher(entry)) {
+      byEntry[e] = { kind: "spt" };
+      continue;
+    }
+    const ledger = ledgerByEntry.get(e);
+    if (ledger?.size) {
+      byEntry[e] = { kind: "mod", via: "ledger", mods: [...ledger] };
+      continue;
+    }
+    const named = installedClientModIds.filter((id) => patcherNameMatchesMod(entry, id));
+    byEntry[e] = named.length ? { kind: "mod", via: "name", mods: named } : { kind: "unknown" };
+  }
+  return { byEntry, byAssembly };
+}
+
+/**
+ * References no install is expected to supply from its own folders: the runtime provides them.
+ * Kept narrow on purpose — "Microsoft.*" as a whole would also swallow libraries mods really do
+ * depend on (FixPluginTypesSerialization references Microsoft.Deployment.Compression).
+ */
+const FRAMEWORK_ASSEMBLY = /^(mscorlib|netstandard|system|system\..+|microsoft\.csharp|microsoft\.visualbasic|microsoft\.win32\..+)$/i;
+
+export function isFrameworkAssembly(name: string): boolean {
+  return FRAMEWORK_ASSEMBLY.test(name);
+}
+
+export interface PatcherReferenceCheck {
+  entry: string;
+  relPath: string;
+  assemblyName?: string;
+  /** False for a native DLL, which has no assembly references to check. */
+  managed: boolean;
+  /** References that resolve nowhere. Undefined when the assembly could not be read. */
+  unresolved?: string[];
+}
+
+export interface PatcherReferenceScan {
+  files: PatcherReferenceCheck[];
+  /** Lowercased assembly name -> the patchers/ file that provides it. */
+  providers: Record<string, { entry: string; relPath: string }>;
+  /** Every lowercased assembly name this install can resolve, wherever from. */
+  available: string[];
+}
+
+function dllBaseNames(dir: string, recursive: boolean): string[] {
+  if (!fs.existsSync(dir)) return [];
+  if (recursive) return walkDlls(dir).map((f) => path.basename(f.rel).slice(0, -4).toLowerCase());
+  try {
+    return fs
+      .readdirSync(dir)
+      .filter((n) => n.toLowerCase().endsWith(".dll"))
+      .map((n) => n.slice(0, -4).toLowerCase());
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Checks that every prepatcher's assembly references resolve on this install.
+ *
+ * Resolved against BepInEx/patchers (recursively — folder-shaped prepatchers are the norm),
+ * BepInEx/core, and the game's EscapeFromTarkov_Data/Managed, plus whatever the assembly embeds
+ * in itself. Framework assemblies are skipped. patchers.disabled does NOT count: nothing in it
+ * is loaded, so a dependency sitting there is as absent as one that was never installed.
+ *
+ * Prepatchers are matched by their declared assembly name as well as their file name, because
+ * that is what a reference names. Core and Managed are matched by file name only — reading
+ * every game assembly's metadata on each scan would cost more than it could find: on the
+ * reference install all 170 Managed and 12 core assemblies are named exactly as their files.
+ */
+export function checkPatcherReferences(clientRoot: string): PatcherReferenceScan {
+  const patchersDir = p(clientRoot, CLIENT_PATCHERS_DIR);
+  const files = walkDlls(patchersDir);
+
+  const read = files.map(({ full, rel }) => {
+    let info: ReturnType<typeof readAssemblyReferences>;
+    try {
+      info = readAssemblyReferences(fs.readFileSync(full));
+    } catch {
+      info = { managed: true }; // could not even read the bytes: unreadable, not clean
+    }
+    return { rel, entry: rel.split("/")[0], info };
+  });
+
+  const providers: Record<string, { entry: string; relPath: string }> = {};
+  const available = new Set<string>();
+  for (const { rel, entry, info } of read) {
+    const names = [path.posix.basename(rel).slice(0, -4).toLowerCase()];
+    if (info.name) names.push(info.name.toLowerCase());
+    for (const n of names) {
+      available.add(n);
+      providers[n] ??= { entry, relPath: rel };
+    }
+  }
+  dllBaseNames(path.join(clientRoot, "BepInEx", "core"), true).forEach((n) => available.add(n));
+  dllBaseNames(path.join(clientRoot, "EscapeFromTarkov_Data", "Managed"), false).forEach((n) => available.add(n));
+
+  const checks: PatcherReferenceCheck[] = read.map(({ rel, entry, info }) => {
+    if (!info.managed) return { entry, relPath: rel, managed: false, unresolved: [] };
+    if (!info.references) return { entry, relPath: rel, assemblyName: info.name, managed: true };
+    const embedded = (info.embeddedResources ?? []).map((r) => r.toLowerCase());
+    const unresolved = info.references
+      .map((r) => r.name)
+      .filter((name) => {
+        const n = name.toLowerCase();
+        if (isFrameworkAssembly(name) || available.has(n)) return false;
+        // Costura-style and plain embedding both put "<name>.dll" somewhere in the resource name.
+        return !embedded.some((res) => res.includes(`${n}.dll`));
+      });
+    return { entry, relPath: rel, assemblyName: info.name, managed: true, unresolved: [...new Set(unresolved)] };
+  });
+
+  return { files: checks, providers, available: [...available] };
+}
+
+/**
+ * Copies one top-level prepatcher entry — a loose file or a whole folder — from the main
+ * install's BepInEx/patchers to the headless client's. A folder is REPLACED rather than merged,
+ * for the same reason plugin folders are: a stale DLL left underneath is its own bug.
+ */
+export function copyPatcherEntryToHeadless(
+  mainClientRoot: string,
+  headlessRoot: string,
+  entry: string
+): { success: boolean; message: string } {
+  if (path.resolve(mainClientRoot) === path.resolve(headlessRoot)) {
+    return { success: false, message: "The main install and the headless client are the same folder." };
+  }
+  if (isSptOwnPatcher(entry)) {
+    return { success: false, message: `"${entry}" is SPT's own prepatcher; each install keeps its own.` };
+  }
+  if (!entry || entry.includes("/") || entry.includes("\\") || entry === "." || entry === "..") {
+    return { success: false, message: `"${entry}" is not a prepatcher entry.` };
+  }
+  const source = path.join(p(mainClientRoot, CLIENT_PATCHERS_DIR), entry);
+  if (!fs.existsSync(source)) return { success: false, message: `"${entry}" is not in the main install's BepInEx/patchers.` };
+  const targetDir = p(headlessRoot, CLIENT_PATCHERS_DIR);
+  const target = path.join(targetDir, entry);
+  try {
+    ensureDir(targetDir);
+    if (fs.statSync(source).isDirectory()) {
+      if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
+      copyRecursive(source, target);
+    } else {
+      fs.copyFileSync(source, target);
+    }
+  } catch (err: any) {
+    return { success: false, message: `Couldn't copy prepatcher "${entry}": ${err?.message ?? err}` };
+  }
+  return { success: true, message: `Copied prepatcher "${entry}" to the headless client.` };
+}
+
+export interface ReferencedPatcherCopy {
+  entry: string;
+  /** The assembly that was missing. */
+  reference: string;
+  /** The headless prepatchers that needed it. */
+  neededBy: string[];
+}
+
+/**
+ * Brings across the prepatchers that the headless client's own prepatchers reference and do not
+ * have, taking them from the main install's patchers/ — and repeats, since a copied prepatcher
+ * can have dependencies of its own.
+ *
+ * Only a reference the main install can supply FROM patchers/ is acted on. One that is missing
+ * on the main install too cannot be fixed by copying; that is left for the report, which names
+ * the mod to reinstall where the ledger knows it.
+ *
+ * `startFrom` limits the walk to the dependencies of particular entries — a single-plugin sync
+ * should not go and repair other mods' prepatchers on the side.
+ */
+export function copyReferencedPatchersToHeadless(
+  mainClientRoot: string,
+  headlessRoot: string,
+  startFrom?: string[]
+): { copied: ReferencedPatcherCopy[]; failed: string[] } {
+  const main = checkPatcherReferences(mainClientRoot);
+  const copied: ReferencedPatcherCopy[] = [];
+  const failed: string[] = [];
+  const scope = startFrom ? new Set(startFrom.map((e) => e.toLowerCase())) : undefined;
+  const tried = new Set<string>();
+
+  for (let round = 0; round < 10; round++) {
+    const headless = checkPatcherReferences(headlessRoot);
+    const wanted = new Map<string, { reference: string; neededBy: string[] }>();
+    for (const file of headless.files) {
+      if (scope && !scope.has(file.entry.toLowerCase())) continue;
+      for (const ref of file.unresolved ?? []) {
+        const provider = main.providers[ref.toLowerCase()];
+        if (!provider || isSptOwnPatcher(provider.entry)) continue;
+        const key = provider.entry.toLowerCase();
+        if (tried.has(key)) continue;
+        const w = wanted.get(key) ?? { reference: ref, neededBy: [] };
+        w.neededBy.push(file.assemblyName ?? file.relPath);
+        wanted.set(key, w);
+      }
+    }
+    if (!wanted.size) break;
+    for (const [key, w] of wanted) {
+      tried.add(key);
+      const provider = main.providers[w.reference.toLowerCase()];
+      const result = copyPatcherEntryToHeadless(mainClientRoot, headlessRoot, provider.entry);
+      if (result.success) {
+        copied.push({ entry: provider.entry, reference: w.reference, neededBy: w.neededBy });
+        // Its own dependencies are in scope from here on.
+        scope?.add(key);
+      } else {
+        failed.push(result.message);
+      }
+    }
+  }
+  return { copied, failed };
 }
 
 export function isProtectedClientEntry(name: string): boolean {
@@ -2573,6 +2975,8 @@ export interface HeadlessSyncResult {
   copiedPlugin?: boolean;
   copiedCompanion?: boolean;
   copiedPatchers?: number;
+  /** Other mods' prepatchers brought across because this mod's prepatchers reference them. */
+  copiedReferencedPatchers?: string[];
   copiedConfigs?: number;
 }
 
@@ -2642,11 +3046,18 @@ export function copyClientModToHeadless(
 
     // Prepatchers load before BepInEx and are a separate directory. A mod split across both
     // is half-installed without them — the same reasoning as the toggle cascade.
+    //
+    // The install record is consulted, not just the name rule. MoreBotsPlugin ships
+    // MoreBotsPrepatch; no name rule connects those two, but the ledger recorded it, and
+    // ignoring the ledger here is how the plugin reached a headless client without it.
+    const manifestFiles = manifestFilesForMod(mainClientRoot, mod.id);
+    const copiedEntries: string[] = [];
     for (const [from, to] of [
       [p(mainClientRoot, CLIENT_PATCHERS_DIR), p(headlessRoot, CLIENT_PATCHERS_DIR)],
       [p(mainClientRoot, CLIENT_PATCHERS_DISABLED_DIR), p(headlessRoot, CLIENT_PATCHERS_DISABLED_DIR)]
     ]) {
-      for (const patcher of findRelatedPatcherFiles(from, mod.id)) {
+      for (const patcher of findRelatedPatcherFiles(from, mod.id, manifestFiles)) {
+        if (isSptOwnPatcher(path.basename(patcher))) continue;
         ensureDir(to);
         const dest = path.join(to, path.basename(patcher));
         if (fs.statSync(patcher).isDirectory()) {
@@ -2656,7 +3067,16 @@ export function copyClientModToHeadless(
           fs.copyFileSync(patcher, dest);
         }
         result.copiedPatchers!++;
+        if (from === p(mainClientRoot, CLIENT_PATCHERS_DIR)) copiedEntries.push(path.basename(patcher));
       }
+    }
+
+    // And whatever those prepatchers need from OTHER mods' prepatchers. BlackDiv's references
+    // MoreBotsPrepatch; with it absent BepInEx skips BlackDiv's patch entirely at preload, and
+    // nothing says so until a raid crashes on a missing bot type.
+    if (copiedEntries.length) {
+      const deps = copyReferencedPatchersToHeadless(mainClientRoot, headlessRoot, copiedEntries);
+      result.copiedReferencedPatchers = deps.copied.map((c) => c.entry);
     }
 
     // BepInEx names a config after the plugin's GUID ("com.tyfon.uifixes.cfg"), though some
@@ -2691,6 +3111,9 @@ export function copyClientModToHeadless(
   const extras = [
     result.copiedCompanion ? "data folder" : null,
     result.copiedPatchers ? `${result.copiedPatchers} patcher file(s)` : null,
+    result.copiedReferencedPatchers?.length
+      ? `${result.copiedReferencedPatchers.join(", ")}, which its prepatcher depends on`
+      : null,
     result.copiedConfigs ? `${result.copiedConfigs} config file(s)` : null
   ].filter(Boolean);
 

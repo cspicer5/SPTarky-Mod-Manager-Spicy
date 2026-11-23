@@ -973,9 +973,59 @@ function ParityGutter({ parity }: { parity: ParityReport | null }) {
         </div>
       )}
 
+      {/* Prepatchers, compared as files and checked for their dependencies. Shown only when
+          something is wrong: a list of nine healthy prepatchers is noise in a narrow gutter. */}
+      {parity.patchers &&
+        (parity.patchers.rows.some((r) => r.issue && r.issue !== "headless-only") ||
+          parity.patchers.references.length > 0 ||
+          parity.patchers.unreadable.length > 0) && (
+          <div className="hl-gutter-addons hl-gutter-patchers">
+            <div className="hl-gutter-title">Prepatchers</div>
+            <ul>
+              {parity.patchers.references.map((r) => (
+                <li key={`ref:${r.side}:${r.patcher}:${r.reference}`} className={`hl-patcher-ref-${r.action}`}>
+                  <span className="hl-addon-name">
+                    {r.assemblyName ?? r.entry} → {r.reference}
+                  </span>
+                  <span className="hl-addon-status">
+                    {r.side === "main" ? "broken on main" : r.action === "copy" ? "missing dependency" : "can't copy"}
+                  </span>
+                  <span className="hl-addon-detail">{r.detail}</span>
+                </li>
+              ))}
+              {parity.patchers.rows
+                .filter((r) => r.issue && r.issue !== "headless-only")
+                .map((r) => (
+                  <li key={`patcher:${r.entry}`} className={`hl-patcher-${r.action ?? "report"}`}>
+                    <span className="hl-addon-name">{r.entry}</span>
+                    <span className="hl-addon-status">
+                      {r.issue === "different-build" ? "different build" : r.issue === "incomplete-on-headless" ? "incomplete" : "missing"}
+                      {r.action === "report" ? " · not synced" : ""}
+                    </span>
+                    <span className="hl-addon-detail">{r.detail}</span>
+                  </li>
+                ))}
+              {parity.patchers.unreadable.map((u) => (
+                <li key={`unreadable:${u.side}:${u.patcher}`} className="hl-patcher-report">
+                  <span className="hl-addon-name">{u.patcher}</span>
+                  <span className="hl-addon-status">not checked</span>
+                  <span className="hl-addon-detail">
+                    Couldn't read this assembly's references on the {u.side === "main" ? "main install" : "headless client"}, so its
+                    dependencies were not checked.
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
       {problems.length === 0 ? (
         <p className="hl-gutter-clear">
-          Nothing to reconcile. Every mod that changes raid behaviour is present on both sides at the same version.
+          {/* Worded to claim only what it covers when the prepatcher section above has findings:
+              "nothing to reconcile" next to a missing prepatcher is the contradiction this replaced. */}
+          {parity.patchers && (parity.patchers.references.length > 0 || parity.patchers.counts.missingOnHeadless + parity.patchers.counts.differentBuild > 0)
+            ? "Every mod that changes raid behaviour is present on both sides at the same version — but see Prepatchers above."
+            : "Nothing to reconcile. Every mod that changes raid behaviour is present on both sides at the same version."}
         </p>
       ) : (
         <ol className="hl-gutter-list">
@@ -1140,8 +1190,21 @@ export default function InstancesView({
    * would point the user at the move that makes things worse.
    */
   const addonsBrokenOnMain = (parity?.addons ?? []).filter((a) => a.status === "missing-on-main").length;
+  /*
+   * Prepatchers, for the same reason as addons: a plugin row reads identically whether its
+   * prepatcher is on the headless client or not, so without this the button said "Headless in
+   * sync" while BlackDiv's patch could not load there. Dependencies broken on the MAIN install
+   * count in the headline but, like addonsBrokenOnMain, are not something a sync can fix.
+   */
+  const patchersToSync = parity?.patchers?.counts.toSync ?? 0;
+  const patchersBrokenOnMain = parity?.patchers?.counts.brokenOnMain ?? 0;
   const outOfStep =
-    (parity?.counts.missingOnHeadless ?? 0) + (parity?.counts.versionDrift ?? 0) + addonsToSync + addonsBrokenOnMain;
+    (parity?.counts.missingOnHeadless ?? 0) +
+    (parity?.counts.versionDrift ?? 0) +
+    addonsToSync +
+    addonsBrokenOnMain +
+    patchersToSync +
+    patchersBrokenOnMain;
 
   /*
    * The shared row model, built ONCE here and handed to both panes.

@@ -77,6 +77,8 @@ import {
   forgeHintsFor,
   normaliseModKey,
   parityKey,
+  scanPatcherParity,
+  syncPatchersToHeadless,
   HeadlessClass
 } from "./headless";
 import { fetchServerSnapshot, buildServerSyncReport, normaliseServerUrl, remoteAddonForFolder } from "./sptServer";
@@ -456,6 +458,12 @@ ipcMain.handle("get-headless-view", () => {
         mainClientParentDir(roots.clientRoot, mainMods)
       )
     : [];
+
+  // BepInEx/patchers on its own terms. The plugin rows above cannot show a missing prepatcher:
+  // the plugin is present on both sides either way.
+  if (roots) {
+    report.patchers = scanPatcherParity(roots.clientRoot, headlessPath, clientIds(mainMods), clientIds(headlessMods));
+  }
 
   return {
     configured: true,
@@ -1429,6 +1437,10 @@ function mainClientParentDir(clientRoot: string, mainMods: ModInfo[]) {
     const dir = parent.enabled ? CLIENT_PLUGINS_DIR : CLIENT_PLUGINS_DISABLED_DIR;
     return path.join(clientRoot, ...dir, parent.id);
   };
+}
+
+function clientIds(mods: ModInfo[]): string[] {
+  return mods.filter((m) => m.type !== "server").map((m) => m.id);
 }
 
 function headlessParentDir(headlessRoot: string, headlessMods: ModInfo[]) {
@@ -2516,7 +2528,25 @@ ipcMain.handle("sync-all-to-headless", (_event) => {
     (result.success ? done : failed).push(mod.name);
   }
 
-  if (!toCopy.size && !failed.length) {
+  /*
+   * Prepatchers, compared on their own and AFTER the plugins, so that a plugin this sync just
+   * copied counts as present when deciding whether its prepatcher belongs on the headless client.
+   *
+   * This has to run even when no plugin needed copying. In the incident that prompted it,
+   * MoreBotsPlugin was already at parity — so it was never in the copy list, never re-synced, and
+   * the "nothing to sync" early return below fired while MoreBotsPrepatch was missing and
+   * BlackDiv's patch could not load.
+   */
+  const patcherSync = syncPatchersToHeadless(sptPath, headlessPath, clientIds(mainMods), [
+    ...clientIds(headlessMods),
+    ...clientIds([...toCopy.values()])
+  ]);
+  const patchersCopied = patcherSync.copied;
+  failed.push(...patcherSync.failed);
+  // What copying cannot fix, said rather than buried under a success message.
+  const cannotFix = patcherSync.cannotFix;
+
+  if (!toCopy.size && !patchersCopied.length && !failed.length && !cannotFix.length) {
     return { success: true, message: "Nothing to sync — the headless client already matches.", copied: 0 };
   }
 
@@ -2529,12 +2559,16 @@ ipcMain.handle("sync-all-to-headless", (_event) => {
   ].filter(Boolean);
 
   return {
-    success: failed.length === 0,
+    success: failed.length === 0 && cannotFix.length === 0,
     copied: done.length,
     message:
       `Copied ${done.length} plugin(s) to the headless client.` +
       (notes.length ? ` Includes ${notes.join(" and ")}.` : "") +
-      (failed.length ? ` ${failed.length} failed: ${failed.slice(0, 3).join(", ")}${failed.length > 3 ? "…" : ""}` : "")
+      (patchersCopied.length ? ` Copied ${patchersCopied.length} prepatcher(s): ${patchersCopied.join(", ")}.` : "") +
+      (failed.length ? ` ${failed.length} failed: ${failed.slice(0, 3).join(", ")}${failed.length > 3 ? "…" : ""}` : "") +
+      (cannotFix.length
+        ? ` ${cannotFix.length} prepatcher dependenc${cannotFix.length > 1 ? "ies" : "y"} could not be fixed by copying: ${cannotFix[0].detail}`
+        : "")
   };
 });
 
